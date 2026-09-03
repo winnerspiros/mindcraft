@@ -8,6 +8,7 @@ export class AgentProcess {
     constructor(name, port) {
         this.name = name;
         this.port = port;
+        this._restartAttempts = 0;
     }
 
     start(load_memory=false, init_message=null, count_id=0) {
@@ -27,30 +28,33 @@ export class AgentProcess {
             stdio: 'inherit',
             stderr: 'inherit',
         });
-        
-        let last_restart = Date.now();
+
+        // If the agent survives this long, reset the crash-backoff counter.
+        if (this._backoffResetTimer) clearTimeout(this._backoffResetTimer);
+        this._backoffResetTimer = setTimeout(() => {
+            this._restartAttempts = 0;
+        }, 60000);
+
         agentProcess.on('exit', (code, signal) => {
             console.log(`Agent process exited with code ${code} and signal ${signal}`);
             this.running = false;
             logoutAgent(this.name);
-            
+
             if (code > 1) {
                 console.log(`Ending task`);
                 process.exit(code);
             }
 
             if (code !== 0 && signal !== 'SIGINT') {
-                // agent must run for at least 10 seconds before restarting
-                if (Date.now() - last_restart < 10000) {
-                    console.error(`Agent process exited too quickly and will not be restarted.`);
-                    return;
-                }
-                console.log('Restarting agent...');
-                this.start(true, 'Agent process restarted.', count_id, this.port);
-                last_restart = Date.now();
+                this._restartAttempts++;
+                // Escalating backoff so a brief server outage (crash/reboot) can't
+                // permanently strand the bot. 10s, 20s, 30s... capped at 60s.
+                const delay = Math.min(10000 * this._restartAttempts, 60000);
+                console.log(`Restarting agent in ${Math.round(delay / 1000)}s (attempt ${this._restartAttempts})...`);
+                setTimeout(() => this.start(true, 'Agent process restarted.', count_id, this.port), delay);
             }
         });
-    
+
         agentProcess.on('error', (err) => {
             console.error('Agent process error:', err);
         });
@@ -66,19 +70,21 @@ export class AgentProcess {
     forceRestart() {
         if (this.running && this.process && !this.process.killed) {
             console.log(`Agent process for ${this.name} is still running. Attempting to force restart.`);
-            
+
             const restartTimeout = setTimeout(() => {
                 console.warn(`Agent ${this.name} did not stop in time. It might be stuck.`);
             }, 5000); // 5 seconds to exit
 
             this.process.once('exit', () => {
-                 clearTimeout(restartTimeout);
-                 console.log(`Stopped hanging agent ${this.name}. Now restarting.`);
-                 this.start(true, 'Agent process restarted.', this.count_id);
+                clearTimeout(restartTimeout);
+                console.log(`Stopped hanging agent ${this.name}. Now restarting.`);
+                this._restartAttempts = 0;
+                this.start(true, 'Agent process restarted.', this.count_id);
             });
             this.stop(); // sends SIGINT
         } else {
-             this.start(true, 'Agent process restarted.', this.count_id);
+            this._restartAttempts = 0;
+            this.start(true, 'Agent process restarted.', this.count_id);
         }
     }
 }

@@ -137,6 +137,18 @@ export class Prompter {
     async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
+        // resolve $SELF_PROMPT FIRST — its goal text may itself contain $STATS/$MEMORY
+        // placeholders, and if it is injected after those are replaced the placeholders
+        // leak through unreplaced ("Unknown prompt placeholders: $STATS, $STATS").
+        if (prompt.includes('$SELF_PROMPT')) {
+            // if active or paused, show the current goal
+            let goal = !this.agent.self_prompter.isStopped() ? this.agent.self_prompter.prompt : '';
+            // do not let the goal text carry unresolved $-placeholders into the final prompt
+            goal = goal.replace(/\$[A-Z_]+/g, m => (['$STATS','$INVENTORY','$MEMORY','$COMMAND_DOCS','$EXAMPLES'].includes(m) ? m : ''));
+            let self_prompt = goal ? `YOUR CURRENT ASSIGNED GOAL: "${goal}"\n` : '';
+            prompt = prompt.replaceAll('$SELF_PROMPT', self_prompt);
+        }
+
         if (prompt.includes('$STATS')) {
             let stats = await getCommand('!stats').perform(this.agent) + '\n';
             stats += await getCommand('!entities').perform(this.agent) + '\n';
@@ -170,11 +182,6 @@ export class Prompter {
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))
             prompt = prompt.replaceAll('$CONVO', 'Recent conversation:\n' + stringifyTurns(messages));
-        if (prompt.includes('$SELF_PROMPT')) {
-            // if active or paused, show the current goal
-            let self_prompt = !this.agent.self_prompter.isStopped() ? `YOUR CURRENT ASSIGNED GOAL: "${this.agent.self_prompter.prompt}"\n` : '';
-            prompt = prompt.replaceAll('$SELF_PROMPT', self_prompt);
-        }
         if (prompt.includes('$LAST_GOALS')) {
             let goal_text = '';
             for (let goal in last_goals) {

@@ -1,15 +1,23 @@
 import { Vec3 } from 'vec3';
-import { Camera } from "./camera.js";
 import fs from 'fs';
 
+// Camera pulls in prismarine-viewer + three + node-canvas-webgl + gl/canvas native
+// addons (~400MB of 3D stack). Load it lazily only when vision is actually enabled;
+// otherwise the headless bot never touches it and it stays out of RAM.
 export class VisionInterpreter {
     constructor(agent, allow_vision) {
         this.agent = agent;
         this.allow_vision = allow_vision;
         this.fp = './bots/'+agent.name+'/screenshots/';
-        if (allow_vision) {
-            this.camera = new Camera(agent.bot, this.fp);
+        this.camera = null;
+    }
+
+    async _getCamera() {
+        if (!this.camera) {
+            const { Camera } = await import('./camera.js');
+            this.camera = new Camera(this.agent.bot, this.fp);
         }
+        return this.camera;
     }
 
     async lookAtPlayer(player_name, direction) {
@@ -23,15 +31,16 @@ export class VisionInterpreter {
             return `Could not find player ${player_name}`;
         }
 
+        const camera = await this._getCamera();
         let filename;
         if (direction === 'with') {
             await bot.look(player.yaw, player.pitch);
             result = `Looking in the same direction as ${player_name}\n`;
-            filename = await this.camera.capture();
+            filename = await camera.capture();
         } else {
             await bot.lookAt(new Vec3(player.position.x, player.position.y + player.height, player.position.z));
             result = `Looking at player ${player_name}\n`;
-            filename = await this.camera.capture();
+            filename = await camera.capture();
 
         }
 
@@ -47,7 +56,8 @@ export class VisionInterpreter {
         await bot.lookAt(new Vec3(x, y + 2, z));
         result = `Looking at coordinate ${x}, ${y}, ${z}\n`;
 
-        let filename = await this.camera.capture();
+        const camera = await this._getCamera();
+        let filename = await camera.capture();
 
         return result + `Image analysis: "${await this.analyzeImage(filename)}"`;
     }
@@ -78,4 +88,4 @@ export class VisionInterpreter {
             return `Error reading image: ${error.message}`;
         }
     }
-} 
+}

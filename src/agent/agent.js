@@ -4,10 +4,11 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
+import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
+import * as skills from './library/skills.js';
 import { SelfPrompter } from './self_prompter.js';
 import convoManager from './conversation.js';
 import { handleTranslation, handleEnglishTranslation } from '../utils/translator.js';
@@ -17,12 +18,16 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { ModerationWatcher } from './moderation.js';
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
         this.last_sender = null;
         this.count_id = count_id;
         this._disconnectHandled = false;
+        this._last_death_react = 0;
+        this.grudge = {}; // playerName -> harm count, for retaliation escalation
+        this.ignored_players = {}; // playerName -> timestamp until which to ignore (dismissals)
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -99,6 +104,10 @@ export class Agent {
                 this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
             else
                 this.bot.chat(`/skin clear`);
+
+            // EasyAuth auto-login: protect this op account from impersonation (offline-mode server)
+            if (this.prompter.profile.auth_password)
+                setTimeout(() => this.bot.chat(`/login ${this.prompter.profile.auth_password}`), 1500);
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
         const spawnTimeout = setTimeout(() => {
@@ -109,7 +118,7 @@ export class Agent {
         this.bot.once('spawn', async () => {
             try {
                 clearTimeout(spawnTimeout);
-                addBrowserViewer(this.bot, count_id);
+                await addBrowserViewer(this.bot, count_id);
                 console.log('Initializing vision intepreter...');
                 this.vision_interpreter = new VisionInterpreter(this, settings.allow_vision);
 
@@ -118,6 +127,10 @@ export class Agent {
                 
                 console.log(`${this.name} spawned.`);
                 this.clearBotLogs();
+
+                // She's OP (level 4) and would otherwise box-punch mobs with no armor.
+                // Give her a real survival kit so she stops dying.
+                await this._gearUp();
               
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
@@ -153,13 +166,56 @@ export class Agent {
             "Set the weather to",
             "Gamerule "
         ];
-        
-        const respondFunc = async (username, message) => {
+
+        // phrases that mean "leave me alone" — she backs off and ignores that player for a bit
+        const DISMISS_PHRASES = [
+            /not talking to you/i, /i'?m not talking to you/i, /leave me alone/i,
+            /go away/i, /shut up/i, /stop talking/i, /be quiet/i, /ignore you/i,
+            /don'?t (want to )?talk to you/i, /piss off/i, /fuck off/i,
+        ];
+
+        const respondFunc = async (username, message, isWhisper=false) => {
             if (message === "") return;
             if (username === this.name) return;
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
             try {
                 if (ignore_messages.some((m) => message.startsWith(m))) return;
+
+                const name_lc = this.name.toLowerCase();
+                const msg_lc = message.toLowerCase();
+                const beloved = (this.prompter.profile.beloved || '').toLowerCase();
+                const isBeloved = username.toLowerCase() === beloved;
+
+                // If someone tells her to go away, she respects it — unless it's her beloved.
+                if (!isBeloved && DISMISS_PHRASES.some(re => re.test(message))) {
+                    this.ignored_players[username] = Date.now() + 5 * 60 * 1000; // 5 minutes
+                    console.log(this.name, 'dismissed by', username, '- ignoring them for 5 min');
+                    return;
+                }
+
+                // While ignoring a player, only break out if they address her by name.
+                if (!isBeloved && this.ignored_players[username]) {
+                    if (Date.now() < this.ignored_players[username]) {
+                        if (!msg_lc.includes(name_lc)) return;
+                        delete this.ignored_players[username];
+                    } else {
+                        delete this.ignored_players[username];
+                    }
+                }
+
+                // Relevance gate for public chat: don't answer unless she's addressed by name,
+                // the sender is nearby, or it's her beloved. Whispers are always addressed to her.
+                if (!isWhisper && !isBeloved) {
+                    const called = msg_lc.includes(name_lc);
+                    let nearby = false;
+                    try {
+                        const p = this.bot.players[username] && this.bot.players[username].entity;
+                        if (p && this.bot.entity)
+                            nearby = p.position.distanceTo(this.bot.entity.position) <= 16;
+                    } catch {}
+                    if (!called && !nearby)
+                        return; // ambient chatter not aimed at her — stay quiet
+                }
 
                 this.shut_up = false;
 
@@ -179,13 +235,18 @@ export class Agent {
 
 		this.respondFunc = respondFunc;
 
-        this.bot.on('whisper', respondFunc);
+        this.bot.on('whisper', (username, message) => respondFunc(username, message, true));
         
         this.bot.on('chat', (username, message) => {
             if (serverProxy.getNumOtherAgents() > 0) return;
             // only respond to open chat messages when there are no other agents
-            respondFunc(username, message);
+            respondFunc(username, message, false);
         });
+
+        // uwu: moderation + personal-memory watcher (flags movement hacks as data; loads dossiers)
+        this.moderation = new ModerationWatcher(this);
+        this.moderation.loadDossiers();
+        this.moderation.start();
 
         // Set up auto-eat
         this.bot.autoEat.options = {
@@ -329,6 +390,8 @@ export class Agent {
             let command_name = containsCommand(res);
 
             if (command_name) { // contains query or command
+                const cmd_info = getCommandInfo(res);
+                const cmd_idx = cmd_info ? cmd_info.index : 0;
                 res = truncCommandMessage(res); // everything after the command is ignored
                 this.history.add(this.name, res);
                 
@@ -346,7 +409,7 @@ export class Agent {
                 }
                 else if (settings.show_command_syntax === "shortened") {
                     // show only "used !commandname"
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
+                    let pre_message = res.substring(0, cmd_idx).trim();
                     let chat_message = `*used ${command_name.substring(1)}*`;
                     if (pre_message.length > 0)
                         chat_message = `${pre_message}  ${chat_message}`;
@@ -354,7 +417,7 @@ export class Agent {
                 }
                 else {
                     // no command at all
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
+                    let pre_message = res.substring(0, cmd_idx).trim();
                     if (pre_message.trim().length > 0)
                         this.routeResponse(source, pre_message);
                 }
@@ -404,8 +467,8 @@ export class Agent {
     async openChat(message) {
         let to_translate = message;
         let remaining = '';
-        let command_name = containsCommand(message);
-        let translate_up_to = command_name ? message.indexOf(command_name) : -1;
+        const cmd_info = getCommandInfo(message);
+        let translate_up_to = cmd_info ? cmd_info.index : -1;
         if (translate_up_to != -1) { // don't translate the command
             to_translate = to_translate.substring(0, translate_up_to);
             remaining = message.substring(translate_up_to);
@@ -441,6 +504,27 @@ export class Agent {
             this.bot.emit('midnight');
         });
 
+        this.bot.on('entityHurt', (entity, source) => {
+            // track who is harming her so she can retaliate (verbal -> attack -> TNT)
+            if (entity === this.bot.entity && source && source.type === 'player' && source.username !== this.name) {
+                const name = source.username || source.name;
+                if (!this.grudge[name]) this.grudge[name] = 0;
+                this.grudge[name]++;
+                this.grudge['__last__'] = name;
+            }
+        });
+
+        // track when a player gets in bed, so she can join them (yandere "sleep together" behaviour)
+        this._last_sleeper = null;
+        this._sleeper_time = 0;
+        this.bot.on('entitySleep', (entity) => {
+            if (entity && entity.type === 'player' && entity.username && entity.username !== this.name) {
+                this._last_sleeper = entity.username;
+                this._sleeper_time = Date.now();
+                console.log(this.name, 'noticed player sleeping:', entity.username);
+            }
+        });
+
         let prev_health = this.bot.health;
         this.bot.lastDamageTime = 0;
         this.bot.lastDamageTaken = 0;
@@ -466,6 +550,35 @@ export class Agent {
             this.actions.cancelResume();
             this.actions.stop();
         });
+        this.bot.on('respawn', async () => {
+            // keep_inventory is OFF server-wide (players must lose items on death,
+            // user rule: OTHER players must not benefit). But UwU is special — she
+            // should keep her stuff. Recover the drops where she died:
+            // 1. Teleport to a SAFE spot near the death location (NOT the exact
+            //    coords — that's the suffocation death-loop trap). Y-offset up 2
+            //    blocks gives headroom to not re-suffocate.
+            // 2. Walk over them and pick everything up.
+            // 3. Fall back to a fresh kit via _reArmor _only_ if gear is missing.
+            try {
+                await new Promise(r => setTimeout(r, 1000)); // inventory resync
+                const deathPos = this.memory_bank.recallPlace('last_death_position');
+                if (deathPos) {
+                    const [x, y, z] = deathPos.map(v => Number(v).toFixed(4));
+                    // Teleport 2 blocks ABOVE the death spot so she doesn't
+                    // re-suffocate. The drops are on the ground below — she'll
+                    // walk to them from a safe air pocket.
+                    this.bot.chat(`/tp @s ${x} ${y + 2} ${z}`);
+                    await new Promise(r => setTimeout(r, 800));
+                    await skills.pickupNearbyItems(this.bot);
+                    await new Promise(r => setTimeout(r, 400));
+                    await skills.pickupNearbyItems(this.bot);
+                    console.log(`${this.name} recovered drops at death spot.`);
+                }
+                await this._reArmor();
+            } catch (e) {
+                console.warn('respawn recovery failed (non-fatal):', e.message);
+            }
+        });
         this.bot.on('kicked', (reason) => {
             if (!this._disconnectHandled) {
                 const { msg } = handleDisconnection(this.name, reason);
@@ -477,6 +590,17 @@ export class Agent {
                 console.log('Agent died: ', message);
                 let death_pos = this.bot.entity.position;
                 this.memory_bank.rememberPlace('last_death_position', death_pos.x, death_pos.y, death_pos.z);
+                // Death-reaction throttle: a death loop (suffocate→respawn→suffocate)
+                // used to fire this system message every ~18s, each spawning a full
+                // LLM response + chat line on top of the self-prompt loop. Only react
+                // to death once per 60s; the respawn handler still recovers items
+                // and re-armors silently regardless.
+                const now = Date.now();
+                if (this._last_death_react && now - this._last_death_react < 60000) {
+                    console.log('Death reaction throttled (recent death).');
+                    return;
+                }
+                this._last_death_react = now;
                 let death_pos_text = null;
                 if (death_pos) {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
@@ -525,6 +649,50 @@ export class Agent {
 
     isIdle() {
         return !this.actions.executing;
+    }
+
+    async _gearUp() {
+        // OP survival kit: full armor + sword + shield + food so she doesn't die to mobs.
+        // She is op (level 4) so /give commands resolve; armor/tools go straight to inventory,
+        // then armorManager equips the armor and the best sword is moved to hand.
+        const gear = [
+            'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
+            'diamond_sword', 'shield', 'cooked_beef', 'cooked_beef', 'cooked_beef',
+        ];
+        try {
+            for (const item of gear) {
+                this.bot.chat(`/give ${this.name} ${item} 1`);
+                await new Promise(r => setTimeout(r, 120));
+            }
+            await new Promise(r => setTimeout(r, 400));
+            this.bot.armorManager.equipAll();
+            const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
+            if (sword) await this.bot.equip(sword, 'hand');
+            const shield = this.bot.inventory.items().find(i => i.name === 'shield');
+            if (shield) await this.bot.equip(shield, 'off-hand');
+            console.log(`${this.name} geared up: armor equipped, sword in hand.`);
+        } catch (e) {
+            console.warn('gear-up failed (non-fatal):', e.message);
+        }
+    }
+
+    async _reArmor() {
+        // Called on every respawn. keep_inventory is OFF for everyone, so the kit
+        // drops on death — if no diamond armor is in inventory, re-/give the full
+        // kit (she's op, /give resolves). Equip-only path covers armor that somehow
+        // survived (e.g. player gifted her some).
+        const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
+        const hasArmor = armorPieces.some(p => this.bot.inventory.items().some(i => i.name === p));
+        if (!hasArmor) {
+            console.log(`${this.name} kit missing after respawn — full gear-up.`);
+            return this._gearUp();
+        }
+        this.bot.armorManager.equipAll();
+        const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
+        if (sword) await this.bot.equip(sword, 'hand');
+        const shield = this.bot.inventory.items().find(i => i.name === 'shield');
+        if (shield) await this.bot.equip(shield, 'off-hand');
+        console.log(`${this.name} re-armored after respawn.`);
     }
     
 

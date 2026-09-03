@@ -381,6 +381,7 @@ export async function defendSelf(bot, range=9) {
     let attacked = false;
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
     while (enemy) {
+        bot.armorManager.equipAll(); // keep armor on every fight, don't fight naked
         await equipHighestAttack(bot);
         if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
             try {
@@ -835,16 +836,34 @@ export async function equip(bot, itemName) {
     return true;
 }
 
+// The spawn survival kit is NEVER droppable: no discard, no giving away, no
+// tossing. Guards both by name and by "is it currently equipped".
+const PROTECTED_GEAR = new Set([
+    'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
+    'diamond_sword', 'shield',
+]);
+
+function isProtectedGear(bot, itemName) {
+    if (PROTECTED_GEAR.has(itemName)) return true;
+    // mineflayer inventory slot layout: 5-8 armor (head/torso/legs/feet), 36 hand, 45 off-hand
+    const equippedSlots = [5, 6, 7, 8, 36, 45];
+    return equippedSlots.some(s => bot.inventory.slots[s] && bot.inventory.slots[s].name === itemName);
+}
+
 export async function discard(bot, itemName, num=-1) {
     /**
      * Discard the given item.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
-     * @param {string} itemName, the item or block name to discard.
+     * @param {string} itemName, the name of the item to discard.
      * @param {number} num, the number of items to discard. Defaults to -1, which discards all items.
      * @returns {Promise<boolean>} true if the item was discarded, false otherwise.
      * @example
      * await skills.discard(bot, "oak_log");
      **/
+    if (isProtectedGear(bot, itemName)) {
+        log(bot, `I can't drop ${itemName} — it's part of my kit, never droppable!`);
+        return false;
+    }
     let discarded = 0;
     while (true) {
         let item = bot.inventory.findInventoryItem(itemName);
@@ -1008,6 +1027,10 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
      **/
     if (bot.username === username) {
         log(bot, `You cannot give items to yourself.`);
+        return false;
+    }
+    if (isProtectedGear(bot, itemType)) {
+        log(bot, `I can't give away ${itemType} — it's part of my kit, never droppable!`);
         return false;
     }
     let player = bot.players[username].entity
@@ -1305,22 +1328,43 @@ export async function goToPlayer(bot, username, distance=3) {
         log(bot, `You are already at ${username}.`);
         return true;
     }
+    let player = bot.players[username];
+    const playerEntity = player && player.entity;
+    // Cheat mode: `/tp @s <name>` resolves on the SERVER, so it works even when
+    // the player's entity isn't loaded in this client (out of chunk range /
+    // different dimension). Without the entity we can't pathfind or measure
+    // distance, so fall back to the name-based server teleport directly.
     if (bot.modes.isOn('cheat')) {
-        bot.chat('/tp @s ' + username);
-        log(bot, `Teleported to ${username}.`);
-        return true;
+        if (playerEntity) {
+            const dist = bot.entity.position.distanceTo(playerEntity.position);
+            // Near the player → walk/run over like a person. Only teleport when far
+            // away so she still arrives promptly.
+            const WALK_LIMIT = 32;
+            if (dist > WALK_LIMIT) {
+                bot.chat('/tp @s ' + username);
+                log(bot, `Teleported to ${username}.`);
+                return true;
+            }
+            log(bot, `Only ${dist.toFixed(1)} blocks away — walking over instead of teleporting.`);
+        } else {
+            // Entity not loaded but cheat is on: teleport by name anyway. The
+            // server tells us if the player can't be found.
+            bot.chat('/tp @s ' + username);
+            log(bot, `Entity for ${username} not in view — teleported by name.`);
+            return true;
+        }
     }
 
-    bot.modes.pause('self_defense');
-    bot.modes.pause('cowardice');
-    let player = bot.players[username].entity
-    if (!player) {
+    if (!playerEntity) {
         log(bot, `Could not find ${username}.`);
         return false;
     }
 
+    bot.modes.pause('self_defense');
+    bot.modes.pause('cowardice');
+
     distance = Math.max(distance, 0.5);
-    const goal = new pf.goals.GoalFollow(player, distance);
+    const goal = new pf.goals.GoalFollow(playerEntity, distance);
 
     await goToGoal(bot, goal, true);
 
@@ -1538,6 +1582,67 @@ export async function useDoor(bot, door_pos=null) {
 
     log(bot, `Used door at ${door_pos}.`);
     return true;
+}
+
+export async function sleepNearPlayer(bot, playerName, distance=3) {
+    /**
+     * Follow a player into bed: go to them, sleep in a nearby empty bed, or place one if needed.
+     * @param {MinecraftBot} bot
+     * @param {string} playerName
+     * @param {number} distance - how close to get to the player
+     * @returns {Promise<boolean>} true if she got in a bed, false otherwise.
+     **/
+    const player = bot.players[playerName]?.entity;
+    if (!player) {
+        log(bot, `Cannot find player ${playerName} to sleep next to.`);
+        return false;
+    }
+    await goToPlayer(bot, playerName, distance);
+
+    // prefer an existing empty bed near the player
+    const beds = bot.findBlocks({
+        matching: (block) => block.name.includes('bed'),
+        maxDistance: 16,
+        count: 8,
+    });
+    for (const loc of beds) {
+        const bed = bot.blockAt(loc);
+        if (!bed) continue;
+        try {
+            await bot.sleep(bed);
+            log(bot, `Sleeping next to ${playerName}.`);
+            bot.modes.pause('unstuck');
+            while (bot.isSleeping) await new Promise(resolve => setTimeout(resolve, 500));
+            log(bot, `Woke up.`);
+            return true;
+        } catch {
+            // bed occupied / not night / already sleeping — try the next one
+            continue;
+        }
+    }
+
+    // no empty bed: place one next to her (cheat mode = /setblock, she's OP)
+    const pos = bot.entity.position.floored();
+    const offsets = [[1,0],[-1,0],[0,1],[0,-1]];
+    for (const [dx, dz] of offsets) {
+        const x = pos.x + dx, y = pos.y, z = pos.z + dz;
+        const placed = await placeBlock(bot, 'red_bed', x, y, z, 'bottom', true);
+        if (!placed) continue;
+        await new Promise(resolve => setTimeout(resolve, 400));
+        const bed = bot.blockAt(new Vec3(x, y, z));
+        if (!bed) continue;
+        try {
+            await bot.sleep(bed);
+            log(bot, `Placed a bed and sleeping next to ${playerName}.`);
+            bot.modes.pause('unstuck');
+            while (bot.isSleeping) await new Promise(resolve => setTimeout(resolve, 500));
+            log(bot, `Woke up.`);
+            return true;
+        } catch {
+            continue;
+        }
+    }
+    return false;
 }
 
 export async function goToBed(bot) {

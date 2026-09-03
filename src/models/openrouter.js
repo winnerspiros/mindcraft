@@ -21,7 +21,7 @@ export class OpenRouter {
         this.openai = new OpenAIApi(config);
     }
 
-    async sendRequest(turns, systemMessage, stop_seq='*') {
+    async sendRequest(turns, systemMessage, stop_seq='') {
         let messages = [{ role: 'system', content: systemMessage }, ...turns];
         messages = strictFormat(messages);
 
@@ -29,26 +29,45 @@ export class OpenRouter {
         const pack = {
             model: this.model_name,
             messages,
-            stop: stop_seq
         };
+        // Only pass `stop` when a stop sequence is actually configured. The Mindcraft
+        // default was '*' which assumes a thought/action delimiter — but this kawaii
+        // persona writes *hugs* / *giggles*, so '*' chops every reply mid-emote into
+        // garbage and often returns empty (→ 20s retry → "no response").
+        if (stop_seq)
+            pack.stop = stop_seq;
 
         let res = null;
-        try {
-            console.log('Awaiting openrouter api response...');
-            let completion = await this.openai.chat.completions.create(pack);
-            if (!completion?.choices?.[0]) {
-                console.error('No completion or choices returned:', completion);
-                return 'No response received.';
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                console.log('Awaiting openrouter api response...');
+                let completion = await this.openai.chat.completions.create(pack);
+                if (!completion?.choices?.[0]) {
+                    console.error('No completion or choices returned:', completion);
+                    return '';
+                }
+                if (completion.choices[0].finish_reason === 'length') {
+                    throw new Error('Context length exceeded');
+                }
+                console.log('Received.');
+                res = completion.choices[0].message.content;
+                if (typeof res !== 'string' || res.trim() === '') {
+                    // some reasoning-flavoured responses park text in `reasoning` and leave content null;
+                    // also covers transient nulls from the provider. Retry before giving up.
+                    console.warn(`Empty/null content (attempt ${attempt + 1}). reasoning=${JSON.stringify(completion.choices[0].message.reasoning)?.slice(0, 80)}`);
+                    if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; }
+                } else {
+                    break;
+                }
+            } catch (err) {
+                console.error('Error while awaiting response:', err);
+                if (attempt < 2) { await new Promise(r => setTimeout(r, 1000)); continue; }
+                // If the error indicates a context-length problem, we can slice the turns array, etc.
+                res = '';
             }
-            if (completion.choices[0].finish_reason === 'length') {
-                throw new Error('Context length exceeded');
-            }
-            console.log('Received.');
-            res = completion.choices[0].message.content;
-        } catch (err) {
-            console.error('Error while awaiting response:', err);
-            // If the error indicates a context-length problem, we can slice the turns array, etc.
-            res = 'My brain disconnected, try again.';
+        }
+        if (typeof res !== 'string' || res.trim() === '') {
+            res = '';
         }
         return res;
     }

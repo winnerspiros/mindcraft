@@ -26,13 +26,34 @@ export function blacklistCommands(commands) {
     }
 }
 
-const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
+const argList = '(?:-?\\d+(?:\\.\\d+)?|true|false|"[^"]*")(?:\\s*,\\s*(?:-?\\d+(?:\\.\\d+)?|true|false|"[^"]*"))*';
+// Explicit command syntax: "!name" or "!name(args...)". Bang may be ASCII '!' or full-width U+FF01,
+// which kawaii/JP-flavoured models sometimes emit instead of '!'.
+const commandRegex = new RegExp(`[!！](\\w+)(?:\\((${argList})\\))?`);
+// Bare function-call syntax "name(args...)" for known command names. Some models (e.g. gpt-4o-mini)
+// drop the "!" prefix, which was previously treated as plain conversation text and bled the raw
+// command string into chat. Restrict to real command names so ordinary prose isn't matched.
+const commandNames = commandList
+    .map((c) => c.name.replace(/^!/, ''))
+    .sort((a, b) => b.length - a.length);
+const bareNamePattern = commandNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+const bareCommandRegex = new RegExp(`(${bareNamePattern})\\((${argList})\\)`);
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
 
+// Returns { name (with '!'), argsStr, raw (the matched text), index } for the first command
+// found in message (bang-prefixed OR bare function-call), or null if none.
+export function getCommandInfo(message) {
+    let m = message.match(commandRegex);
+    if (m) return { name: '!' + m[1], argsStr: m[2], raw: m[0], index: m.index };
+    m = message.match(bareCommandRegex);
+    if (m) return { name: '!' + m[1], argsStr: m[2], raw: m[0], index: m.index };
+    return null;
+}
+
 export function containsCommand(message) {
-    const commandMatch = message.match(commandRegex);
-    if (commandMatch)
-        return "!" + commandMatch[1];
+    const info = getCommandInfo(message);
+    if (info)
+        return info.name;
     return null;
 }
 
@@ -95,13 +116,13 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
  * @returns {string | Object}
  */
 export function parseCommandMessage(message) {
-    const commandMatch = message.match(commandRegex);
-    if (!commandMatch) return `Command is incorrectly formatted`;
+    const info = getCommandInfo(message);
+    if (!info) return `Command is incorrectly formatted`;
 
-    const commandName = "!"+commandMatch[1];
+    const commandName = info.name;
 
     let args;
-    if (commandMatch[2]) args = commandMatch[2].match(argRegex);
+    if (info.argsStr) args = info.argsStr.match(argRegex);
     else args = [];
 
     const command = getCommand(commandName);
@@ -109,11 +130,15 @@ export function parseCommandMessage(message) {
 
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
-    
-    if (args.length !== params.length)
-        return `Command ${command.name} was given ${args.length} args, but requires ${params.length} args.`;
 
-    
+    // Optional params: the LLM frequently omits trailing "closeness"/"distance"
+    // args. Require only params without a default; fill missing with defaults.
+    const required = params.filter(p => !('default' in p)).length;
+    if (args.length < required)
+        return `Command ${command.name} was given ${args.length} args, but requires at least ${required} args.`;
+    if (args.length > params.length)
+        return `Command ${command.name} was given ${args.length} args, but it only accepts ${params.length} args.`;
+
     for (let i = 0; i < args.length; i++) {
         const param = params[i];
         //Remove any extra characters
@@ -169,14 +194,21 @@ export function parseCommandMessage(message) {
         }
         args[i] = arg;
     }
+
+    // Fill trailing omitted optional params with their defaults so
+    // perform() always receives the full argument list.
+    while (args.length < params.length) {
+        const missing = params[args.length];
+        args.push('default' in missing ? missing.default : undefined);
+    }
     
     return { commandName, args };
 }
 
 export function truncCommandMessage(message) {
-    const commandMatch = message.match(commandRegex);
-    if (commandMatch) {
-        return message.substring(0, commandMatch.index + commandMatch[0].length);
+    const info = getCommandInfo(message);
+    if (info) {
+        return message.substring(0, info.index + info.raw.length);
     }
     return message;
 }
@@ -220,8 +252,12 @@ export async function executeCommand(agent, message) {
         if (parsed.args) {
             numArgs = parsed.args.length;
         }
-        if (numArgs !== numParams(command))
-            return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
+        // Optional params (trailing params with a `default`): tolerate the LLM
+        // omitting them — the parser already padded missing args with defaults.
+        const params = commandParams(command);
+        const required = params.filter(p => !('default' in p)).length;
+        if (numArgs !== params.length)
+            return `Command ${command.name} was given ${numArgs} args, but requires at least ${required} args.`;
         else {
             const result = await command.perform(agent, ...parsed.args);
             return result;

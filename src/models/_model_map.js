@@ -1,34 +1,78 @@
+import { createRequire } from 'module';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const require = createRequire(import.meta.url);
 
-// Dynamically discover model classes in this directory.
-// Each model class must export a static `prefix` string.
-const apiMap = await (async () => {
-    const map = {};
-    const files = (await fs.readdir(__dirname))
-        .filter(f => f.endsWith('.js') && f !== '_model_map.js' && f !== 'prompter.js');
-    for (const file of files) {
-        try {
-            const moduleUrl = pathToFileURL(path.join(__dirname, file)).href;
-            const mod = await import(moduleUrl);
-            for (const exported of Object.values(mod)) {
-                if (typeof exported === 'function' && Object.prototype.hasOwnProperty.call(exported, 'prefix')) {
-                    const prefix = exported.prefix;
-                    if (typeof prefix === 'string' && prefix.length > 0) {
-                        map[prefix] = exported;
-                    }
-                }
+// prefix -> module filename. Mirrors each model class's static `prefix`.
+// The old code eagerly `import()`ed every model module at startup, which pulled in
+// ~10 LLM SDKs (openai/anthropic/google/mistral/groq/cerebras/replicate/azure/...)
+// into RAM even though a profile only ever uses one. This lazy-loads just the SDK
+// the profile references via a synchronous require() (Node >=20.19 supports require(esm)).
+const PREFIX_FILE = {
+    azure: 'azure.js',
+    cerebras: 'cerebras.js',
+    anthropic: 'claude.js',
+    deepseek: 'deepseek.js',
+    google: 'gemini.js',
+    glhf: 'glhf.js',
+    openai: 'gpt.js',
+    xai: 'grok.js',
+    groq: 'groq.js',
+    huggingface: 'huggingface.js',
+    hyperbolic: 'hyperbolic.js',
+    lmstudio: 'lmstudio.js',
+    mercury: 'mercury.js',
+    mistral: 'mistral.js',
+    novita: 'novita.js',
+    ollama: 'ollama.js',
+    openrouter: 'openrouter.js',
+    qwen: 'qwen.js',
+    replicate: 'replicate.js',
+    vllm: 'vllm.js',
+};
+
+// lazily-populated cache: prefix -> model class
+const apiMap = {};
+
+function _register(mod) {
+    for (const exported of Object.values(mod)) {
+        if (typeof exported === 'function' && Object.prototype.hasOwnProperty.call(exported, 'prefix')) {
+            const prefix = exported.prefix;
+            if (typeof prefix === 'string' && prefix.length > 0) {
+                apiMap[prefix] = exported;
             }
-        } catch (e) {
-            console.warn('Failed to load model module:', file, e?.message || e);
         }
     }
-    return map;
-})();
+}
+
+function _loadPrefix(prefix) {
+    if (apiMap[prefix])
+        return apiMap[prefix];
+    const file = PREFIX_FILE[prefix];
+    if (!file) {
+        // unknown prefix: fall back to a full scan so newly-added models keep working
+        const files = fs.readdirSync(__dirname)
+            .filter(f => f.endsWith('.js') && f !== '_model_map.js' && f !== 'prompter.js');
+        for (const f of files) {
+            try {
+                _register(require(path.join(__dirname, f)));
+            } catch (e) {
+                console.warn('Failed to load model module:', f, e?.message || e);
+            }
+        }
+        return apiMap[prefix];
+    }
+    try {
+        _register(require(path.join(__dirname, file)));
+    } catch (e) {
+        console.warn('Failed to load model module:', file, e?.message || e);
+    }
+    return apiMap[prefix];
+}
 
 export function selectAPI(profile) {
     if (typeof profile === 'string' || profile instanceof String) {
@@ -42,7 +86,7 @@ export function selectAPI(profile) {
         }
     }
     if (!profile.api) {
-        const api = Object.keys(apiMap).find(key => profile.model?.startsWith(key));
+        const api = Object.keys(PREFIX_FILE).find(key => profile.model?.startsWith(key));
         if (api) {
             profile.api = api;
         }
@@ -67,23 +111,21 @@ export function selectAPI(profile) {
             throw new Error('Unknown model:', profile.model);
         }
     }
-    if (!apiMap[profile.api]) {
-        throw new Error('Unknown api:', profile.api);
-    }
     let model_name = profile.model.replace(profile.api + '/', ''); // remove prefix
     profile.model = model_name === "" ? null : model_name; // if model is empty, set to null
     return profile;
 }
 
 export function createModel(profile) {
-    if (!!apiMap[profile.model]) {
+    if (!!PREFIX_FILE[profile.model]) {
         // if the model value is an api (instead of a specific model name)
         // then set model to null so it uses the default model for that api
         profile.model = null;
     }
-    if (!apiMap[profile.api]) {
+    const ModelClass = _loadPrefix(profile.api);
+    if (!ModelClass) {
         throw new Error('Unknown api:', profile.api);
     }
-    const model = new apiMap[profile.api](profile.model, profile.url, profile.params);
+    const model = new ModelClass(profile.model, profile.url, profile.params);
     return model;
 }

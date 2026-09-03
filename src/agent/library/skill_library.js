@@ -42,27 +42,45 @@ export class SkillLibrary {
             message = '(no message)';
         let skill_doc_similarities = [];
 
-        if (select_num === -1) {
+        const has_embeddings = this.embedding_model !== null;
+        if (has_embeddings && select_num === -1) {
+            // return all docs with neutral score (embedding model present)
             skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
             .map(doc_key => ({
                 doc_key,
                 similarity_score: 0
             }));
         }
-        else if (!this.embedding_model) {
-            skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
+        else if (has_embeddings) {
+            try {
+                let latest_message_embedding = await this.embedding_model.embed(message);
+                skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
                 .map(doc_key => ({
                     doc_key,
-                    similarity_score: wordOverlapScore(message, this.skill_docs_embeddings[doc_key])
+                    similarity_score: cosineSimilarity(latest_message_embedding, this.skill_docs_embeddings[doc_key])
                 }))
                 .sort((a, b) => b.similarity_score - a.similarity_score);
+            } catch (e) {
+                // Query-time embed failure (e.g. provider with no embeddings API):
+                // degrade to word-overlap over the raw doc text and remember the
+                // model is unusable so we don't re-throw on every request.
+                console.warn('Embedding failed at query time, falling back to word-overlap:', e.message);
+                this.embedding_model = null;
+                skill_doc_similarities = this.skill_docs.map(doc => ({
+                    doc_key: doc,
+                    similarity_score: wordOverlapScore(message, doc)
+                }))
+                .sort((a, b) => b.similarity_score - a.similarity_score);
+            }
         }
         else {
-            let latest_message_embedding = await this.embedding_model.embed(message);
-            skill_doc_similarities = Object.keys(this.skill_docs_embeddings)
-            .map(doc_key => ({
-                doc_key,
-                similarity_score: cosineSimilarity(latest_message_embedding, this.skill_docs_embeddings[doc_key])
+            // No embedding model (OpenRouter etc): rank raw docs by word overlap.
+            // NOTE: previously this iterated skill_docs_embeddings (empty after a
+            // failed init) and passed an embedding VECTOR as the "text2" arg —
+            // so it selected nothing and !newAction effectively had no skill docs.
+            skill_doc_similarities = this.skill_docs.map(doc => ({
+                doc_key: doc,
+                similarity_score: wordOverlapScore(message, doc)
             }))
             .sort((a, b) => b.similarity_score - a.similarity_score);
         }
