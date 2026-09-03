@@ -1,3 +1,5 @@
+import settings from './settings.js';
+
 const STOPPED = 0
 const ACTIVE = 1
 const PAUSED = 2
@@ -9,7 +11,21 @@ export class SelfPrompter {
         this.interrupt = false;
         this.prompt = '';
         this.idle_time = 0;
-        this.cooldown = 2000;
+        // Autonomous self-prompt cadence (only runs while other players are online).
+        // 7000ms made her yap a new kawaii line + command every ~7s = annoying.
+        // 30000ms = ~4x calmer; 45000ms = ~6x calmer (user still reports spam).
+        // NOTE: player chat (esp. the beloved) interrupts & responds immediately —
+        // this only throttles her UNSOLICITED self-chatter, not her responsiveness.
+        this.cooldown = 45000;
+    }
+
+    _otherPlayersOnline() {
+        const bot = this.agent.bot;
+        if (!bot || !bot.players) return false;
+        for (const name of Object.keys(bot.players)) {
+            if (name !== this.agent.name) return true;
+        }
+        return false;
     }
 
     start(prompt) {
@@ -63,6 +79,13 @@ export class SelfPrompter {
         let no_command_count = 0;
         const MAX_NO_COMMAND = 3;
         while (!this.interrupt) {
+            // Resource guard: with no other players online the bot idles instead of
+            // self-prompting. Stops the runaway OpenRouter API burn + block/chunk spam
+            // that pushes the MC JVM heap into swap on this low-RAM box.
+            if (settings.self_prompt_requires_players && !this._otherPlayersOnline()) {
+                await new Promise(r => setTimeout(r, this.cooldown));
+                continue;
+            }
             const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
@@ -70,16 +93,19 @@ export class SelfPrompter {
                 no_command_count++;
                 if (no_command_count >= MAX_NO_COMMAND) {
                     let out = `Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Stopping auto-prompting.`;
-                    this.agent.openChat(out);
                     console.warn(out);
+                    this.agent.bot.modes.behavior_log += out + '\n';
                     this.state = STOPPED;
                     break;
                 }
             }
             else {
                 no_command_count = 0;
-                await new Promise(r => setTimeout(r, this.cooldown));
             }
+            // always pause between self-prompt turns — even a chat-only
+            // response must not re-fire instantly (it races the in-flight
+            // generation and discards it).
+            await new Promise(r => setTimeout(r, this.cooldown));
         }
         console.log('self prompt loop stopped')
         this.loop_active = false;

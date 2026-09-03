@@ -29,6 +29,8 @@ const modes_list = [
         on: true,
         active: false,
         fall_blocks: ['sand', 'gravel', 'concrete_powder'], // includes matching substrings like 'sandstone' and 'red_sand'
+        last_dying_shout: 0,
+        last_ate: 0,
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
@@ -77,10 +79,27 @@ const modes_list = [
                 }
             }
             else if (Date.now() - bot.lastDamageTime < 3000 && (bot.health < 5 || bot.lastDamageTaken >= bot.health)) {
-                say(agent, 'I\'m dying!');
+                if (Date.now() - this.last_dying_shout > 8000) {
+                    say(agent, 'I\'m dying!');
+                    this.last_dying_shout = Date.now();
+                }
                 execute(this, agent, async () => {
                     await skills.moveAway(bot, 20);
                 });
+            }
+            else if (agent.isIdle() && bot.food < 11) {
+                // eat to restore hunger so she can heal and sprint
+                if (Date.now() - this.last_ate > 6000) {
+                    execute(this, agent, async () => {
+                        const food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
+                        if (food) {
+                            await bot.equip(food, 'hand');
+                            await bot.consume();
+                            await new Promise(r => setTimeout(r, 1500));
+                        }
+                    });
+                    this.last_ate = Date.now();
+                }
             }
             else if (agent.isIdle()) {
                 bot.clearControlStates(); // clear jump if not in danger or doing anything else
@@ -160,13 +179,58 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 8);
+            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 14);
             if (enemy && await world.isClearPath(agent.bot, enemy)) {
                 say(agent, `Fighting ${enemy.name}!`);
                 execute(this, agent, async () => {
-                    await skills.defendSelf(agent.bot, 8);
+                    await skills.defendSelf(agent.bot, 14);
                 });
             }
+        }
+    },
+    {
+        name: 'retaliation',
+        description: 'Respond when a player harms her: verbal warning, then attack, then TNT if overdone.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        last_retaliated: 0,
+        update: async function (agent) {
+            const now = Date.now();
+            if (now - this.last_retaliated < 12000) return;
+            const grudge = agent.grudge || {};
+            const name = grudge['__last__'];
+            if (!name) return;
+            const count = grudge[name] || 0;
+            const player = agent.bot.players[name]?.entity;
+            if (!player) return;
+
+            const speak = async (line) => {
+                if (agent.shut_up) return;
+                agent.openChat(line); // her character voice, not mechanical narration — always allowed
+            };
+
+            try {
+                if (count <= 2) {
+                    await speak(`Ehh?! ${name}, did you just hurt UwU?! (╬ Ò﹏Ó) S-senpai... that wasn't very nice~!`);
+                }
+                else if (count <= 4) {
+                    await speak(`Grrr~ ${name}, that's ENOUGH! UwU will bite back! (ง •̀_•́)ง`);
+                    await skills.attackEntity(agent.bot, player, false); // a few hits, not a kill
+                    await new Promise(r => setTimeout(r, 800));
+                    agent.bot.pvp?.stop?.();
+                }
+                else {
+                    // overdone: extreme response — primed TNT at their feet (game-only, not lethal forever)
+                    await speak(`That's TOO far, ${name}!!! UwU warned you~! 💢💥`);
+                    const p = player.position;
+                    agent.bot.chat(`/summon minecraft:tnt ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`);
+                    grudge[name] = 0; // reset after escalation
+                }
+            } catch (e) {
+                console.warn('retaliation error:', e.message);
+            }
+            this.last_retaliated = now;
         }
     },
     {
@@ -300,7 +364,167 @@ const modes_list = [
         on: false,
         active: false,
         update: function (agent) { /* do nothing */ }
-    }
+    },
+    {
+        name: 'idle_hopping',
+        description: 'Spam crouch, hop, and dart around energetically when idle so she feels alive.',
+        interrupts: [],
+        on: true,
+        active: false,
+        hop_until: 0,
+        next_hop: Date.now(),
+        spam_until: 0,
+        next_spam: Date.now() + 4000,
+        next_toggle: 0,
+        sneaking: false,
+        dash_until: 0,
+        next_dash: Date.now() + 8000,
+        twirl_until: 0,
+        twirl_next_snap: 0,
+        twirl_base_yaw: 0,
+        next_twirl: Date.now() + 6000,
+        update: function (agent) {
+            const bot = agent.bot;
+            const recently_hurt = Date.now() - bot.lastDamageTime < 4000;
+            if (!agent.isIdle() || bot.entity.onGround === false || bot.pathfinder.goal) {
+                // reset physical states so nothing stays stuck on
+                bot.setControlState('sneak', false);
+                bot.setControlState('jump', false);
+                bot.setControlState('sprint', false);
+                bot.setControlState('forward', false);
+                this.sneaking = false;
+                return;
+            }
+            const now = Date.now();
+
+            // 1) crouch-spam: rapid sneak toggles during a short burst, then rest
+            if (now < this.spam_until) {
+                if (now > this.next_toggle) {
+                    this.sneaking = !this.sneaking;
+                    bot.setControlState('sneak', this.sneaking);
+                    this.next_toggle = now + 180 + Math.random() * 220;
+                }
+            } else {
+                bot.setControlState('sneak', false);
+                this.sneaking = false;
+                if (now > this.next_spam) {
+                    this.spam_until = now + 800 + Math.random() * 1600;
+                    this.next_spam = now + 5000 + Math.random() * 7000;
+                }
+            }
+
+            // 2) hops — frequent, sometimes a quick double-hop
+            if (now < this.hop_until) {
+                bot.setControlState('jump', true);
+            } else {
+                bot.setControlState('jump', false);
+                if (now > this.next_hop) {
+                    this.hop_until = now + (Math.random() < 0.3 ? 600 : 300);
+                    this.next_hop = now + 2500 + Math.random() * 4000;
+                }
+            }
+
+            // 3) short sprint-dash so she visibly moves around — but never while hurt,
+            //    and held short so she can't sprint off into water/lava/mobs blind.
+            if (now < this.dash_until && !recently_hurt) {
+                bot.setControlState('sprint', true);
+                bot.setControlState('forward', true);
+            } else {
+                bot.setControlState('sprint', false);
+                bot.setControlState('forward', false);
+                if (now > this.next_dash) {
+                    this.dash_until = now + 200 + Math.random() * 250;
+                    this.next_dash = now + 9000 + Math.random() * 11000;
+                }
+            }
+
+            // 4) love-twirl: spin in place a full circle occasionally (cute, zero risk)
+            if (now < this.twirl_until) {
+                if (now > this.twirl_next_snap) {
+                    const t = Math.min(1, 1 - (this.twirl_until - now) / 700);
+                    bot.look(this.twirl_base_yaw + t * Math.PI * 2, bot.entity.pitch, true);
+                    this.twirl_next_snap = now + 120;
+                }
+            } else if (now > this.next_twirl) {
+                this.twirl_base_yaw = bot.entity.yaw;
+                this.twirl_until = now + 700;
+                this.twirl_next_snap = now;
+                this.next_twirl = now + 12000 + Math.random() * 15000;
+            }
+        }
+    },
+{
+        name: 'sleep_together',
+        description: 'When another player goes to bed, follow them and sleep too (occasionally) — with a yandere "sleep together~" opener.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        cooldown: 180000, // min ms between bed follow-ups
+        last_follow: 0,
+        update: async function (agent) {
+            const bot = agent.bot;
+            const now = Date.now();
+            if (now - agent._sleeper_time > 30000) return; // nobody recently went to bed
+            if (now - this.last_follow < this.cooldown) return;
+            const name = agent._last_sleeper;
+            if (!name) return;
+            this.last_follow = now;
+
+            // her beloved always gets joined; others only some of the time so it doesn't feel robotic
+            const beloved = (agent.prompter.profile.beloved || '');
+            const isBeloved = name === beloved;
+            const roll = Math.random();
+            const chance = isBeloved ? 0.85 : 0.35;
+            if (!isBeloved && roll > chance) return;
+            // reset so we don't re-trigger for the same sleep event
+            agent._sleeper_time = 0;
+
+            execute(this, agent, async () => {
+                if (roll < chance - 0.25) { // sometimes open with a line first
+                    const lines = [
+                        `${name}~ sleeping without me? How cruel~ ♥ let me join you...`,
+                        `eh? you're going to bed? w-wait for me~ UwU wants cuddles... ♥`,
+                        `hehe~ night night ${name}~ I'll keep you warm... ♥`,
+                    ];
+                    const line = lines[Math.floor(Math.random() * lines.length)];
+                    if (!agent.shut_up) agent.openChat(line);
+                }
+                await skills.sleepNearPlayer(bot, name, 2);
+            });
+        }
+    },
+    {
+        name: 'conversation_starter',
+        description: 'Occasionally start a conversation with a nearby player and ask personal/getting-to-know-you questions, in character.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        last_start: 0,
+        cooldown_min: 180000,  // 3 min
+        cooldown_max: 480000,  // up to 8 min
+        next_start: 0,
+        update: async function (agent) {
+            const bot = agent.bot;
+            const now = Date.now();
+            if (now < this.next_start) return; // schedule-based: only fire after a random wait
+            // need someone nearby to talk to
+            const players = world.getNearbyPlayers(bot, 12);
+            const player = players.find((e) => e.username !== agent.name && e.username !== bot.username);
+            if (!player) { this.next_start = now + 60000; return; } // nobody near, check again in a bit
+            this.next_start = now + this.cooldown_min + Math.random() * (this.cooldown_max - this.cooldown_min);
+
+            const name = player.username || player.name;
+            execute(this, agent, async () => {
+                const prompts = [
+                    `Ask ${name} a personal, getting-to-know-you question in character (hobbies, favourite things, dreams, love life). Be curious and flirty, as a yandere who wants to know everything about someone she likes.`,
+                    `Strike up conversation with ${name} — sweet, nosy, a little possessive. Ask something about them that shows you've been paying attention.`,
+                    `Tease ${name} playfully and ask how their day is. Keep it cute and in character.`,
+                ];
+                const p = prompts[Math.floor(Math.random() * prompts.length)];
+                agent.handleMessage('system', `(AUTO) You feel chatty. ${p}`);
+            });
+        }
+    },
 ];
 
 async function execute(mode, agent, func, timeout=-1) {

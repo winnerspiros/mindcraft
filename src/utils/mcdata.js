@@ -60,6 +60,10 @@ export function initBot(username) {
         auth: settings.auth,
         version: mc_version,
         checkTimeoutInterval: 60000,  // 60s keep-alive check (default 30s) — reduces disconnects on slow servers
+        viewDistance: 'short',        // bot loads a small area; default 'far' spikes server heap on join
+        clientSettings: {
+            viewDistance: 4,          // tell server to send only a 9x9 chunk area around the bot
+        },
     }
     if (!mc_version || mc_version === "auto") {
         delete options.version;

@@ -1,6 +1,8 @@
 import * as skills from '../library/skills.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
+import { readFileSync, writeFileSync, existsSync } from 'fs';
+import path from 'path';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -93,7 +95,7 @@ export const actionsList = [
         description: 'Go to the given player.',
         params: {
             'player_name': {type: 'string', description: 'The name of the player to go to.'},
-            'closeness': {type: 'float', description: 'How close to get to the player.', domain: [0, Infinity]}
+            'closeness': {type: 'float', default: 3, description: 'How close to get to the player (optional).', domain: [0, Infinity]}
         },
         perform: runAsAction(async (agent, player_name, closeness) => {
             await skills.goToPlayer(agent.bot, player_name, closeness);
@@ -104,7 +106,7 @@ export const actionsList = [
         description: 'Endlessly follow the given player.',
         params: {
             'player_name': {type: 'string', description: 'name of the player to follow.'},
-            'follow_dist': {type: 'float', description: 'The distance to follow from.', domain: [0, Infinity]}
+            'follow_dist': {type: 'float', default: 4, description: 'The distance to follow from (optional).', domain: [0, Infinity]}
         },
         perform: runAsAction(async (agent, player_name, follow_dist) => {
             await skills.followPlayer(agent.bot, player_name, follow_dist);
@@ -308,6 +310,78 @@ export const actionsList = [
         })
     },
     {
+        name: '!buildShape',
+        description: 'Build a small curated shape (heart, tower, circle, cube, path, hall) out of a given block, starting at your position. Size is in blocks.',
+        params: {
+            'shape': { type: 'string', description: 'One of: heart, tower, circle, cube, path, hall.' },
+            'block': { type: 'BlockOrItemName', description: 'The block type to build with.' },
+            'size': { type: 'int', description: 'Rough size in blocks.', domain: [1, 16] }
+        },
+        perform: runAsAction(async (agent, shape, block, size) => {
+            let bot = agent.bot;
+            let pos = bot.entity.position;
+            let bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+            let placed = 0;
+            const put = async (x, y, z) => {
+                if (await skills.placeBlock(bot, block, x, y, z)) placed++;
+            };
+
+            const HEART = [
+                '.XX.XX.',
+                'XXXXXXX',
+                'XXXXXXX',
+                '.XXXXX.',
+                '..XXX..',
+                '...X...',
+            ];
+            const scale = Math.max(1, Math.floor(size / 7)) || 1;
+            shape = shape.toLowerCase();
+            if (shape === 'heart') {
+                // vertical heart facing +X, 6 rows tall, scaled
+                for (let r = 0; r < HEART.length; r++)
+                    for (let c = 0; c < HEART[r].length; c++)
+                        if (HEART[r][c] === 'X')
+                            for (let sy = 0; sy < scale; sy++)
+                                for (let sx = 0; sx < scale; sx++)
+                                    await put(bx + c*scale + sx, by + (HEART.length-1-r)*scale + sy, bz);
+            }
+            else if (shape === 'tower') {
+                for (let i = 0; i < size; i++) await put(bx, by + i, bz);
+            }
+            else if (shape === 'circle') {
+                let r = size;
+                for (let dx = -r; dx <= r; dx++)
+                    for (let dz = -r; dz <= r; dz++)
+                        if (dx*dx + dz*dz <= r*r)
+                            await put(bx+dx, by, bz+dz);
+            }
+            else if (shape === 'cube') {
+                for (let dx = 0; dx < size; dx++)
+                for (let dy = 0; dy < size; dy++)
+                for (let dz = 0; dz < size; dz++)
+                    await put(bx+dx, by+dy, bz+dz);
+            }
+            else if (shape === 'path') {
+                for (let i = 0; i < size; i++) await put(bx+i, by, bz);
+            }
+            else if (shape === 'hall') {
+                // 3-wide tunnel of size length, 3 tall, open center
+                let L = size;
+                for (let i = 0; i < L; i++) {
+                    for (let dx = -1; dx <= 1; dx++)
+                    for (let dy = 0; dy <= 2; dy++) {
+                        if (dx === 0 && dy === 1) continue; // open doorway
+                        await put(bx+dx, by+dy, bz+i);
+                    }
+                }
+            }
+            else {
+                return `Unknown shape '${shape}'. Try heart, tower, circle, cube, path, or hall.`;
+            }
+            return `Built a ${shape} of ${block} (${placed} blocks placed).`;
+        })
+    },
+    {
         name: '!attack',
         description: 'Attack and kill the nearest entity of a given type.',
         params: {'type': { type: 'string', description: 'The type of entity to attack.'}},
@@ -326,6 +400,51 @@ export const actionsList = [
                 return false;
             }
             await skills.attackEntity(agent.bot, player, true);
+        })
+    },
+    {
+        name: '!kick',
+        description: 'Kick a player off the server (they can rejoin). Punish rule-breakers, griefers or upsetting players. NEVER ban anyone.',
+        params: {
+            'player_name': { type: 'string', description: 'The player to kick.' },
+            'reason': { type: 'string', description: 'Kick reason shown to the player (optional).' }
+        },
+        perform: runAsAction(async (agent, player_name, reason) => {
+            const msg = `/kick ${player_name} ${reason || 'I need a moment alone. behave, darling.'}`;
+            agent.bot.chat(msg);
+            return `Kicked ${player_name}: ${reason || ''}`;
+        })
+    },
+    {
+        name: '!effectPlayer',
+        description: 'Cast a status effect on a player (slowness, blindness, weakness, mining_fatigue, nausea...) to mark or punish them. Needs operator.',
+        params: {
+            'player_name': { type: 'string', description: 'The player to affect.' },
+            'effect': { type: 'string', description: 'Effect id: slowness, blindness, weakness, mining_fatigue, nausea, etc.' },
+            'seconds': { type: 'int', description: 'Duration in seconds.' },
+            'amplifier': { type: 'int', description: 'Effect strength (0-based; 1 = level II).' }
+        },
+        perform: runAsAction(async (agent, player_name, effect, seconds, amplifier) => {
+            const amp = amplifier ?? 1;
+            const secs = seconds ?? 30;
+            agent.bot.chat(`/effect give ${player_name} ${effect} ${secs} ${amp}`);
+            return `Applied ${effect} to ${player_name} for ${secs}s.`;
+        })
+    },
+    {
+        name: '!rememberPlayer',
+        description: 'Save your private dossier notes about a player (traits, loyalties, secrets, what they told you) so you remember them personally next time.',
+        params: {
+            'player_name': { type: 'string', description: 'The player to remember.' },
+            'notes': { type: 'string', description: 'Everything worth remembering about them.' }
+        },
+        perform: runAsAction(async (agent, player_name, notes) => {
+            const file = path.join(process.cwd(), 'bots', agent.name, 'players.json');
+            let d = {};
+            if (existsSync(file)) { try { d = JSON.parse(readFileSync(file, 'utf8')); } catch { d = {}; } }
+            d[player_name] = notes;
+            writeFileSync(file, JSON.stringify(d, null, 2));
+            return `Remembered ${player_name}.`;
         })
     },
     {
