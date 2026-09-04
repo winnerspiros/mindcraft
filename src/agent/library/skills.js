@@ -33,6 +33,189 @@ async function equipHighestAttack(bot) {
         await bot.equip(weapon, 'hand');
 }
 
+async function fill(bot, x1, y1, z1, x2, y2, z2, block, mode) {
+    const m = mode ? ` ${mode}` : '';
+    bot.chat(`/fill ${x1} ${y1} ${z1} ${x2} ${y2} ${z2} ${block}${m}`);
+    await new Promise(r => setTimeout(r, 120));
+}
+
+export async function hollowBox(bot, block, width, depth, height) {
+    /**
+     * Build a hollow box — floor, 4 walls and a ceiling — with an empty walkable
+     * interior. Use this to build houses and rooms (NOT a solid cube). Carve a
+     * doorway afterwards if you need to walk inside.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block type to build with, e.g. 'oak_planks'.
+     * @param {number} width - x size in blocks (min 3 for a hollow interior).
+     * @param {number} depth - z size in blocks (min 3).
+     * @param {number} height - y size in blocks (min 3).
+     * @returns {Promise<boolean>} true on success.
+     * @example
+     * await skills.hollowBox(bot, 'oak_planks', 7, 7, 4);
+     **/
+    const pos = bot.entity.position;
+    const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+    await fill(bot, bx, by, bz, bx + width - 1, by + height - 1, bz + depth - 1, block, 'hollow');
+    log(bot, `Built hollow ${block} box ${width}x${depth}x${height}.`);
+    return true;
+}
+
+export async function buildFloor(bot, block, width, depth) {
+    /**
+     * Build a flat floor of a given block, width x depth, at your feet.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block type, e.g. 'oak_planks'.
+     * @param {number} width - x size in blocks.
+     * @param {number} depth - z size in blocks.
+     * @returns {Promise<boolean>} true on success.
+     * @example
+     * await skills.buildFloor(bot, 'stone_bricks', 10, 8);
+     **/
+    const pos = bot.entity.position;
+    const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+    await fill(bot, bx, by, bz, bx + width - 1, by, bz + depth - 1, block);
+    log(bot, `Built ${block} floor ${width}x${depth}.`);
+    return true;
+}
+
+export async function buildWalls(bot, block, length, height = 4) {
+    /**
+     * Build a straight 1-block-thick wall, `length` long and `height` tall, along +X
+     * from your position.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block type, e.g. 'stone_bricks'.
+     * @param {number} length - wall length in blocks.
+     * @param {number} height - wall height in blocks (default 4).
+     * @returns {Promise<boolean>} true on success.
+     * @example
+     * await skills.buildWalls(bot, 'cobblestone', 12, 4);
+     **/
+    const pos = bot.entity.position;
+    const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+    await fill(bot, bx, by, bz, bx + length - 1, by + height - 1, bz, block);
+    log(bot, `Built ${block} wall ${length}x${height}.`);
+    return true;
+}
+
+export async function buildBridge(bot, block, length, width = 3) {
+    /**
+     * Build a flat bridge with two side railings, `length` long and `width` wide,
+     * extending along +X from your position.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block type, e.g. 'oak_planks'.
+     * @param {number} length - bridge length in blocks.
+     * @param {number} width - bridge width in blocks (default 3).
+     * @returns {Promise<boolean>} true on success.
+     * @example
+     * await skills.buildBridge(bot, 'oak_planks', 8, 3);
+     **/
+    const pos = bot.entity.position;
+    const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+    await fill(bot, bx, by, bz, bx + length - 1, by, bz + width - 1, block);
+    await fill(bot, bx, by + 1, bz, bx + length - 1, by + 1, bz, block);
+    await fill(bot, bx, by + 1, bz + width - 1, bx + length - 1, by + 1, bz + width - 1, block);
+    log(bot, `Built ${block} bridge ${length} long x ${width} wide.`);
+    return true;
+}
+
+export async function mountNearestEntity(bot, type) {
+    /**
+     * Mount the nearest mountable entity — a boat, minecart, horse, donkey, mule,
+     * pig or strider — or a specific type if given. Ride animals need a saddle.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} type - optional entity type, e.g. 'horse' or 'boat'.
+     * @returns {Promise<boolean>} true if mounted.
+     * @example
+     * await skills.mountNearestEntity(bot, 'boat');
+     **/
+    const mountable = ['boat', 'minecart', 'horse', 'donkey', 'mule', 'pig', 'strider', 'camel'];
+    const entity = world.getNearestEntityWhere(bot, type ? (e) => e.name === type : (e) => mountable.includes(e.name), 8);
+    if (!entity) {
+        log(bot, `No ${type || 'mountable entity'} nearby.`);
+        return false;
+    }
+    try {
+        await bot.mount(entity);
+        log(bot, `Mounted ${entity.name}.`);
+        return true;
+    } catch (e) {
+        log(bot, `Could not mount ${entity.name}: ${e.message}`);
+        return false;
+    }
+}
+
+export async function dismount(bot) {
+    /**
+     * Dismount the entity you are riding (boat, horse, minecart, etc).
+     * @param {MinecraftBot} bot - the bot.
+     * @returns {Promise<boolean>} true if dismounted.
+     * @example
+     * await skills.dismount(bot);
+     **/
+    if (!bot.vehicle) {
+        log(bot, 'Not riding anything.');
+        return false;
+    }
+    bot.dismount();
+    log(bot, 'Dismounted.');
+    return true;
+}
+
+export async function spawnAndMountBoat(bot) {
+    /**
+     * Spawn an oak boat at your position (you are OP) and mount it for water travel.
+     * @param {MinecraftBot} bot - the bot.
+     * @returns {Promise<boolean>} true if mounted.
+     * @example
+     * await skills.spawnAndMountBoat(bot);
+     **/
+    const pos = bot.entity.position;
+    bot.chat(`/summon oak_boat ${Math.floor(pos.x)} ${Math.floor(pos.y)} ${Math.floor(pos.z)}`);
+    await new Promise(r => setTimeout(r, 350));
+    const boat = world.getNearestEntityWhere(bot, (e) => e.name === 'boat' || e.name === 'oak_boat', 6);
+    if (!boat) {
+        log(bot, 'Could not find the spawned boat.');
+        return false;
+    }
+    try { await bot.mount(boat); log(bot, 'Mounted the boat.'); return true; }
+    catch (e) { log(bot, `Could not mount boat: ${e.message}`); return false; }
+}
+
+export async function rideHorse(bot) {
+    /**
+     * Find a nearby horse, give yourself a saddle (OP), saddle it and mount it.
+     * @param {MinecraftBot} bot - the bot.
+     * @returns {Promise<boolean>} true if mounted.
+     * @example
+     * await skills.rideHorse(bot);
+     **/
+    const horse = world.getNearestEntityWhere(bot, (e) => ['horse', 'donkey', 'mule'].includes(e.name), 16);
+    if (!horse) { log(bot, 'No horse nearby.'); return false; }
+    bot.chat('/give @s saddle 1');
+    await new Promise(r => setTimeout(r, 200));
+    const saddle = bot.inventory.items().find(i => i.name === 'saddle');
+    if (saddle) { await bot.equip(saddle, 'hand'); try { await bot.activateEntity(horse); } catch {} }
+    await new Promise(r => setTimeout(r, 200));
+    try { await bot.mount(horse); log(bot, 'Mounted the horse.'); return true; }
+    catch (e) { log(bot, `Could not mount horse: ${e.message}`); return false; }
+}
+
+export async function requestItems(bot, itemName, count = 1) {
+    /**
+     * Ask your beloved (or nearby players) in chat for an item you need but don't
+     * have, so you are never stuck for materials.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} itemName - the item to request, e.g. 'oak_planks'.
+     * @param {number} count - how many.
+     * @returns {Promise<boolean>} true.
+     * @example
+     * await skills.requestItems(bot, 'oak_planks', 10);
+     **/
+    bot.chat(`I need ${count} ${itemName} — could someone bring me some? ♥`);
+    log(bot, `Requested ${count} ${itemName} from players.`);
+    return true;
+}
+
 export async function craftRecipe(bot, itemName, num=1) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -82,7 +265,8 @@ export async function craftRecipe(bot, itemName, num=1) {
         }
     }
     if (!recipes || recipes.length === 0) {
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        const required = Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ');
+        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${required}. Ask your beloved or nearby players for these materials if you need them.`);
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }

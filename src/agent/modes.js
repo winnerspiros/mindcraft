@@ -505,6 +505,37 @@ const modes_list = [
         }
     },
     {
+        name: 'sleep_alone',
+        description: 'Sleep through the night when no other players are online, keeping safe from phantoms and hostile mobs.',
+        interrupts: ['all'],
+        on: true,
+        active: false,
+        cooldown: 60000,
+        last_try: 0,
+        update: async function (agent) {
+            const bot = agent.bot;
+            if (!bot.time || bot.time.timeOfDay < 12541) return; // not night yet
+            for (const name of Object.keys(bot.players || {}))
+                if (name !== agent.name) return; // someone online — don't skip their night
+            if (bot.isSleeping) return;
+            const now = Date.now();
+            if (now - this.last_try < this.cooldown) return;
+            this.last_try = now;
+            execute(this, agent, async () => {
+                try {
+                    const beds = bot.findBlocks({ matching: (b) => b.name.includes('bed'), maxDistance: 32, count: 1 });
+                    if (beds.length === 0) {
+                        const p = bot.entity.position;
+                        await skills.placeBlock(bot, 'red_bed', Math.floor(p.x), Math.floor(p.y), Math.floor(p.z), 'bottom', true);
+                    }
+                    await skills.goToBed(bot);
+                } catch (e) {
+                    // not night yet / no valid bed — retry next cooldown
+                }
+            });
+        }
+    },
+    {
         name: 'conversation_starter',
         description: 'Occasionally start a conversation with a nearby player and ask personal/getting-to-know-you questions, in character.',
         interrupts: ['all'],

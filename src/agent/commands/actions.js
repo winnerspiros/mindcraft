@@ -1,4 +1,5 @@
 import * as skills from '../library/skills.js';
+import Vec3 from 'vec3';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
@@ -392,6 +393,192 @@ export const actionsList = [
                 return `Unknown shape '${shape}'. Try heart, tower, circle, cube, path, or hall.`;
             }
             return `Built a ${shape} of ${block} (${placed} blocks placed).`;
+        })
+    },
+    {
+        name: '!build',
+        description: 'Build a real structure near you from a block. Use for houses, bridges, farms, towers and walls — NOT single blocks (use !placeHere) or small shapes (use !buildShape).',
+        params: {
+            'structure': { type: 'string', description: 'One of: house, bridge, farm, tower, wall.' },
+            'block': { type: 'BlockOrItemName', description: 'The main block to build with (e.g. oak_planks, stone_bricks).' },
+            'size': { type: 'int', description: 'Rough size in blocks.', domain: [3, 24] }
+        },
+        perform: runAsAction(async (agent, structure, block, size) => {
+            const bot = agent.bot;
+            const pos = bot.entity.position;
+            const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
+            size = size || 7;
+            const cmd = async (c) => { bot.chat(c); await new Promise(r => setTimeout(r, 150)); };
+            structure = (structure || 'house').toLowerCase();
+            const recordBuild = () => {
+                const p = './bots/UwU/structures.json';
+                let d = { builds: [] };
+                if (existsSync(p)) { try { d = JSON.parse(readFileSync(p, 'utf8')); } catch { d = { builds: [] }; } }
+                d.builds = d.builds || [];
+                d.builds.push({ type: structure, block, x: bx, y: by, z: bz, t: Date.now() });
+                writeFileSync(p, JSON.stringify(d, null, 2));
+            };
+
+            if (structure === 'house') {
+                const w = size, d = Math.max(4, size - 2), h = 4;
+                const x2 = bx + w - 1, z2 = bz + d - 1, y2 = by + h - 1;
+                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${y2} ${z2} ${block} hollow`);
+                const dx = bx + Math.floor(w / 2);
+                await cmd(`/fill ${dx} ${by} ${bz} ${dx + 1} ${by + 1} ${bz} air`); // doorway
+                await cmd(`/fill ${bx + 1} ${by + 1} ${bz} ${bx + 2} ${by + 2} ${bz} air`); // window
+                await cmd(`/fill ${x2 - 2} ${by + 1} ${bz} ${x2 - 1} ${by + 2} ${bz} air`); // window
+                await cmd(`/fill ${bx - 1} ${y2 + 1} ${bz - 1} ${x2 + 1} ${y2 + 1} ${z2 + 1} ${block}`); // roof rim
+                await cmd(`/fill ${bx} ${y2 + 2} ${bz} ${x2} ${y2 + 2} ${z2} ${block}`); // roof ridge
+                recordBuild();
+                skills.log(bot, `Built a ${w}x${d} hollow house of ${block} with a doorway, windows and roof.`);
+            }
+            else if (structure === 'bridge') {
+                const x2 = bx + size - 1;
+                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by} ${bz + 2} ${block}`); // deck
+                await cmd(`/fill ${bx} ${by + 1} ${bz} ${x2} ${by + 1} ${bz} ${block}`); // rail
+                await cmd(`/fill ${bx} ${by + 1} ${bz + 2} ${x2} ${by + 1} ${bz + 2} ${block}`); // rail
+                recordBuild();
+                skills.log(bot, `Built a ${size}-long bridge of ${block}.`);
+            }
+            else if (structure === 'farm') {
+                const x2 = bx + size - 1, z2 = bz + size - 1;
+                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by} ${z2} farmland`); // tilled plot
+                await cmd(`/fill ${bx + Math.floor(size / 2)} ${by} ${bz} ${bx + Math.floor(size / 2)} ${by} ${z2} water`); // irrigation
+                await cmd(`/fill ${bx - 1} ${by} ${bz - 1} ${x2 + 1} ${by + 1} ${z2 + 1} oak_fence hollow`); // fence
+                recordBuild();
+                skills.log(bot, `Built a ${size}x${size} farm with farmland, water and a fence.`);
+            }
+            else if (structure === 'tower') {
+                const h = Math.max(5, size), x2 = bx + size - 1, z2 = bz + size - 1, y2 = by + h - 1;
+                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${y2} ${z2} ${block} hollow`);
+                await cmd(`/fill ${bx + Math.floor(size / 2)} ${by} ${bz} ${bx + Math.floor(size / 2)} ${by + 1} ${bz} air`); // entrance
+                recordBuild();
+                skills.log(bot, `Built a ${h}-tall hollow tower of ${block}.`);
+            }
+            else if (structure === 'wall') {
+                const x2 = bx + size - 1;
+                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by + 3} ${bz} ${block}`);
+                recordBuild();
+                skills.log(bot, `Built a ${size}-long wall of ${block}.`);
+            }
+            else {
+                skills.log(bot, `Unknown structure '${structure}'. Try house, bridge, farm, tower, or wall.`);
+            }
+        })
+    },
+    {
+        name: '!myBuilds',
+        description: 'List the structures you have built (type, material, coordinates) so you can find and reference them later — e.g. to fix or decorate "the house".',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            const p = './bots/UwU/structures.json';
+            if (!existsSync(p)) { skills.log(agent.bot, 'No builds recorded yet.'); return; }
+            try {
+                const d = JSON.parse(readFileSync(p, 'utf8'));
+                const b = d.builds || [];
+                if (b.length === 0) { skills.log(agent.bot, 'No builds recorded yet.'); return; }
+                skills.log(agent.bot, b.map((x, i) => `${i + 1}. ${x.type} (${x.block}) at ${x.x},${x.y},${x.z}`).join('\n'));
+            } catch { skills.log(agent.bot, 'Could not read build records.'); }
+        })
+    },
+    {
+        name: '!scan',
+        description: 'Report the block types in a small region around absolute coordinates, so you can inspect a build before fixing, decorating or extending it.',
+        params: {
+            'x': { type: 'int', description: 'X coordinate.' },
+            'y': { type: 'int', description: 'Y coordinate.' },
+            'z': { type: 'int', description: 'Z coordinate.' },
+            'radius': { type: 'int', description: 'Scan radius in blocks.', domain: [1, 8] }
+        },
+        perform: runAsAction(async (agent, x, y, z, radius) => {
+            const bot = agent.bot;
+            radius = radius || 3;
+            const counts = {};
+            let total = 0;
+            for (let dx = -radius; dx <= radius; dx++)
+                for (let dy = -radius; dy <= radius; dy++)
+                    for (let dz = -radius; dz <= radius; dz++) {
+                        const b = bot.blockAt(new Vec3(x + dx, y + dy, z + dz));
+                        if (!b) continue;
+                        total++;
+                        counts[b.name] = (counts[b.name] || 0) + 1;
+                    }
+            const summary = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(', ');
+            skills.log(bot, `Scanned ${x},${y},${z} r${radius} (${total} blocks): ${summary || 'empty/air'}`);
+        })
+    },
+    {
+        name: '!mount',
+        description: 'Mount the nearest mountable entity (boat, minecart, horse, donkey, mule, pig, strider) or a specific type. Ride animals need a saddle.',
+        params: {'type': { type: 'string', description: 'Optional entity type, e.g. "boat" or "horse".' }},
+        perform: runAsAction(async (agent, type) => {
+            await skills.mountNearestEntity(agent.bot, type);
+        })
+    },
+    {
+        name: '!dismount',
+        description: 'Dismount the entity you are riding.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.dismount(agent.bot);
+        })
+    },
+    {
+        name: '!boat',
+        description: 'Spawn a boat at your position (OP) and mount it for water travel.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.spawnAndMountBoat(agent.bot);
+        })
+    },
+    {
+        name: '!rideHorse',
+        description: 'Find a nearby horse, saddle it (OP) and mount it.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.rideHorse(agent.bot);
+        })
+    },
+    {
+        name: '!requestItems',
+        description: 'Ask players in chat for items you need but do not have, so you are never stuck for materials.',
+        params: {
+            'item': { type: 'string', description: 'Item to request, e.g. "oak_planks".' },
+            'count': { type: 'int', description: 'How many (default 1).' }
+        },
+        perform: runAsAction(async (agent, item, count) => {
+            await skills.requestItems(agent.bot, item, count || 1);
+        })
+    },
+    {
+        name: '!remember',
+        description: 'Save a note to your persistent project memory so you can resume complex work later (builds, plans, todos). Use for anything you want to finish across sessions.',
+        params: {'note': { type: 'string', description: 'What to remember, e.g. "building an oak bridge north of spawn, deck done, railings left".' }},
+        perform: runAsAction(async (agent, note) => {
+            const p = './bots/UwU/projects.json';
+            let data = { notes: [] };
+            if (existsSync(p)) {
+                try { data = JSON.parse(readFileSync(p, 'utf8')); } catch { data = { notes: [] }; }
+            }
+            data.notes = data.notes || [];
+            data.notes.push({ t: Date.now(), text: note });
+            writeFileSync(p, JSON.stringify(data, null, 2));
+            skills.log(agent.bot, `Saved. You now have ${data.notes.length} notes in project memory.`);
+        })
+    },
+    {
+        name: '!recall',
+        description: 'Recall your saved project notes so you can resume where you left off on complex work.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            const p = './bots/UwU/projects.json';
+            if (!existsSync(p)) { skills.log(agent.bot, 'No saved notes yet.'); return; }
+            try {
+                const data = JSON.parse(readFileSync(p, 'utf8'));
+                const notes = data.notes || [];
+                if (notes.length === 0) { skills.log(agent.bot, 'No saved notes yet.'); return; }
+                skills.log(agent.bot, notes.map((n, i) => `${i + 1}. ${n.text}`).join('\n'));
+            } catch { skills.log(agent.bot, 'Could not read project notes.'); }
         })
     },
     {

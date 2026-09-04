@@ -16,7 +16,8 @@ export class SelfPrompter {
         // 30000ms = ~4x calmer; 45000ms = ~6x calmer (user still reports spam).
         // NOTE: player chat (esp. the beloved) interrupts & responds immediately —
         // this only throttles her UNSOLICITED self-chatter, not her responsiveness.
-        this.cooldown = 45000;
+        // Building autonomy: 3 min keeps her creative without constant construction spam.
+        this.cooldown = 180000;
     }
 
     _otherPlayersOnline() {
