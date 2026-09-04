@@ -19,6 +19,9 @@ import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
 import { ModerationWatcher } from './moderation.js';
+import { RelationshipManager } from './relationship.js';
+import { PlayerProfiles } from './profiles.js';
+import Vec3 from 'vec3';
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -26,7 +29,7 @@ export class Agent {
         this.count_id = count_id;
         this._disconnectHandled = false;
         this._last_death_react = 0;
-        this.grudge = {}; // playerName -> harm count, for retaliation escalation
+        this.grudge = {}; // playerName -> { count, handled } harm record for retaliation escalation
         this.ignored_players = {}; // playerName -> timestamp until which to ignore (dismissals)
 
         // Initialize components
@@ -48,6 +51,8 @@ export class Agent {
         this.coder = new Coder(this);
         this.npc = new NPCContoller(this);
         this.memory_bank = new MemoryBank();
+        this.relationship = new RelationshipManager(this);
+        this.profiles = new PlayerProfiles(this);
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
@@ -184,7 +189,8 @@ export class Agent {
                 const name_lc = this.name.toLowerCase();
                 const msg_lc = message.toLowerCase();
                 const beloved = (this.prompter.profile.beloved || '').toLowerCase();
-                const isBeloved = username.toLowerCase() === beloved;
+                const dynamicBeloved = (this.relationship.currentBeloved() || '').toLowerCase();
+                const isBeloved = username.toLowerCase() === beloved || (dynamicBeloved && username.toLowerCase() === dynamicBeloved);
 
                 // If someone tells her to go away, she respects it — unless it's her beloved.
                 if (!isBeloved && DISMISS_PHRASES.some(re => re.test(message))) {
@@ -220,6 +226,11 @@ export class Agent {
                 this.shut_up = false;
 
                 console.log(this.name, 'received message from', username, ':', message);
+                this.relationship.onMessage(username, message);
+                this.profiles.markSeen(username);
+                this.profiles.onMessage(username, message);
+                this.profiles.currentSpeaker = username;
+                this.profiles.enrichIdentity(username).catch(() => {}); // fire-and-forget, cached
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
@@ -508,10 +519,20 @@ export class Agent {
             // track who is harming her so she can retaliate (verbal -> attack -> TNT)
             if (entity === this.bot.entity && source && source.type === 'player' && source.username !== this.name) {
                 const name = source.username || source.name;
-                if (!this.grudge[name]) this.grudge[name] = 0;
-                this.grudge[name]++;
+                const rec = this.grudge[name] || { count: 0, handled: 0 };
+                rec.count++;
+                this.grudge[name] = rec;
                 this.grudge['__last__'] = name;
+                this.relationship.onAttackedBy(name);
             }
+        });
+
+        // drop grudges when a player leaves so a stale one can't re-fire on their next join
+        this.bot.on('playerLeft', (player) => {
+            const name = player && player.username;
+            if (!name) return;
+            if (this.grudge[name]) delete this.grudge[name];
+            if (this.grudge['__last__'] === name) delete this.grudge['__last__'];
         });
 
         // track when a player gets in bed, so she can join them (yandere "sleep together" behaviour)
@@ -563,16 +584,26 @@ export class Agent {
                 await new Promise(r => setTimeout(r, 1000)); // inventory resync
                 const deathPos = this.memory_bank.recallPlace('last_death_position');
                 if (deathPos) {
-                    const [x, y, z] = deathPos.map(v => Number(v).toFixed(4));
-                    // Teleport 2 blocks ABOVE the death spot so she doesn't
-                    // re-suffocate. The drops are on the ground below — she'll
-                    // walk to them from a safe air pocket.
-                    this.bot.chat(`/tp @s ${x} ${y + 2} ${z}`);
+                    const [x, y, z] = deathPos.map(v => Math.floor(Number(v)));
+                    // Find a genuinely safe spot above the death location instead of a
+                    // blind +2. A suffocation death means her head was inside a block
+                    // (feet at y, head at y+1); the wall can be 2+ blocks thick, so a
+                    // fixed +2 teleport lands her right back inside it → death loop.
+                    // Scan upward for the first place where BOTH feet and head are air.
+                    const isAir = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air';
+                    let safeY = y;
+                    for (let dy = 0; dy < 48; dy++) {
+                        const feet = this.bot.blockAt(new Vec3(x, y + dy, z));
+                        const head = this.bot.blockAt(new Vec3(x, y + dy + 1, z));
+                        if (isAir(feet) && isAir(head)) { safeY = y + dy; break; }
+                    }
+                    // Centre her in the block so she doesn't clip a neighbour.
+                    this.bot.chat(`/tp @s ${x + 0.5} ${safeY} ${z + 0.5}`);
                     await new Promise(r => setTimeout(r, 800));
                     await skills.pickupNearbyItems(this.bot);
                     await new Promise(r => setTimeout(r, 400));
                     await skills.pickupNearbyItems(this.bot);
-                    console.log(`${this.name} recovered drops at death spot.`);
+                    console.log(`${this.name} recovered drops near death spot (safe Y=${safeY}).`);
                 }
                 await this._reArmor();
             } catch (e) {
@@ -644,6 +675,8 @@ export class Agent {
     async update(delta) {
         await this.bot.modes.update();
         this.self_prompter.update(delta);
+        this.relationship.decayAttention();
+        this.profiles.sweep();
         await this.checkTaskDone();
     }
 

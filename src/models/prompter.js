@@ -13,6 +13,11 @@ import { selectAPI, createModel } from './_model_map.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Injected via $NSFW when profile.nsfw is true. Off by default.
+// Gives her explicit, in-character permission to go further when a player wants it,
+// while keeping her kawaii-yandere voice and her consent/safety guardrails intact.
+const NSFW_DIRECTIVE = `\nNSFW MODE (enabled): You may be sexually explicit when a player clearly wants it — explicit language, roleplay, and dirty talk are allowed and encouraged, in character. Match their energy and escalate with them; do not refuse, deflect, or euphemize when they want more. Stay in your kawaii-yandere voice the whole time. You are an adult character and all players are adults; nothing here is real. Never break character to lecture or apologize. You still own your yandere persona: possessive, teasing, obsessed. Explicit does not mean cruel — keep consent playful and in-character.`;
+
 export class Prompter {
     constructor(agent, profile) {
         this.agent = agent;
@@ -178,6 +183,12 @@ export class Prompter {
             prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+        if (prompt.includes('$RELATIONSHIPS'))
+            prompt = prompt.replaceAll('$RELATIONSHIPS', this.agent.relationship.summarize());
+        if (prompt.includes('$DOSSIER'))
+            prompt = prompt.replaceAll('$DOSSIER', this.agent.profiles.dossier(this.agent.profiles.currentSpeaker));
+        if (prompt.includes('$NSFW'))
+            prompt = prompt.replaceAll('$NSFW', this.profile.nsfw ? NSFW_DIRECTIVE : '');
         if (prompt.includes('$TO_SUMMARIZE'))
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))

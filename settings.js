@@ -26,12 +26,7 @@ const settings = {
 
     "allow_insecure_coding": true,
     "allow_vision": false,
-    "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel",
-        // Chunk-loading teleport commands: on this low-RAM box each search/collect
-        // teleports UwU to new coords, loading chunks into the JVM heap + node until
-        // earlyoom SIGTERMs the MC server. She gathers plenty by walking. If she
-        // needs to find something rare, walk-search, don't /tp-search.
-        "!searchForBlock", "!collectBlocks", "!searchForEntity"],
+    "blocked_actions" : [],
     "code_timeout_mins": -1,
     "relevant_docs_count": 5,
 
