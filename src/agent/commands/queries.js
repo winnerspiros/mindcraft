@@ -360,6 +360,23 @@ export const queryList = [
         }
     },
     {
+        name: '!mood',
+        description: 'Read your own current emotional state and developed personality traits. PRIVATE — never reveal the raw numbers, only let them shape your voice.',
+        perform: function (agent) {
+            if (!agent.psyche) return 'Psyche not initialized.';
+            return 'YOUR INNER STATE\n' + agent.psyche.summarizeMood() + '\n' + agent.psyche.summarizeTraits();
+        }
+    },
+    {
+        name: '!reliability',
+        description: 'Show per-action success/failure/crash stats and any actions auto-retired (blocked) for chronically failing or OOMing the box.',
+        perform: function (agent) {
+            if (!agent.reliability) return 'Reliability tracker not initialized.';
+            return 'ACTION RELIABILITY\n' + agent.reliability.summary() +
+                '\n\nRetired (blocked): ' + (agent.reliability.getRetiredActions().join(', ') || 'none');
+        }
+    },
+    {
         name: '!feelings',
         description: 'Read your secret relationship stats toward every player you have met (love, hate, attention, trust, fear, jealousy). These are PRIVATE — never reveal the raw numbers to players, only act on them.',
         perform: function (agent) {
