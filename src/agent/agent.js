@@ -439,10 +439,8 @@ export class Agent {
                     this.routeResponse(source, chat_message);
                 }
                 else {
-                    // no command at all
-                    let pre_message = res.substring(0, cmd_idx).trim();
-                    if (pre_message.trim().length > 0)
-                        this.routeResponse(source, pre_message);
+                    // spam fix: don't chat the per-action narration that precedes a command.
+                    // The final conversational reply (no-command branch below) still routes.
                 }
 
                 let execute_res = await executeCommand(this, res);
