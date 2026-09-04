@@ -836,6 +836,36 @@ export async function equip(bot, itemName) {
     return true;
 }
 
+export async function unequip(bot, destination) {
+    /**
+     * Remove armor / held items so she can actually "strip" or change outfit.
+     * destination: 'hand' | 'off-hand' | 'head' | 'torso' | 'legs' | 'feet' | 'all'
+     * @param {MinecraftBot} bot
+     * @param {string} destination - which equipment slot to empty, or 'all'.
+     * @returns {Promise<boolean>}
+     */
+    const slots = ['head', 'torso', 'legs', 'feet', 'off-hand', 'hand'];
+    if (destination === 'all') {
+        for (const p of slots) {
+            try { await bot.unequip(p); } catch (e) { /* ignore */ }
+        }
+        log(bot, 'Removed all armor and equipment.');
+        return true;
+    }
+    if (!slots.includes(destination)) {
+        log(bot, `Unknown equipment slot: ${destination}.`);
+        return false;
+    }
+    try {
+        await bot.unequip(destination);
+        log(bot, `Unequipped ${destination}.`);
+        return true;
+    } catch (e) {
+        log(bot, `Could not unequip ${destination}: ${e.message}`);
+        return false;
+    }
+}
+
 // The spawn survival kit is NEVER droppable: no discard, no giving away, no
 // tossing. Guards both by name and by "is it currently equipped".
 const PROTECTED_GEAR = new Set([
@@ -1032,6 +1062,14 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     if (isProtectedGear(bot, itemType)) {
         log(bot, `I can't give away ${itemType} — it's part of my kit, never droppable!`);
         return false;
+    }
+    // OP cheat-give: spawn the item directly into the target's inventory via /give.
+    // She's op (level 4) so the command resolves; this avoids (a) needing the item
+    // in her own backpack and (b) walking over + tossing, both of which failed here.
+    if (bot.modes.isOn('cheat')) {
+        bot.chat(`/give ${username} ${itemType} ${num}`);
+        log(bot, `Gave ${username} ${num} ${itemType} via /give.`);
+        return true;
     }
     let player = bot.players[username].entity
     if (!player) {

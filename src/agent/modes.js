@@ -201,7 +201,14 @@ const modes_list = [
             const grudge = agent.grudge || {};
             const name = grudge['__last__'];
             if (!name) return;
-            const count = grudge[name] || 0;
+            const rec = grudge[name];
+            if (!rec) return;
+            const count = rec.count || 0;
+            const handled = rec.handled || 0;
+            // only respond to NEW damage since the last response — a single hit must
+            // not loop into an endless accusation, and a stale grudge from a previous
+            // session must never re-fire on rejoin.
+            if (count <= handled) return;
             const player = agent.bot.players[name]?.entity;
             if (!player) return;
 
@@ -225,8 +232,12 @@ const modes_list = [
                     await speak(`That's TOO far, ${name}!!! UwU warned you~! 💢💥`);
                     const p = player.position;
                     agent.bot.chat(`/summon minecraft:tnt ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`);
-                    grudge[name] = 0; // reset after escalation
+                    delete grudge[name];       // full reset after escalation
+                    delete grudge['__last__'];
+                    this.last_retaliated = now;
+                    return;
                 }
+                rec.handled = count; // mark this damage as dealt with
             } catch (e) {
                 console.warn('retaliation error:', e.message);
             }

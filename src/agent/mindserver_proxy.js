@@ -106,14 +106,17 @@ class MindServerProxy {
     }
 
     getNumOtherAgents() {
+        if (!this.socket) return 0;
         return this.agents.length - 1;
     }
 
     login() {
+        if (!this.socket) return;
         this.socket.emit('login-agent', this.agent.name);
     }
 
     shutdown() {
+        if (!this.socket) return;
         this.socket.emit('shutdown');
     }
 
@@ -127,10 +130,14 @@ export const serverProxy = new MindServerProxy();
 
 // for chatting with other bots
 export function sendBotChatToServer(agentName, json) {
-    serverProxy.getSocket().emit('chat-message', agentName, json);
+    const socket = serverProxy.getSocket();
+    if (!socket) return;
+    socket.emit('chat-message', agentName, json);
 }
 
 // for sending general output to server for display
 export function sendOutputToServer(agentName, message) {
-    serverProxy.getSocket().emit('bot-output', agentName, message);
+    const socket = serverProxy.getSocket();
+    if (!socket) return;
+    socket.emit('bot-output', agentName, message);
 }

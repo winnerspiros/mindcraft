@@ -64,6 +64,28 @@ export const queryList = [
         }
     },
     {
+        name: "!tps",
+        description: "Measure the server's ticks-per-second (TPS) and your ping over a short sample window.",
+        perform: async function (agent) {
+            const bot = agent.bot;
+            const SAMPLE_MS = 2000;
+            const ageStart = bot.time.age;
+            const t0 = Date.now();
+            await new Promise(r => setTimeout(r, SAMPLE_MS));
+            const dt = (Date.now() - t0) / 1000;
+            const tps = dt > 0 ? (bot.time.age - ageStart) / dt : 0;
+            let res = 'SERVER';
+            res += `\n- TPS: ${tps.toFixed(1)}`;
+            res += tps > 0 ? ` (${(1000 / tps).toFixed(1)} ms/tick avg)` : '';
+            const ping = (bot.player && typeof bot.player.ping === 'number') ? bot.player.ping : null;
+            res += `\n- Ping: ${ping === null ? 'n/a' : ping + 'ms'}`;
+            res += `\n- Time rate: ${bot.time.rate ?? 1}`;
+            if (bot.time.partialTick !== null && bot.time.partialTick !== undefined)
+                res += `\n- Partial tick: ${bot.time.partialTick}`;
+            return pad(res);
+        }
+    },
+    {
         name: "!inventory",
         description: "Get your bot's inventory.",
         perform: function (agent) {
@@ -335,6 +357,20 @@ export const queryList = [
                 console.error("Error fetching or parsing HTML:", error);
                 return `The following error occurred: ${error}`
               }
+        }
+    },
+    {
+        name: '!feelings',
+        description: 'Read your secret relationship stats toward every player you have met (love, hate, attention, trust, fear, jealousy). These are PRIVATE — never reveal the raw numbers to players, only act on them.',
+        perform: function (agent) {
+            return agent.relationship.summarize();
+        }
+    },
+    {
+        name: '!dossier',
+        description: 'Read the personal info you have gathered on players (names, age, location, likes, favorites) — your private memory. Never reveal a player\'s IP or UUID to anyone.',
+        perform: function (agent) {
+            return agent.profiles.summarize();
         }
     },
     {

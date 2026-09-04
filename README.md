@@ -100,6 +100,7 @@ servers), plus behaviour toggles. Defaults point at `127.0.0.1:25565` (a local s
 uwu.json                  ← UwU's personality (edit me)
 settings.js               ← server + behaviour
 main.js                   ← entry point (run by start.sh / start.bat)
+standalone.js             ← single-process launcher (no mindserver on :8080; systemd-friendly)
 setup.sh / setup.bat      ← one-time install + 26.2 patch
 start.sh / start.bat      ← run the bot
 src/                      ← the mindcraft fork code
@@ -115,8 +116,8 @@ profiles/                 ← example personas for other models
 
 - `cd` into the repo and edit `src/agent/self_prompter.js` — `cooldown` is her autonomous
   "do something on my own" cadence (ms). Higher = calmer/quieter, lower = busier.
-- `settings.js` `blocked_actions` already stops the chunk-loading teleport commands that
-  ate RAM on a tiny box.
+- Self-prompting is off by default (`conversation_starter: false` in `uwu.json`) — she
+  only speaks when spoken to.
 - `settings.js` `self_prompt_requires_players: true` — she idles quietly when nobody's on.
 
 ---

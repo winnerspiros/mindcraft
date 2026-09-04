@@ -99,6 +99,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, player_name, closeness) => {
             await skills.goToPlayer(agent.bot, player_name, closeness);
+            agent.relationship.onSeek(player_name);
         })
     },
     {
@@ -110,6 +111,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, player_name, follow_dist) => {
             await skills.followPlayer(agent.bot, player_name, follow_dist);
+            agent.relationship.onSeek(player_name);
         }, true)
     },
     {
@@ -191,7 +193,8 @@ export const actionsList = [
             'num': { type: 'int', description: 'The number of items to give.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, player_name, item_name, num) => {
-            await skills.giveToPlayer(agent.bot, item_name, player_name, num);
+            const ok = await skills.giveToPlayer(agent.bot, item_name, player_name, num);
+            if (ok) agent.relationship.onGift(player_name);
         })
     },
     {
@@ -208,6 +211,14 @@ export const actionsList = [
         params: {'item_name': { type: 'ItemName', description: 'The name of the item to equip.' }},
         perform: runAsAction(async (agent, item_name) => {
             await skills.equip(agent.bot, item_name);
+        })
+    },
+    {
+        name: '!unequip',
+        description: 'Remove armor or a held item. Slot: head, torso, legs, feet, off-hand, hand, or "all" to strip everything.',
+        params: {'slot': { type: 'string', description: 'Which slot to empty: head, torso, legs, feet, off-hand, hand, or all.' }},
+        perform: runAsAction(async (agent, slot) => {
+            await skills.unequip(agent.bot, (slot || 'all').toLowerCase());
         })
     },
     {
@@ -400,6 +411,7 @@ export const actionsList = [
                 return false;
             }
             await skills.attackEntity(agent.bot, player, true);
+            agent.relationship.onHurtThem(player_name);
         })
     },
     {
@@ -412,6 +424,7 @@ export const actionsList = [
         perform: runAsAction(async (agent, player_name, reason) => {
             const msg = `/kick ${player_name} ${reason || 'I need a moment alone. behave, darling.'}`;
             agent.bot.chat(msg);
+            agent.relationship.onHurtThem(player_name);
             return `Kicked ${player_name}: ${reason || ''}`;
         })
     },
@@ -428,6 +441,7 @@ export const actionsList = [
             const amp = amplifier ?? 1;
             const secs = seconds ?? 30;
             agent.bot.chat(`/effect give ${player_name} ${effect} ${secs} ${amp}`);
+            agent.relationship.onHurtThem(player_name);
             return `Applied ${effect} to ${player_name} for ${secs}s.`;
         })
     },
@@ -616,6 +630,93 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, tool_name, target) => {
             await skills.useToolOn(agent.bot, tool_name, target);
+        })
+    },
+    {
+        name: '!defendSelf',
+        description: 'Attack any hostile mob within range that is hurting you.',
+        params: {'range': { type: 'float', default: 9, description: 'How far to look for threats (optional).', domain: [0, 64] }},
+        perform: runAsAction(async (agent, range) => {
+            await skills.defendSelf(agent.bot, range);
+        })
+    },
+    {
+        name: '!pickupItems',
+        description: 'Pick up nearby dropped items on the ground.',
+        perform: runAsAction(async (agent) => {
+            await skills.pickupNearbyItems(agent.bot);
+        })
+    },
+    {
+        name: '!breakBlock',
+        description: 'Break the block at the given x, y, z coordinates.',
+        params: {
+            'x': { type: 'float', description: 'x coordinate.', domain: [-Infinity, Infinity] },
+            'y': { type: 'float', description: 'y coordinate.', domain: [-64, 320] },
+            'z': { type: 'float', description: 'z coordinate.', domain: [-Infinity, Infinity] }
+        },
+        perform: runAsAction(async (agent, x, y, z) => {
+            await skills.breakBlockAt(agent.bot, x, y, z);
+        })
+    },
+    {
+        name: '!moveAwayFromEntity',
+        description: 'Move away from the nearest entity of the given type by a distance.',
+        params: {
+            'type': { type: 'string', description: 'The type of entity to move away from.' },
+            'distance': { type: 'float', default: 16, description: 'Distance to retreat (optional).', domain: [0, Infinity] }
+        },
+        perform: runAsAction(async (agent, type, distance) => {
+            const entity = agent.bot.nearestEntity(e => e.name === type);
+            if (!entity) { skills.log(agent.bot, `Could not find ${type}.`); return; }
+            await skills.moveAwayFromEntity(agent.bot, entity, distance);
+        })
+    },
+    {
+        name: '!avoidEnemies',
+        description: 'Move away from all hostile mobs within range.',
+        params: {'distance': { type: 'float', default: 16, description: 'Distance to retreat (optional).', domain: [0, Infinity] }},
+        perform: runAsAction(async (agent, distance) => {
+            await skills.avoidEnemies(agent.bot, distance);
+        })
+    },
+    {
+        name: '!useDoor',
+        description: 'Open/close the nearest door and walk through it.',
+        perform: runAsAction(async (agent) => {
+            await skills.useDoor(agent.bot);
+        })
+    },
+    {
+        name: '!sleepNearPlayer',
+        description: 'Find a bed near the given player and sleep in it next to them.',
+        params: {
+            'player_name': { type: 'string', description: 'The player to sleep near.' },
+            'distance': { type: 'float', default: 3, description: 'How close to sleep (optional).', domain: [0, Infinity] }
+        },
+        perform: runAsAction(async (agent, player_name, distance) => {
+            await skills.sleepNearPlayer(agent.bot, player_name, distance);
+        })
+    },
+    {
+        name: '!tillAndSow',
+        description: 'Till the ground at x,y,z and plant the given seed.',
+        params: {
+            'x': { type: 'float', description: 'x coordinate.', domain: [-Infinity, Infinity] },
+            'y': { type: 'float', description: 'y coordinate.', domain: [-64, 320] },
+            'z': { type: 'float', description: 'z coordinate.', domain: [-Infinity, Infinity] },
+            'seed_type': { type: 'ItemName', description: 'The seed to plant (e.g. wheat_seeds).' }
+        },
+        perform: runAsAction(async (agent, x, y, z, seed_type) => {
+            await skills.tillAndSow(agent.bot, x, y, z, seed_type);
+        })
+    },
+    {
+        name: '!activateBlock',
+        description: 'Activate (right-click) the nearest block of the given type (door, button, lever, chest...).',
+        params: {'type': { type: 'string', description: 'The block type to activate.' }},
+        perform: runAsAction(async (agent, type) => {
+            await skills.activateNearestBlock(agent.bot, type);
         })
     },
 ];
