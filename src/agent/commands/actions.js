@@ -100,6 +100,7 @@ export const actionsList = [
         perform: runAsAction(async (agent, player_name, closeness) => {
             await skills.goToPlayer(agent.bot, player_name, closeness);
             agent.relationship.onSeek(player_name);
+            agent.psyche.onSeek();
         })
     },
     {
@@ -112,6 +113,7 @@ export const actionsList = [
         perform: runAsAction(async (agent, player_name, follow_dist) => {
             await skills.followPlayer(agent.bot, player_name, follow_dist);
             agent.relationship.onSeek(player_name);
+            agent.psyche.onSeek();
         }, true)
     },
     {
@@ -194,7 +196,7 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, player_name, item_name, num) => {
             const ok = await skills.giveToPlayer(agent.bot, item_name, player_name, num);
-            if (ok) agent.relationship.onGift(player_name);
+            if (ok) { agent.relationship.onGift(player_name); agent.psyche.onGift(); }
         })
     },
     {
@@ -412,6 +414,7 @@ export const actionsList = [
             }
             await skills.attackEntity(agent.bot, player, true);
             agent.relationship.onHurtThem(player_name);
+            agent.psyche.onHurtThem();
         })
     },
     {
@@ -425,6 +428,7 @@ export const actionsList = [
             const msg = `/kick ${player_name} ${reason || 'I need a moment alone. behave, darling.'}`;
             agent.bot.chat(msg);
             agent.relationship.onHurtThem(player_name);
+            agent.psyche.onHurtThem();
             return `Kicked ${player_name}: ${reason || ''}`;
         })
     },
@@ -442,6 +446,7 @@ export const actionsList = [
             const secs = seconds ?? 30;
             agent.bot.chat(`/effect give ${player_name} ${effect} ${secs} ${amp}`);
             agent.relationship.onHurtThem(player_name);
+            agent.psyche.onHurtThem();
             return `Applied ${effect} to ${player_name} for ${secs}s.`;
         })
     },

@@ -60,6 +60,7 @@ export class ActionManager {
 
     async _executeAction(actionLabel, actionFn, timeout = 10) {
         let TIMEOUT;
+        let relName = this.agent.reliability?.normalizeLabel(actionLabel);
         try {
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
@@ -101,6 +102,10 @@ export class ActionManager {
                 TIMEOUT = this._startTimeout(timeout);
             }
 
+            // Reliability: write the crash marker (fsync) before the action body
+            // runs, so a hard OOM/SIGKILL mid-action is attributable on next boot.
+            if (relName) this.agent.reliability?.markInFlight(relName);
+
             // start the action
             await actionFn();
 
@@ -115,6 +120,13 @@ export class ActionManager {
             let interrupted = this.agent.bot.interrupt_code;
             let timedout = this.timedout;
             this.agent.clearBotLogs();
+
+            // Reliability: record outcome (skip interrupts — those are stops, not
+            // the action's own failure). Timed-out actions count as failures.
+            this.agent.reliability?.clearInFlight();
+            if (relName && !interrupted) {
+                this.agent.reliability?.record(relName, timedout ? 'timeout' : 'success');
+            }
 
             // if not interrupted and not generating, emit idle event
             if (!interrupted) {
@@ -142,6 +154,13 @@ export class ActionManager {
 
             let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
+
+            // Reliability: a thrown exception is the action's own failure.
+            this.agent.reliability?.clearInFlight();
+            if (relName && !interrupted) {
+                this.agent.reliability?.record(relName, 'failure');
+            }
+
             if (!interrupted) {
                 this.agent.bot.emit('idle');
             }

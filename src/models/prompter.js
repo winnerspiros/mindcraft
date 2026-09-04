@@ -185,6 +185,10 @@ export class Prompter {
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$RELATIONSHIPS'))
             prompt = prompt.replaceAll('$RELATIONSHIPS', this.agent.relationship.summarize());
+        if (prompt.includes('$MOOD'))
+            prompt = prompt.replaceAll('$MOOD', this.agent.psyche.summarizeMood());
+        if (prompt.includes('$TRAITS'))
+            prompt = prompt.replaceAll('$TRAITS', this.agent.psyche.summarizeTraits());
         if (prompt.includes('$DOSSIER'))
             prompt = prompt.replaceAll('$DOSSIER', this.agent.profiles.dossier(this.agent.profiles.currentSpeaker));
         if (prompt.includes('$NSFW'))

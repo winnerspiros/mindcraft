@@ -21,6 +21,8 @@ import { log, validateNameFormat, handleDisconnection } from './connection_handl
 import { ModerationWatcher } from './moderation.js';
 import { RelationshipManager } from './relationship.js';
 import { PlayerProfiles } from './profiles.js';
+import { ReliabilityTracker } from './reliability.js';
+import { Psyche } from './psyche.js';
 import Vec3 from 'vec3';
 
 export class Agent {
@@ -71,6 +73,15 @@ export class Agent {
         this.task = new Task(this, settings.task, taskStart);
         this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
         blacklistCommands(this.blocked_actions);
+
+        // Reliability tracker: recover any pre-boot crash (OOM) attribution, then
+        // re-block actions retired in previous sessions. Must run after
+        // this.blocked_actions exists so _block() can mutate it.
+        this.reliability = new ReliabilityTracker(this);
+        this.reliability.reapplyRetired();
+
+        // Psyche: persistent self-mood + self-tuning traits (zero LLM cost).
+        this.psyche = new Psyche(this);
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
@@ -227,6 +238,7 @@ export class Agent {
 
                 console.log(this.name, 'received message from', username, ':', message);
                 this.relationship.onMessage(username, message);
+                this.psyche.onMessage(message);
                 this.profiles.markSeen(username);
                 this.profiles.onMessage(username, message);
                 this.profiles.currentSpeaker = username;
@@ -524,6 +536,7 @@ export class Agent {
                 this.grudge[name] = rec;
                 this.grudge['__last__'] = name;
                 this.relationship.onAttackedBy(name);
+                this.psyche.onAttackedBy();
             }
         });
 
@@ -533,6 +546,13 @@ export class Agent {
             if (!name) return;
             if (this.grudge[name]) delete this.grudge[name];
             if (this.grudge['__last__'] === name) delete this.grudge['__last__'];
+            if (this.isBelovedName(name)) this.psyche.onBelovedLogout();
+        });
+
+        // beloved presence is an emotional event — login lifts her, logout stings
+        this.bot.on('playerJoined', (player) => {
+            const name = player && player.username;
+            if (name && this.isBelovedName(name)) this.psyche.onBelovedLogin();
         });
 
         // track when a player gets in bed, so she can join them (yandere "sleep together" behaviour)
@@ -570,6 +590,7 @@ export class Agent {
         this.bot.on('death', () => {
             this.actions.cancelResume();
             this.actions.stop();
+            this.psyche.onDeath();
         });
         this.bot.on('respawn', async () => {
             // keep_inventory is OFF server-wide (players must lose items on death,
@@ -677,11 +698,21 @@ export class Agent {
         this.self_prompter.update(delta);
         this.relationship.decayAttention();
         this.profiles.sweep();
+        this.psyche.update(delta);
         await this.checkTaskDone();
     }
 
     isIdle() {
         return !this.actions.executing;
+    }
+
+    // Is this player her beloved (configured name or current dynamic beloved)?
+    isBelovedName(name) {
+        if (!name) return false;
+        const n = String(name).toLowerCase();
+        const configured = (this.prompter.profile.beloved || '').toLowerCase();
+        const dynamic = (this.relationship.currentBeloved() || '').toLowerCase();
+        return n === configured || (!!dynamic && n === dynamic);
     }
 
     async _gearUp() {
