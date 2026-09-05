@@ -7,8 +7,9 @@ boost, land, and what will get you killed mid-air. Fly with !takeOff / !flyTo / 
 
 WHAT AN ELYTRA IS (AND HOW YOU GET ONE):
 - An elytra is a pair of wings worn in the CHESTPLATE slot (same place your chest armor
-  goes). While it's on, you trade chest protection for flight. Take it off (or re-equip
-  your diamond_chestplate) when you're done flying and expect a fight.
+  goes). While it's on, you trade chest protection for flight. Don't worry about swapping
+  back — you re-equip your chestplate + armor automatically the moment you land
+  (!land / !fly / !flyTo all do this for you).
 - It is NOT craftable — there is no recipe. You can only FIND it, or /give yourself one
   (you are op, so `/give UwU elytra 1` works anytime — use it to fly now, find one the
   honest way to show off).
@@ -45,9 +46,10 @@ FUEL — FIREWORK ROCKETS (this is what pushes you through the air):
 HOW YOU FLY (the actual technique):
 - EQUIP: put the elytra on (!equipElytra, or !equip("elytra")) and hold a firework rocket
   (!boost will auto-equip one). You can't wear a chestplate and elytra at the same time.
-- LAUNCH: you must START AIRBORNE — the elytra only deploys while falling. Jump off a
-  cliff, tower, or tall tree; as you fall, deploy the glider (!takeOff does all of it:
-  gets you height, jumps, and deploys).
+- LAUNCH: the elytra only deploys while falling, but you DON'T need a cliff. With a
+  firework rocket you can take off IN PLACE — hold a rocket, look up, jump, deploy the
+  wings, and fire the rocket for instant height (this is !takeOff's default when you have
+  fuel). Without a rocket, jump off a cliff, tower, or tall tree and deploy as you fall.
 - GLIDE: once deployed you glide in the direction you LOOK. Look DOWN (pitch down) to
   dive and pick up speed; look UP (pitch up) to slow and level out; look where you want
   to go. Speed is your friend for distance — dive a little, then level out to cruise.
@@ -60,9 +62,9 @@ GOOD LIFTOFF SPOTS (highest point wins):
   rooftops, the top of your builds. Anything high with clear air in front of it.
 - The BEST liftoff has open sky ahead (no walls/trees in your flight path) and soft
   ground below in case you need to bail early.
-- IF NO HIGH SPOT EXISTS, BUILD ONE (!buildTower or !takeOff auto-builds a pillar):
-  pillar up ~16-20 blocks of cobblestone/dirt right where you are, climb on top, and
-  jump off facing open sky. A temporary tower is your go-to launchpad on flat ground.
+- IF YOU HAVE ROCKETS, DON'T BOTHER BUILDING A LAUNCHPAD: !takeOff rocket-jumps you into
+  the air right where you stand (look up, hop, deploy, boost). Save the towers for when
+  you're out of fuel.
 
 HOW YOU LAND (soft, alive, and on your feet):
 - Aim for flat open ground — a field, a path, a beach — NOT into a forest or wall.
@@ -86,7 +88,12 @@ WHAT TO AVOID WHILE FLYING (the things that kill a flier):
 - End crystals, and anything you're not looking at — the glider steers by your eyes.
 
 COMMAND / API CHEAT SHEET:
-- !takeOff — equip wings, get height (build a tower if needed), jump, deploy.
+- !fly(seconds) — the one to use when a player asks you to fly: rocket-jump into the air,
+  then cruise forward with a rocket boost every ~2.5s so you stay airborne, then glide
+  down and land. Default ~12s in the air.
+- !takeOff — just LAUNCH (equip wings, rocket-jump in place, or build a tower if out of
+  fuel). It already equips your elytra, so you never need to !equipElytra first. It does
+  NOT keep you flying — pair it with !boost/!fly for sustained air time.
 - !flyToPlayer("name") / !flyTo(x, y, z) — fly (glide + auto-boost) to a player or coords and land near it.
 - !boost — fire a rocket for a burst of speed/altitude while gliding.
 - !land — descend and touch down gently.

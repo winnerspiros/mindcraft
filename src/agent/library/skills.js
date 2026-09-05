@@ -325,9 +325,37 @@ export async function waterBucketClutch(bot) {
     const drop = Math.floor(pos.y) - landing.position.y;
     if (drop <= 3) { log(bot, 'Not high enough to hurt — no water bucket needed.'); return false; }
     // place a water source one block above the landing surface so it does not replace the ground
-    const placed = await placeBlock(bot, 'water', landing.position.x, landing.position.y + 1, landing.position.z);
-    if (placed) log(bot, `Placed water to break a ${drop}-block fall.`);
-    return placed;
+    const waterPos = new Vec3(landing.position.x, landing.position.y + 1, landing.position.z);
+    const placed = await placeBlock(bot, 'water', waterPos.x, waterPos.y, waterPos.z);
+    if (!placed) return false;
+    log(bot, `Placed water to break a ${drop}-block fall.`);
+
+    // Splash down, then scoop the water back up with a bucket so no source is left
+    // behind and she keeps the water bucket for next time.
+    const start = Date.now();
+    while (!bot.interrupt_code && Date.now() - start < 8000) {
+        if (bot.entity.position.y <= waterPos.y + 2) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    await new Promise(resolve => setTimeout(resolve, 300)); // settle after landing
+    const waterBlock = bot.blockAt(waterPos);
+    if (waterBlock && waterBlock.name === 'water') {
+        // Ensure she has an empty bucket. Clear a cheap item first if the bag is
+        // full, otherwise the /give drops the bucket on the ground instead of into
+        // her inventory.
+        if (!bot.inventory.findInventoryItem('bucket') && bot.modes && bot.modes.isOn('cheat')) {
+            const junk = bot.inventory.items().find(i => i.name === 'cobblestone' || i.name === 'dirt');
+            if (junk) await discard(bot, junk.name, 1);
+            bot.chat('/give @s bucket 1');
+            await new Promise(resolve => setTimeout(resolve, 400));
+        }
+        if (bot.inventory.findInventoryItem('bucket')) {
+            await useToolOnBlock(bot, 'bucket', waterBlock);
+        } else {
+            log(bot, "Couldn't get a bucket to scoop the water back up.");
+        }
+    }
+    return true;
 }
 
 export async function findShelter(bot, range = 40) {
@@ -1089,7 +1117,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         }
         catch (err) {
             if (err.name === 'NoChests') {
-                log(bot, `Failed to collect ${blockType}: Inventory full, no place to deposit.`);
+                log(bot, `Inventory full and no chest nearby to auto-deposit into. If you have a chest, place it with !placeHere (collecting will then auto-deposit); if not, craft one from 8 planks with !craftRecipe("chest") and place it.`);
                 break;
             }
             else {
@@ -1538,8 +1566,11 @@ const PROTECTED_GEAR = new Set([
 
 function isProtectedGear(bot, itemName) {
     if (PROTECTED_GEAR.has(itemName)) return true;
-    // mineflayer inventory slot layout: 5-8 armor (head/torso/legs/feet), 36 hand, 45 off-hand
-    const equippedSlots = [5, 6, 7, 8, 36, 45];
+    // mineflayer inventory slot layout: 5-8 armor (head/torso/legs/feet), 45 off-hand.
+    // NOTE: hand slot 36 is DELIBERATELY EXCLUDED — she holds blocks (dirt, wood, etc.)
+    // in hand while placing/digging, and those must stay discardable so she can free
+    // inventory space. Real gear held in hand (sword/tools/bow) is already in PROTECTED_GEAR.
+    const equippedSlots = [5, 6, 7, 8, 45];
     return equippedSlots.some(s => bot.inventory.slots[s] && bot.inventory.slots[s].name === itemName);
 }
 
@@ -2419,33 +2450,98 @@ export async function buildLiftoffTower(bot, height = 20) {
     return true;
 }
 
+export async function getAirborne(bot, height = 10) {
+    // Get her airborne with real falling velocity, which the server needs before it
+    // will accept an elytra deploy. In cheat mode, teleport straight up — the server
+    // processes the /tp itself, so this is reliable (a client-side pillar-jump is
+    // flaky and often leaves her onGround). Survival falls back to a simple hop.
+    if (bot.modes && bot.modes.isOn('cheat')) {
+        const p = bot.entity.position;
+        bot.chat(`/tp @s ${Math.floor(p.x)} ${Math.floor(p.y) + height} ${Math.floor(p.z)}`);
+        await new Promise(resolve => setTimeout(resolve, 300)); // let gravity build downward velocity
+    } else {
+        bot.setControlState('jump', true);
+        bot.setControlState('jump', false);
+        await new Promise(resolve => setTimeout(resolve, 260));
+    }
+    return true;
+}
+
 export async function takeOff(bot) {
-    // Deploy the elytra: equip it, get height (build a tower if grounded), jump
-    // to leave the ground, then start gliding.
+    // Deploy the elytra and start gliding. Preferred launch is the vanilla
+    // rocket-hop (no teleport): hop, look up, then use a firework rocket to launch
+    // and auto-deploy the wings. Falls back to a teleport-up + explicit deploy when
+    // there are no rockets or the rocket-hop doesn't engage.
     if (bot.entity.elytraFlying) {
         log(bot, 'Already flying.');
         return true;
     }
     if (!await equipElytra(bot)) return false;
 
-    if (bot.entity.onGround) {
-        log(bot, 'Need height to take off — building a liftoff tower.');
-        if (!await buildLiftoffTower(bot, 16)) return false;
+    const hasRockets = countFireworkRockets(bot) > 0;
+    const fail = async (msg) => { log(bot, msg); bot.modes.unpause('self_preservation'); bot.modes.unpause('unstuck'); await rearmorAfterFlight(bot); return false; };
+    bot.modes.pause('self_preservation'); // don't MLG-clutch while falling to deploy the elytra
+    bot.modes.pause('unstuck');
+
+    const confirmEngaged = async (ms) => {
+        const deadline = Date.now() + ms;
+        while (!bot.entity.elytraFlying && !bot.interrupt_code && Date.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 50));
+        }
+        return bot.entity.elytraFlying;
+    };
+
+    if (hasRockets) {
+        // Vanilla flat takeoff: hop, look up, use a rocket to launch + auto-deploy.
+        await equipFireworkRocket(bot);
+        bot.setControlState('jump', true);
+        bot.setControlState('jump', false);
+        await new Promise(resolve => setTimeout(resolve, 150)); // airborne
+        await bot.look(bot.entity.yaw, 45 * Math.PI / 180);
+        bot.activateItem(); // rocket launches her up and opens the wings
+        if (!await confirmEngaged(1500)) {
+            log(bot, 'Rocket-hop did not engage — teleporting up to retry.');
+            await getAirborne(bot);
+            try { await bot.elytraFly(); } catch (e) { return fail(`Take-off failed: ${e.message}`); }
+        }
+    } else {
+        log(bot, 'No rockets — teleporting up to glide.');
+        await getAirborne(bot);
+        try { await bot.elytraFly(); } catch (e) { return fail(`Take-off failed: ${e.message}`); }
     }
 
-    // Leave the ground (jump) so elytraFly() can deploy.
-    bot.setControlState('jump', true);
-    await new Promise(resolve => setTimeout(resolve, 120));
-    bot.setControlState('jump', false);
-    await new Promise(resolve => setTimeout(resolve, 80));
+    if (!await confirmEngaged(2000)) {
+        return fail('Elytra never engaged — the server did not accept the take-off.');
+    }
 
-    try {
-        await bot.elytraFly();
-        log(bot, 'Took off — elytra deployed, gliding!');
-        return true;
-    } catch (e) {
-        log(bot, `Take-off failed: ${e.message}`);
-        return false;
+    // Boost up before she loses altitude. A gentle 30° climb gives the rocket lift.
+    if (hasRockets) {
+        await bot.look(bot.entity.yaw, 30 * Math.PI / 180);
+        for (let i = 0; i < 3 && countFireworkRockets(bot) > 0 && !bot.interrupt_code; i++) {
+            bot.activateItem();
+            await new Promise(resolve => setTimeout(resolve, 600));
+        }
+    }
+
+    log(bot, 'Took off — elytra deployed, gliding!');
+    bot.modes.unpause('self_preservation'); // flying now; elytra glide is fall-safe
+    bot.modes.unpause('unstuck');
+    return true;
+}
+
+export async function rearmorAfterFlight(bot) {
+    // Swap the elytra back for a chestplate now that she's on the ground, then
+    // top up any other missing armor. Keeps her from wandering around without
+    // chest protection after flying.
+    if (isElytraEquipped(bot)) {
+        const chest = bot.inventory.items().find(i => i.name.includes('chestplate'));
+        if (chest) {
+            await bot.equip(chest, 'torso');
+            log(bot, 'Re-equipped chestplate after flight.');
+        }
+    }
+    if (bot.armorManager) {
+        try { bot.armorManager.equipAll(); } catch (e) { /* non-fatal */ }
     }
 }
 
@@ -2453,6 +2549,7 @@ export async function landWithElytra(bot) {
     // Descend and touch down gently. The elytra deactivates when she hits ground.
     if (!bot.entity.elytraFlying) {
         log(bot, 'Already on the ground.');
+        await rearmorAfterFlight(bot);
         return true;
     }
     const start = Date.now();
@@ -2467,6 +2564,7 @@ export async function landWithElytra(bot) {
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     bot.clearControlStates();
+    await rearmorAfterFlight(bot);
     log(bot, 'Landed.');
     return true;
 }
@@ -2515,6 +2613,41 @@ export async function flyWithElytra(bot, x, y, z, min_distance = 3) {
     bot.clearControlStates();
     await landWithElytra(bot);
     log(bot, `Flew to ${x}, ${y}, ${z}.`);
+    return true;
+}
+
+export async function cruiseWithElytra(bot, seconds = 12) {
+    // Sustained no-destination flight: launch, then cruise forward firing a
+    // rocket every ~2.5s to hold altitude, then glide down and land. Makes "fly"
+    // actually look like flying instead of a single rocket-hop.
+    seconds = Math.max(2, Math.min(60, Math.floor(seconds)));
+    if (!bot.entity.elytraFlying && !await takeOff(bot)) return false;
+
+    const hasRockets = countFireworkRockets(bot) > 0;
+    if (hasRockets) await equipFireworkRocket(bot);
+
+    // Pitch slightly down so she keeps forward speed and never stalls; the
+    // periodic rockets buy the altitude back.
+    await bot.look(bot.entity.yaw, -10 * Math.PI / 180);
+
+    const start = Date.now();
+    const maxMs = seconds * 1000;
+    let lastBoost = 0;
+
+    while (!bot.interrupt_code && Date.now() - start < maxMs) {
+        if (!bot.entity.elytraFlying) {
+            log(bot, 'Elytra deactivated mid-cruise.');
+            break;
+        }
+        if (hasRockets && Date.now() - lastBoost > 2500) {
+            await boostWithFirework(bot);
+            lastBoost = Date.now();
+        }
+        await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    await landWithElytra(bot);
+    log(bot, `Cruised for ~${Math.round((Date.now() - start) / 1000)}s.`);
     return true;
 }
 

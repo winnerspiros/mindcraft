@@ -799,7 +799,7 @@ export class Agent {
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'shield', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
-            'bow', 'chest',
+            'bow', 'chest', 'water_bucket',
         ];
         try {
             for (const item of gear) {
