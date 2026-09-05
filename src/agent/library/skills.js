@@ -908,6 +908,82 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     return fired > 0;
 }
 
+export async function throwTrident(bot, target, count=1) {
+    /**
+     * Throw a trident (spear) at a target — hold to charge, release to hurl.
+     * @returns {Promise<boolean>} true if it threw at least once.
+     */
+    const trident = bot.inventory.items().find(i => i.name === 'trident');
+    if (!trident) {
+        log(bot, 'No trident. Find one by hunting drowned, or from ocean ruin chests.');
+        return false;
+    }
+    await bot.equip(trident, 'hand');
+    let thrown = 0;
+    for (let i = 0; i < count; i++) {
+        const v = target.velocity || { x: 0, y: 0, z: 0 };
+        const dist = bot.entity.position.distanceTo(target.position);
+        const lead = Math.min(0.6, dist * 0.05);
+        const aim = target.position.offset(v.x * lead, v.y * lead, v.z * lead)
+            .offset(0, (target.height || 1.8) * 0.7, 0);
+        await bot.lookAt(aim, true);
+        await new Promise(r => setTimeout(r, 120));
+        await bot.activateItem();                     // start the throw charge
+        await new Promise(r => setTimeout(r, 720));   // ~full charge for a hard throw
+        try { await bot.deactivateItem(); thrown++; } catch {}
+        await new Promise(r => setTimeout(r, 300));
+    }
+    log(bot, `Threw trident ${thrown} time${thrown === 1 ? '' : 's'} (if it doesn't fly back, go pick it up).`);
+    return thrown > 0;
+}
+
+export async function crystalPvP(bot, target) {
+    /**
+     * Crystal PvP: set obsidian at the target's feet, place an end crystal on it,
+     * then detonate it. Aggressive and self-damaging — the !crystalPvP command
+     * gates this behind genuine rage (high hate/annoyance) before it reaches here.
+     * @returns {Promise<boolean>} true if the crystal was placed and detonated.
+     */
+    const crystal = bot.inventory.items().find(i => i.name === 'end_crystal');
+    if (!crystal) {
+        log(bot, 'No end crystal. Craft one: 7 glass + 1 eye_of_ender + 1 ghast_tear.');
+        return false;
+    }
+    const support = bot.inventory.items().find(i => i.name === 'obsidian' || i.name === 'bedrock');
+    if (!support) {
+        log(bot, 'Need obsidian (or bedrock) to set the crystal on. Obsidian = water poured over lava.');
+        return false;
+    }
+    const feet = target.position.floored();
+    if (!(await placeBlock(bot, support.name, feet.x, feet.y, feet.z, 'bottom'))) {
+        log(bot, 'Could not place the support block at their feet.');
+        return false;
+    }
+    await new Promise(r => setTimeout(r, 250)); // let the world state settle
+    const base = bot.blockAt(feet);
+    if (!base || (base.name !== 'obsidian' && base.name !== 'bedrock')) {
+        log(bot, 'Support block did not land as obsidian/bedrock.');
+        return false;
+    }
+    let crystalEntity;
+    try {
+        await bot.equip(crystal, 'hand');
+        crystalEntity = await bot.placeEntity(base, { x: 0, y: 1, z: 0 });
+    } catch (e) {
+        log(bot, `Could not place the crystal: ${e.message}`);
+        return false;
+    }
+    // step back so the blast doesn't kill us, then detonate
+    try {
+        if (bot.entity.position.distanceTo(feet) < 5) {
+            bot.pathfinder.setMovements(new pf.Movements(bot));
+            await bot.pathfinder.goto(new pf.goals.GoalInvert(new pf.goals.GoalFollow(target, 5)), true).catch(() => {});
+        }
+    } catch {}
+    bot.attack(crystalEntity);
+    log(bot, 'Detonated end crystal.');
+    return true;
+}
 
 
 export async function collectBlock(bot, blockType, num=1, exclude=null) {
