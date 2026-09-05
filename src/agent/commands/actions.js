@@ -1019,4 +1019,14 @@ export const actionsList = [
             await skills.activateNearestBlock(agent.bot, type);
         })
     },
+    {
+        name: '!fish',
+        description: 'Cast a fishing rod and wait for a bite. Needs a fishing rod in your inventory.',
+        params: {
+            'timeout': { type: 'int', default: 30, description: 'Seconds to wait for a bite before giving up (optional).', domain: [1, 300] }
+        },
+        perform: runAsAction(async (agent, timeout = 30) => {
+            await skills.fish(agent.bot, timeout * 1000);
+        })
+    },
 ];
