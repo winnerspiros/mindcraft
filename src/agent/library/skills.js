@@ -1398,6 +1398,58 @@ export async function fish(bot, timeoutMs = 30000) {
     }
 }
 
+export async function pointAt(bot, target, range = 48) {
+    /**
+     * Turn to look at something and swing the arm (punch air) to gesture toward it,
+     * so nearby players can see what you're pointing at.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} target - a player name, mob type (e.g. 'sheep'), or block type (e.g. 'oak_log').
+     * @param {number} range - how far to search for mobs/blocks (default 48).
+     * @returns {Promise<string>} human-readable result.
+     * @example
+     * await skills.pointAt(bot, 'sheep');
+     **/
+    let pos = null;
+    let what = target;
+
+    // 1) a player by name — aim at their eyes
+    const player = bot.players && bot.players[target];
+    if (player && player.entity) {
+        pos = player.entity.position.offset(0, 1.62, 0);
+    }
+
+    // 2) nearest mob of that type
+    if (!pos) {
+        const entity = world.getNearestEntityWhere(bot, e => e.name === target, range);
+        if (entity) {
+            pos = entity.position.offset(0, entity.height || 1, 0);
+            what = entity.name;
+        }
+    }
+
+    // 3) nearest block of that type
+    if (!pos) {
+        const block = world.getNearestBlock(bot, target, range);
+        if (block) {
+            pos = block.position.offset(0.5, 0.5, 0.5);
+            what = block.name;
+        }
+    }
+
+    if (!pos) {
+        log(bot, `Couldn't find ${target} to point at.`);
+        return `Couldn't find ${target} to point at.`;
+    }
+
+    await bot.lookAt(pos);
+    for (let i = 0; i < 2; i++) {
+        bot.swingArm();
+        await wait(bot, 250);
+    }
+    log(bot, `Pointed at ${what}.`);
+    return `Pointed at ${what}.`;
+}
+
 
 export async function giveToPlayer(bot, itemType, username, num=1) {
     /**

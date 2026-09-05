@@ -1029,4 +1029,14 @@ export const actionsList = [
             await skills.fish(agent.bot, timeout * 1000);
         })
     },
+    {
+        name: '!pointAt',
+        description: 'Turn to face something and punch the air to gesture toward it so nearby players see what you mean (a player, mob, or block). Use it to point something out or show which way you want to go — point first, then ask; if they agree, head there with !goToNearestEntity or !goToPosition.',
+        params: {
+            'target': { type: 'string', description: 'A player name, mob type (e.g. sheep), or block type (e.g. oak_log) to point at.' }
+        },
+        perform: runAsAction(async (agent, target) => {
+            await skills.pointAt(agent.bot, target);
+        })
+    },
 ];
