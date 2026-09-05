@@ -166,6 +166,82 @@ export const actionsList = [
         })
     },
     {
+        name: '!equipElytra',
+        description: 'Put on the elytra (wings). Swaps out the chestplate — fly, then re-equip armor to fight.',
+        perform: runAsAction(async (agent) => {
+            await skills.equipElytra(agent.bot);
+        })
+    },
+    {
+        name: '!equipFireworkRocket',
+        description: 'Hold a firework rocket (elytra boost fuel) in hand.',
+        perform: runAsAction(async (agent) => {
+            await skills.equipFireworkRocket(agent.bot);
+        })
+    },
+    {
+        name: '!boost',
+        description: 'Fire a firework rocket for a burst of speed/altitude while gliding with the elytra.',
+        perform: runAsAction(async (agent) => {
+            await skills.boostWithFirework(agent.bot);
+        })
+    },
+    {
+        name: '!takeOff',
+        description: 'Launch with the elytra: equip wings, get height (build a tower if none), jump and start gliding.',
+        perform: runAsAction(async (agent) => {
+            await skills.takeOff(agent.bot);
+        })
+    },
+    {
+        name: '!flyToPlayer',
+        description: 'Fly (glide + rocket boosts) to the given player and land near them.',
+        params: {
+            'player_name': { type: 'string', description: 'The name of the player to fly to.' },
+            'closeness': { type: 'float', default: 3, description: 'How close to land (optional).', domain: [1, Infinity] }
+        },
+        perform: runAsAction(async (agent, player_name, closeness) => {
+            const bot = agent.bot;
+            const entity = bot.players[player_name]?.entity;
+            if (!entity) {
+                skills.log(bot, `Can't see ${player_name} from here.`);
+                return;
+            }
+            const p = entity.position;
+            await skills.flyWithElytra(bot, p.x, p.y, p.z, closeness);
+        })
+    },
+    {
+        name: '!flyTo',
+        description: 'Fly (glide + rocket boosts) to the given x, y, z coordinates and land nearby.',
+        params: {
+            'x': { type: 'float', description: 'The x coordinate.', domain: [-Infinity, Infinity] },
+            'y': { type: 'float', description: 'The y coordinate.', domain: [-64, 320] },
+            'z': { type: 'float', description: 'The z coordinate.', domain: [-Infinity, Infinity] },
+            'closeness': { type: 'float', default: 3, description: 'How close to land (optional).', domain: [0, Infinity] }
+        },
+        perform: runAsAction(async (agent, x, y, z, closeness) => {
+            await skills.flyWithElytra(agent.bot, x, y, z, closeness);
+        })
+    },
+    {
+        name: '!land',
+        description: 'Descend and touch down gently, ending the elytra glide.',
+        perform: runAsAction(async (agent) => {
+            await skills.landWithElytra(agent.bot);
+        })
+    },
+    {
+        name: '!buildTower',
+        description: 'Build a vertical liftoff pillar and climb on top (a launchpad when there is no high ground).',
+        params: {
+            'height': { type: 'float', default: 20, description: 'Tower height in blocks (optional).', domain: [4, 64] }
+        },
+        perform: runAsAction(async (agent, height) => {
+            await skills.buildLiftoffTower(agent.bot, height);
+        })
+    },
+    {
         name: '!mimic',
         description: 'Playfully copy a nearby player\'s spammy movement — crouch and jump like them.',
         params: {

@@ -75,6 +75,22 @@ function getCombatKnowledge() {
     return _combatKnowledge;
 }
 
+// Elytra flight reference — static knowledge injected via $ELYTRA_KNOWLEDGE.
+// How to acquire a pair, craft firework-rocket fuel, take off, glide, boost, land,
+// and what to avoid mid-air. Kept in its own markdown file for easy editing.
+const ELYTRA_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/elytra_knowledge.md');
+let _elytraKnowledge = null;
+function getElytraKnowledge() {
+    if (_elytraKnowledge != null) return _elytraKnowledge;
+    try {
+        _elytraKnowledge = readFileSync(ELYTRA_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load elytra knowledge:', e.message);
+        _elytraKnowledge = '';
+    }
+    return _elytraKnowledge;
+}
+
 export class Prompter {
     constructor(agent, profile) {
         this.agent = agent;
@@ -280,6 +296,8 @@ export class Prompter {
             prompt = prompt.replaceAll('$REDSTONE_KNOWLEDGE', getRedstoneKnowledge());
         if (prompt.includes('$COMBAT_KNOWLEDGE'))
             prompt = prompt.replaceAll('$COMBAT_KNOWLEDGE', getCombatKnowledge());
+        if (prompt.includes('$ELYTRA_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$ELYTRA_KNOWLEDGE', getElytraKnowledge());
         if (prompt.includes('$PERSONAL'))
             prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
         if (prompt.includes('$HEAT'))

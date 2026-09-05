@@ -1528,6 +1528,7 @@ const PROTECTED_GEAR = new Set([
     'diamond_sword', 'shield',
     'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
     'bow', 'arrow', 'spectral_arrow', 'tipped_arrow', 'chest',
+    'elytra', 'firework_rocket',
 ]);
 
 function isProtectedGear(bot, itemName) {
@@ -2306,6 +2307,209 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
     let inverted_goal = new pf.goals.GoalInvert(goal);
     bot.pathfinder.setMovements(new pf.Movements(bot));
     await bot.pathfinder.goto(inverted_goal);
+    return true;
+}
+
+// ============================================================================
+// ELYTRA FLIGHT — glide, boost with firework rockets, and land.
+// mineflayer exposes bot.elytraFly() (deploy), bot.entity.elytraFlying (state),
+// and rocket boost = hold a firework_rocket in hand + bot.activateItem().
+// ============================================================================
+
+export function countFireworkRockets(bot) {
+    return bot.inventory.items().filter(i => i.name === 'firework_rocket').reduce((a, i) => a + i.count, 0);
+}
+
+export function isElytraEquipped(bot) {
+    const torso = bot.getEquipmentDestSlot('torso');
+    const worn = bot.inventory.slots[torso];
+    return !!worn && worn.name === 'elytra';
+}
+
+export async function equipElytra(bot) {
+    if (isElytraEquipped(bot)) {
+        log(bot, 'Already wearing elytra.');
+        return true;
+    }
+    const elytra = bot.inventory.items().find(i => i.name === 'elytra');
+    if (!elytra) {
+        log(bot, "I don't have an elytra. I can find one in an End City ship, or /give myself one since I'm op.");
+        return false;
+    }
+    await bot.equip(elytra, 'torso');
+    log(bot, 'Elytra equipped.');
+    return true;
+}
+
+export async function equipFireworkRocket(bot) {
+    const rocket = bot.inventory.items().find(i => i.name === 'firework_rocket');
+    if (!rocket) {
+        log(bot, "I don't have any firework rockets — I need to craft some (paper + gunpowder).");
+        return false;
+    }
+    await bot.equip(rocket, 'hand');
+    log(bot, 'Firework rocket in hand.');
+    return true;
+}
+
+export async function boostWithFirework(bot) {
+    // Boost while gliding: right-click a firework rocket. Requires elytra flying.
+    if (!bot.entity.elytraFlying) {
+        log(bot, "Can't boost — not currently gliding.");
+        return false;
+    }
+    if (countFireworkRockets(bot) === 0) {
+        log(bot, 'Out of firework rockets.');
+        return false;
+    }
+    const held = bot.heldItem;
+    if (!held || held.name !== 'firework_rocket') {
+        if (!await equipFireworkRocket(bot)) return false;
+    }
+    bot.activateItem();
+    log(bot, 'Boosted with a firework rocket.');
+    return true;
+}
+
+export async function buildLiftoffTower(bot, height = 20) {
+    // Build a vertical pillar at her feet and get on top — a ready-made launch
+    // point when there's no cliff or tower nearby.
+    height = Math.max(4, Math.min(64, Math.floor(height)));
+    const feet = Math.floor(bot.entity.position.y);
+    const bx = Math.floor(bot.entity.position.x);
+    const bz = Math.floor(bot.entity.position.z);
+    const block = 'cobblestone';
+
+    const baseY = feet - 1;          // ground block she's standing on
+    const topBlockY = baseY + height; // highest block of the pillar
+    const standY = topBlockY + 1;     // her feet once standing on top
+
+    let placed = 0;
+    for (let y = baseY + 1; y <= topBlockY; y++) {
+        if (bot.interrupt_code) break;
+        try {
+            if (await placeBlock(bot, block, bx, y, bz, 'bottom')) placed++;
+        } catch (e) { break; }
+    }
+    if (placed < 3) {
+        log(bot, "Couldn't build a liftoff tower.");
+        return false;
+    }
+
+    if (bot.modes.isOn('cheat')) {
+        bot.chat(`/tp @s ${bx} ${standY} ${bz}`);
+        await new Promise(resolve => setTimeout(resolve, 120));
+    } else {
+        // Survival: pillar-jump up by placing a block under our feet each step.
+        for (let i = 0; i < height && !bot.interrupt_code; i++) {
+            const f = bot.entity.position.floored();
+            await placeBlock(bot, block, f.x, f.y - 1, f.z, 'bottom');
+            bot.setControlState('jump', true);
+            await new Promise(resolve => setTimeout(resolve, 160));
+            bot.setControlState('jump', false);
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+    log(bot, `Built a ${height}-block liftoff tower and climbed on top.`);
+    return true;
+}
+
+export async function takeOff(bot) {
+    // Deploy the elytra: equip it, get height (build a tower if grounded), jump
+    // to leave the ground, then start gliding.
+    if (bot.entity.elytraFlying) {
+        log(bot, 'Already flying.');
+        return true;
+    }
+    if (!await equipElytra(bot)) return false;
+
+    if (bot.entity.onGround) {
+        log(bot, 'Need height to take off — building a liftoff tower.');
+        if (!await buildLiftoffTower(bot, 16)) return false;
+    }
+
+    // Leave the ground (jump) so elytraFly() can deploy.
+    bot.setControlState('jump', true);
+    await new Promise(resolve => setTimeout(resolve, 120));
+    bot.setControlState('jump', false);
+    await new Promise(resolve => setTimeout(resolve, 80));
+
+    try {
+        await bot.elytraFly();
+        log(bot, 'Took off — elytra deployed, gliding!');
+        return true;
+    } catch (e) {
+        log(bot, `Take-off failed: ${e.message}`);
+        return false;
+    }
+}
+
+export async function landWithElytra(bot) {
+    // Descend and touch down gently. The elytra deactivates when she hits ground.
+    if (!bot.entity.elytraFlying) {
+        log(bot, 'Already on the ground.');
+        return true;
+    }
+    const start = Date.now();
+    while (bot.entity.elytraFlying && !bot.interrupt_code && Date.now() - start < 30000) {
+        const pos = bot.entity.position;
+        const below = bot.blockAt(pos.offset(0, -3, 0));
+        const groundDist = below ? pos.y - below.position.y : 99;
+        // Dive (45° down) while high, level out when close so we land on our feet.
+        const pitch = groundDist > 6 ? Math.PI / 4 : 0;
+        await bot.look(bot.entity.yaw, pitch);
+        if (bot.entity.onGround) break;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    bot.clearControlStates();
+    log(bot, 'Landed.');
+    return true;
+}
+
+export async function flyWithElytra(bot, x, y, z, min_distance = 3) {
+    // Fly (glide + auto-boost) to a destination and land near it.
+    if (x == null || y == null || z == null) {
+        log(bot, 'Missing destination coordinates.');
+        return false;
+    }
+    if (!bot.entity.elytraFlying && !await takeOff(bot)) return false;
+
+    const target = new Vec3(x, y, z);
+    const hasRockets = countFireworkRockets(bot) > 0;
+    const start = Date.now();
+    const MAX_MS = 120000;
+    let lastBoost = 0;
+
+    if (hasRockets) await equipFireworkRocket(bot);
+
+    while (!bot.interrupt_code) {
+        if (Date.now() - start > MAX_MS) {
+            log(bot, 'Flight timed out — landing.');
+            break;
+        }
+        const pos = bot.entity.position;
+        const horizontal = Math.hypot(pos.x - x, pos.z - z);
+        if (horizontal <= min_distance) break; // overhead the target
+
+        if (!bot.entity.elytraFlying) {
+            log(bot, 'Elytra deactivated mid-flight.');
+            break;
+        }
+
+        // Face the destination (pitch aims us at it, which also controls descent).
+        try { await bot.lookAt(target.offset(0, 1.5, 0), true); } catch (e) { /* ignore */ }
+
+        // Keep speed/altitude with a rocket every ~2.5s when we have them.
+        if (hasRockets && Date.now() - lastBoost > 2500) {
+            await boostWithFirework(bot);
+            lastBoost = Date.now();
+        }
+        await new Promise(resolve => setTimeout(resolve, 150));
+    }
+
+    bot.clearControlStates();
+    await landWithElytra(bot);
+    log(bot, `Flew to ${x}, ${y}, ${z}.`);
     return true;
 }
 
