@@ -14,21 +14,22 @@ import path from 'path';
 //   attention   — how fixated she is right now (decays over time when ignored)
 //   trust       — how much she believes them / shares secrets
 //   fear        — how much they intimidate her (drives avoidance / submission)
-//   jealousy    — how possessive she feels about them (spikes when they flirt with others)
+//   jealousy    — how possessive she feels about them (rises when they chat with others, calms fast when they give her attention)
 //   annoyance   — short-term irritation; spikes on meanness, cools fast (drives cold shoulder / ignore)
+//   madness     — how unhinged she is toward THEM (toying, insincere "it was an accident", junk gifts drive it; smooth talk + time calm it; fuels harassment and crystal PvP)
 //   respect     — how much she defers to them (drives whether she obeys their requests)
 //   interactions— raw count, decides whether they appear in her prompt at all
 //
 // rank (derived): stranger < acquaintance < friend < darling < BELOVED; enemy overrides.
 
-const STAT_DEFS = ['love', 'hate', 'attention', 'trust', 'fear', 'jealousy', 'annoyance', 'respect'];
+const STAT_DEFS = ['love', 'hate', 'attention', 'trust', 'fear', 'jealousy', 'annoyance', 'madness', 'respect'];
 const MAX = 100;
 
 // Per-tick decay toward neutral (0) for each dynamic stat, applied to players who
 // haven't interacted with her in a while. Fast-cooling vs sticky stats.
 const DECAY_PER_TICK = {
     attention: 5, annoyance: 15, jealousy: 5, fear: 3,
-    hate: 2, trust: 2, respect: 2, love: 1,
+    hate: 2, trust: 2, respect: 2, love: 1, madness: 4,
 };
 
 function clamp(v, lo = 0, hi = MAX) {
@@ -38,7 +39,7 @@ function clamp(v, lo = 0, hi = MAX) {
 function defaultEntry() {
     return {
         love: 0, hate: 0, attention: 0, trust: 0, fear: 0, jealousy: 0,
-        annoyance: 0, respect: 0, lastTone: 'neutral', grievance: '',
+        annoyance: 0, madness: 0, respect: 0, lastTone: 'neutral', grievance: '',
         interactions: 0, rank: 'stranger', lastSeen: Date.now(), notes: '',
     };
 }
@@ -61,6 +62,22 @@ const APOLOGY_WORDS = [
     'come back', 'talk to me', 'notice me', 'pay attention', 'dont ignore', 'miss you',
 ];
 const POLITE_WORDS = ['please', 'pls', 'could you', 'would you', 'may i', 'can i', 'if you want', 'mind'];
+
+// ---- madness & jealousy triggers (zero-LLM deterministics) ---------------
+const TOY_WORDS = [ // say one thing, do another — deception/toying drives madness
+    'jk', 'just kidding', 'kidding', 'not really', 'nvm', 'nevermind', 'psych', 'sike',
+    'gotcha', 'got you', 'just a prank', 'pranked', 'april fools', 'fooled', 'tricked',
+    "wasn't real", 'was lying', 'lied to you', 'fake',
+];
+const INSINCERE_WORDS = [ // "hit you by mistake" — the cover-up that enrages her
+    'mistake', 'accident', 'oops', "didn't mean", 'didnt mean', 'my bad', 'not my fault',
+    "wasn't me", 'wasnt me', 'lag', 'bug',
+];
+const BAD_ITEM_WORDS = [ // junk/gross "gifts" dumped on her
+    'rotten_flesh', 'rotten flesh', 'spider_eye', 'spider eye', 'poisonous_potato',
+    'poisonous potato', 'poison', 'dirt', 'cobblestone', 'gravel', 'netherrack',
+    'soul_sand', 'rotten', 'garbage', 'trash', 'junk',
+];
 
 function score(text, words) {
     const t = text.toLowerCase();
@@ -169,6 +186,18 @@ export class RelationshipManager {
         if (fearHit > 0) { d.fear = Math.min(5, 2 + fearHit); d.hate = Math.min(4, fearHit); d.annoyance = Math.min(6, 2 + fearHit); }
         if (politeHit > 0 && hateHit === 0 && fearHit === 0) { d.respect = Math.min(4, 1 + politeHit); d.attention = 4; }
 
+        // madness: toying, insincere "it was an accident" and junk gifts raise it.
+        // jealousy: being addressed = not ignored, so it drains fast; smooth talk soothes both.
+        const toyHit = score(text, TOY_WORDS);
+        const insincereApology = score(text, APOLOGY_WORDS) > 0 && score(text, INSINCERE_WORDS) > 0;
+        const badGiftHit = score(text, BAD_ITEM_WORDS);
+        const giveCue = /give|take|here|have|gift|get|for you/.test(text.toLowerCase());
+        d.jealousy = -10;
+        if (toyHit > 0) { d.madness = Math.min(8, 2 + toyHit); d.annoyance = Math.min(6, 1 + toyHit); }
+        if (insincereApology) d.madness = Math.max(d.madness || 0, 9);
+        if (badGiftHit > 0 && giveCue) { d.madness = Math.min(8, 2 + badGiftHit); d.annoyance = Math.min(5, 1 + badGiftHit); }
+        if (loveHit > 0) { d.madness = -Math.min(7, 1 + loveHit); d.jealousy = -Math.min(12, 4 + loveHit); }
+
         this.get(name).lastTone = this.detectTone(text);
         if (hateHit > 0 || fearHit > 0) {
             const mean = [...HATE_WORDS, ...FEAR_WORDS].filter(w => text.toLowerCase().includes(w));
@@ -206,6 +235,17 @@ export class RelationshipManager {
     // A player she's fixated on flirts with someone else → jealousy spike.
     onJealousy(name) {
         this.adjust(name, { jealousy: 6, attention: 6 });
+    }
+
+    // Ambient chatter: a public message NOT aimed at her means they're talking to
+    // someone else. If she's invested in them, jealousy ticks up little by little
+    // (diminishing returns as it climbs — one chat won't send it to 100).
+    onJealousyObserved(name) {
+        if (!name) return;
+        const e = this.get(name);
+        if (e.love < 15 && e.attention < 10) return; // she doesn't care about them yet
+        const bump = e.jealousy >= 60 ? 1 : e.jealousy >= 30 ? 2 : 3;
+        this.adjust(name, { jealousy: bump, attention: 1 }, { no_interaction: true });
     }
 
     // She deliberately gave a player the cold shoulder (chose to ignore them).

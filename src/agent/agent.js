@@ -251,6 +251,12 @@ export class Agent {
                     }
                 }
 
+                // Possessiveness: a public message not aimed at her means they're chatting
+                // with someone else — jealousy ticks up (only if she's invested in them).
+                if (!isWhisper && !msg_lc.includes(name_lc)) {
+                    this.relationship.onJealousyObserved(username);
+                }
+
                 // Relevance gate for public chat: don't answer unless she's addressed by name,
                 // the sender is nearby, or it's her beloved. Whispers are always addressed to her.
                 if (!isWhisper && !isBeloved) {

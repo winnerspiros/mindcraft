@@ -809,7 +809,7 @@ export const actionsList = [
                 return false;
             }
             const rel = agent.relationship.get(player_name);
-            if (rel.hate < 65 && rel.annoyance < 80) {
+            if (rel.hate < 65 && rel.annoyance < 80 && rel.madness < 75) {
                 skills.log(agent.bot, `Not nearly mad enough at ${player_name} to do that.`);
                 return false;
             }
