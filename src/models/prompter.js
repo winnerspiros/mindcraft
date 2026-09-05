@@ -91,6 +91,22 @@ function getElytraKnowledge() {
     return _elytraKnowledge;
 }
 
+// Storage & containers reference — static knowledge injected via $STORAGE_KNOWLEDGE.
+// Chests, furnaces, hoppers, dispensers, shulker boxes, bundles, etc. — what they are,
+// how to craft, how to get, and how to use them. Kept in its own markdown file.
+const STORAGE_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/storage_knowledge.md');
+let _storageKnowledge = null;
+function getStorageKnowledge() {
+    if (_storageKnowledge != null) return _storageKnowledge;
+    try {
+        _storageKnowledge = readFileSync(STORAGE_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load storage knowledge:', e.message);
+        _storageKnowledge = '';
+    }
+    return _storageKnowledge;
+}
+
 export class Prompter {
     constructor(agent, profile) {
         this.agent = agent;
@@ -298,6 +314,8 @@ export class Prompter {
             prompt = prompt.replaceAll('$COMBAT_KNOWLEDGE', getCombatKnowledge());
         if (prompt.includes('$ELYTRA_KNOWLEDGE'))
             prompt = prompt.replaceAll('$ELYTRA_KNOWLEDGE', getElytraKnowledge());
+        if (prompt.includes('$STORAGE_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$STORAGE_KNOWLEDGE', getStorageKnowledge());
         if (prompt.includes('$PERSONAL'))
             prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
         if (prompt.includes('$HEAT'))

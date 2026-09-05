@@ -39,7 +39,7 @@ const modes_list = [
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
             // falling from a height — MLG water bucket to survive the fall
-            if (!bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
+            if (!bot.entity.elytraFlying && !bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
                 if (Date.now() - this.last_clutch > 2000) {
                     this.last_clutch = Date.now();
                     execute(this, agent, async () => {

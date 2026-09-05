@@ -188,9 +188,9 @@ export const actionsList = [
     },
     {
         name: '!takeOff',
-        description: 'Launch with the elytra: equip wings, get height (build a tower if none), jump and start gliding.',
+        description: 'Fly: rocket-launch into the air with the elytra, cruise around with periodic rocket boosts to stay airborne, then glide down and land (and put your armor back on). Use when a player asks you to fly.',
         perform: runAsAction(async (agent) => {
-            await skills.takeOff(agent.bot);
+            await skills.cruiseWithElytra(agent.bot);
         })
     },
     {
@@ -229,6 +229,16 @@ export const actionsList = [
         description: 'Descend and touch down gently, ending the elytra glide.',
         perform: runAsAction(async (agent) => {
             await skills.landWithElytra(agent.bot);
+        })
+    },
+    {
+        name: '!fly',
+        description: 'Actually fly: rocket-jump into the air, then cruise forward with periodic rocket boosts to stay airborne, then glide down and land. Use this when a player asks you to fly.',
+        params: {
+            'seconds': { type: 'float', default: 12, description: 'How many seconds to stay airborne (optional).', domain: [2, 60] }
+        },
+        perform: runAsAction(async (agent, seconds) => {
+            await skills.cruiseWithElytra(agent.bot, seconds);
         })
     },
     {
