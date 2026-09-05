@@ -406,16 +406,17 @@ export async function isClearPath(bot, target) {
 export function shouldPlaceTorch(bot) {
     if (!bot.modes.isOn('torch_placing') || bot.interrupt_code) return false;
     const pos = getPosition(bot);
-    // TODO: check light level instead of nearby torches, block.light is broken
-    let nearest_torch = getNearestBlock(bot, 'torch', 6);
-    if (!nearest_torch)
-        nearest_torch = getNearestBlock(bot, 'wall_torch', 6);
-    if (!nearest_torch) {
-        const block = bot.blockAt(pos);
-        let has_torch = bot.inventory.findInventoryItem('torch');
-        return has_torch && block?.name === 'air';
-    }
-    return false;
+    const block = bot.blockAt(pos);
+    if (!block) return false;
+    // Darkness trigger: light a torch only where it's genuinely hard to see. Caves
+    // and the night surface have skyLight 0 and little block light; vision brightness
+    // is the higher of the two (block light = torches/glowstone/lava, skyLight = sun).
+    // 8+ is bright enough to leave alone.
+    const brightness = Math.max(block.light ?? 0, block.skyLight ?? 0);
+    if (brightness >= 8) return false;
+    // Don't stack torches right on top of each other.
+    if (getNearestBlock(bot, 'torch', 4) || getNearestBlock(bot, 'wall_torch', 4)) return false;
+    return bot.inventory.findInventoryItem('torch') != null;
 }
 
 export function getBiomeName(bot) {

@@ -860,15 +860,20 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         return false;
     }
 
-    // ensure a bow — /give resolves since she is op (level 4)
+    // ensure a bow — she's OP, but /give only resolves into inventory when there's a
+    // free slot. With a full bag the /give DROPS the bow on the ground, the re-check
+    // still finds none, and every self-defense/hunting tick /gives another → a pile of
+    // bows on the floor. Only /give when there's room; otherwise tell her to make space.
     let bow = bot.inventory.items().find(i => i.name === 'bow');
     if (!bow) {
-        bot.chat(`/give ${bot.username} bow 1`);
-        await new Promise(r => setTimeout(r, 350));
-        bow = bot.inventory.items().find(i => i.name === 'bow');
+        if (bot.inventory.items().length < 36) {
+            bot.chat(`/give ${bot.username} bow 1`);
+            await new Promise(r => setTimeout(r, 350));
+            bow = bot.inventory.items().find(i => i.name === 'bow');
+        }
     }
     if (!bow) {
-        log(bot, 'No bow available to shoot with.');
+        log(bot, 'No bow to shoot with — inventory full (a /give would only drop it on the ground). Free a slot, or craft one: 3 string + 3 sticks.');
         return false;
     }
 
