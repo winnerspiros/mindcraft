@@ -1,4 +1,4 @@
-import { getBlockId, getItemId } from "../../utils/mcdata.js";
+import { getBlockId, getItemId, suggestBlockNames, suggestItemNames, suggestBlockOrItemNames } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
 
@@ -186,11 +186,20 @@ export function parseCommandMessage(message) {
                 suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
-            if(getBlockId(arg) == null) return  `Invalid block type: ${arg}.`
+            if(getBlockId(arg) == null) {
+                const s = suggestBlockNames(arg);
+                return `Invalid block type: ${arg}.${s.length ? ` Did you mean: ${s.join(', ')}?` : ''}`;
+            }
         } else if(param.type === 'ItemName') { //Check that there is an item with this name
-            if(getItemId(arg) == null) return `Invalid item type: ${arg}.`
+            if(getItemId(arg) == null) {
+                const s = suggestItemNames(arg);
+                return `Invalid item type: ${arg}.${s.length ? ` Did you mean: ${s.join(', ')}?` : ''}`;
+            }
         } else if(param.type === 'BlockOrItemName') {
-            if(getBlockId(arg) == null && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.`
+            if(getBlockId(arg) == null && getItemId(arg) == null) {
+                const s = suggestBlockOrItemNames(arg);
+                return `Invalid block or item type: ${arg}.${s.length ? ` Did you mean: ${s.join(', ')}?` : ''}`;
+            }
         }
         args[i] = arg;
     }
@@ -215,6 +224,13 @@ export function truncCommandMessage(message) {
 
 export function isAction(name) {
     return actionsList.find(action => action.name === name) !== undefined;
+}
+
+// Tight pattern for command parse/validation errors. Distinct from "soft" action
+// results like "No zombie nearby" (which should NOT prompt a correction loop).
+const RETRYABLE_ERROR_RE = /^(Command is incorrectly formatted|Command .* was given .* args|Error: Param .*|Invalid (block|item|block or item) type)/;
+export function isRetryableError(str) {
+    return typeof str === 'string' && RETRYABLE_ERROR_RE.test(str.trim());
 }
 
 /**

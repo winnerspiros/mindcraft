@@ -197,6 +197,47 @@ export function getEntityId(entityName) {
     return null;
 }
 
+// Levenshtein edit distance (bounded to reasonable name lengths).
+function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    let prev = Array.from({ length: n + 1 }, (_, i) => i);
+    let cur = new Array(n + 1);
+    for (let i = 1; i <= m; i++) {
+        cur[0] = i;
+        for (let j = 1; j <= n; j++) {
+            cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+        }
+        [prev, cur] = [cur, prev];
+    }
+    return prev[n];
+}
+
+// Suggest close matches for an invalid block/item name so the LLM's retry can
+// actually succeed ("did you mean: ..."). neuro-sdk best-practice: actionable errors.
+function suggestNames(target, nameMap, limit = 4) {
+    const t = String(target || '').toLowerCase();
+    if (!t || !nameMap) return [];
+    const scored = [];
+    for (const name of Object.keys(nameMap)) {
+        const n = name.toLowerCase();
+        if (n === t) continue;
+        const dist = levenshtein(t, n);
+        if (dist <= Math.max(2, Math.floor(t.length / 3))) scored.push({ name, dist });
+    }
+    scored.sort((a, b) => a.dist - b.dist || a.name.localeCompare(b.name));
+    return scored.slice(0, limit).map(s => s.name);
+}
+
+export function suggestBlockNames(name) { return suggestNames(name, mcdata && mcdata.blocksByName); }
+export function suggestItemNames(name) { return suggestNames(name, mcdata && mcdata.itemsByName); }
+export function suggestBlockOrItemNames(name) {
+    const b = suggestNames(name, mcdata && mcdata.blocksByName);
+    const i = suggestNames(name, mcdata && mcdata.itemsByName);
+    return [...new Set([...b, ...i])].slice(0, 4);
+}
+
 export function getAllItems(ignore) {
     if (!ignore) {
         ignore = [];

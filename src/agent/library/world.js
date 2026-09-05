@@ -429,3 +429,42 @@ export function getBiomeName(bot) {
     const biomeId = bot.world.getBiome(bot.entity.position);
     return mc.getAllBiomes()[biomeId].name;
 }
+
+export function getTerrainProfile(bot, range = 24) {
+    /**
+     * Directional terrain profile — a compact factual summary of what the bot
+     * can "see" in each compass direction. Raycasts horizontally at feet + head
+     * level to find the first solid feature per direction, plus what she stands
+     * on and the first solid block overhead. Neutral facts, no interpretation.
+     * @param {Bot} bot - the bot.
+     * @param {number} range - raycast distance in blocks.
+     * @returns {string[]} one line per direction.
+     * @example
+     * let profile = world.getTerrainProfile(bot);
+     **/
+    const pos = bot.entity.position;
+    const DIRS = [
+        ['north', 0, -1], ['northeast', 1, -1], ['east', 1, 0], ['southeast', 1, 1],
+        ['south', 0, 1], ['southwest', -1, 1], ['west', -1, 0], ['northwest', -1, -1],
+    ];
+    const solid = (b) => b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air';
+    const lines = [];
+    const below = bot.blockAt(pos.offset(0, -1, 0));
+    lines.push(`standing on ${below ? below.name : 'air'}`);
+
+    for (const [label, dx, dz] of DIRS) {
+        let hit = null;
+        for (let d = 1; d <= range; d++) {
+            const b0 = bot.blockAt(pos.offset(dx * d, 0, dz * d));   // feet level
+            const b1 = bot.blockAt(pos.offset(dx * d, 1, dz * d));   // head level
+            if (solid(b0) || solid(b1)) {
+                const b = solid(b0) ? b0 : b1;
+                hit = `${b.name} ${d}m`;
+                break;
+            }
+        }
+        lines.push(`${label}: ${hit || 'clear'}`);
+    }
+    lines.push(`above: ${getFirstBlockAboveHead(bot, null, 32)}`);
+    return lines;
+}

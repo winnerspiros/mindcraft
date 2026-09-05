@@ -1,5 +1,6 @@
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
+import * as schematic from '../library/schematic.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
@@ -7,6 +8,44 @@ import { load } from 'cheerio';
 
 const pad = (str) => {
     return '\n' + str + '\n';
+}
+
+// timeout-guarded fetch so a slow/hung network can't stall the bot for long
+async function fetchTimeout(url, ms = 8000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+        return await fetch(url, { signal: ctrl.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+// General web search: DuckDuckGo Instant Answer (keyless) with a Wikipedia fallback.
+// Returns a single concise answer the LLM can read directly — used only on demand.
+async function webSearch(query) {
+    const q = String(query || '').trim();
+    if (!q) return 'No search query given.';
+    try {
+        const ddgRes = await fetchTimeout(`https://api.duckduckgo.com/?q=${encodeURIComponent(q)}&format=json&no_html=1&skip_disambig=1&t=uwu-bot`);
+        const ddg = await ddgRes.json();
+        let answer = (ddg.AbstractText || ddg.Answer || ddg.Definition || '').trim();
+        if (!answer) {
+            answer = (ddg.RelatedTopics || [])
+                .flatMap(t => t.Text ? [t.Text] : (t.Topics || []).map(x => x.Text))
+                .filter(Boolean).slice(0, 2).join(' | ');
+        }
+        if (answer) return `[web] ${q}: ${answer.replace(/\s+/g, ' ').trim().slice(0, 600)}`;
+
+        const wikiRes = await fetchTimeout(`https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch=${encodeURIComponent(q)}&format=json&srlimit=3`);
+        const wiki = await wikiRes.json();
+        const hits = (wiki?.query?.search || []).map(s => s.snippet.replace(/<[^>]+>/g, ''));
+        if (hits.length) return `[web] ${q}: ${hits.join(' | ').replace(/\s+/g, ' ').trim().slice(0, 600)}`;
+
+        return `No web results found for "${q}".`;
+    } catch (e) {
+        return `Web search failed: ${e.message}`;
+    }
 }
 
 // queries are commands that just return strings and don't affect anything in the world
@@ -144,11 +183,27 @@ export const queryList = [
             if (block_details.size === 0) {
                 res += ': none';
             } 
-            else {
-                res += '\n- ' + world.getSurroundingBlocks(bot).join('\n- ');
-                res += `\n- First Solid Block Above Head: ${world.getFirstBlockAboveHead(bot, null, 32)}`;
+            return pad(res);
+        }
+    },
+    {
+        name: "!surroundings",
+        description: "Get a directional summary of what is around the bot — what it stands on, and the first solid thing in each compass direction plus overhead.",
+        perform: function (agent) {
+            let res = 'SURROUNDINGS';
+            for (const line of world.getTerrainProfile(agent.bot)) {
+                res += `\n- ${line}`;
             }
             return pad(res);
+        }
+    },
+    {
+        name: "!listSchematics",
+        description: "List the schematic files available to !pasteSchematic.",
+        perform: function (agent) {
+            const list = schematic.listSchematics();
+            if (list.length === 0) return pad('No schematics saved yet. Use !captureBlueprint to capture a structure.');
+            return pad('SCHEMATICS\n- ' + list.join('\n- '));
         }
     },
     {
@@ -357,6 +412,16 @@ export const queryList = [
                 console.error("Error fetching or parsing HTML:", error);
                 return `The following error occurred: ${error}`
               }
+        }
+    },
+    {
+        name: '!webSearch',
+        description: 'Search the general internet (a recipe, a joke, a fact, a build idea, anything). Use ONLY when you genuinely need outside info you do not already know — it adds a delay.',
+        params: {
+            'query': { type: 'string', description: 'What to search for.' }
+        },
+        perform: async function (agent, query) {
+            return await webSearch(query);
         }
     },
     {

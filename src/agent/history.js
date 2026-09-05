@@ -69,6 +69,10 @@ export class History {
         }
         this.turns.push({role, content});
 
+        // Feed conversational turns into the reflective long-term memory (RAG).
+        if (role === 'user' || role === 'assistant')
+            this.agent.reflective_memory?.pushTurn({ role, content });
+
         if (this.turns.length >= this.max_messages) {
             let chunk = this.turns.splice(0, this.summary_chunk_size);
             while (this.turns.length > 0 && this.turns[0].role === 'assistant')

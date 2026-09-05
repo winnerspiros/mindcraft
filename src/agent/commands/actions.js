@@ -1,4 +1,5 @@
 import * as skills from '../library/skills.js';
+import * as schematic from '../library/schematic.js';
 import Vec3 from 'vec3';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
@@ -6,7 +7,7 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 
 
-function runAsAction (actionFn, resume = false, timeout = -1) {
+function runAsAction (actionFn, resume = false, timeout = 3) {
     let actionLabel = null;  // Will be set on first use
     
     const wrappedAction = async function (agent, ...args) {
@@ -162,6 +163,24 @@ export const actionsList = [
         params: {'distance': { type: 'float', description: 'The distance to move away.', domain: [0, Infinity] }},
         perform: runAsAction(async (agent, distance) => {
             await skills.moveAway(agent.bot, distance);
+        })
+    },
+    {
+        name: '!mimic',
+        description: 'Playfully copy a nearby player\'s spammy movement — crouch and jump like them.',
+        params: {
+            'player_name': { type: 'string', description: 'The name of the player to copy.' },
+            'seconds': { type: 'float', default: 3, description: 'How many seconds to mimic for.', domain: [1, 8] }
+        },
+        perform: runAsAction(async (agent, player_name, seconds) => {
+            const bot = agent.bot;
+            const target = bot.players[player_name]?.entity;
+            const dur = Math.min(Math.max(seconds || 3, 1), 8);
+            if (target) {
+                // lock eyes with them while she copies their movement
+                try { await bot.lookAt(target.position.offset(0, 1.6, 0)); } catch (e) { /* non-fatal */ }
+            }
+            await skills.spamJumpCrouch(bot, dur * 1000);
         })
     },
     {
@@ -324,8 +343,19 @@ export const actionsList = [
         })
     },
     {
+        name: '!writeSign',
+        description: 'Place a sign in front of you and write text on it. Separate lines with \\n (up to 4 lines, 45 chars each).',
+        params: {
+            'text': { type: 'string', description: 'The text to write on the sign. Use \\n for a new line.' },
+            'block_type': { type: 'BlockOrItemName', default: 'oak_sign', description: 'Optional: the sign type (oak_sign, birch_sign, etc.).' }
+        },
+        perform: runAsAction(async (agent, text, block_type = 'oak_sign') => {
+            await skills.writeSign(agent.bot, text, block_type);
+        }, false, 5)
+    },
+    {
         name: '!buildShape',
-        description: 'Build a small curated shape (heart, tower, circle, cube, path, hall) out of a given block, starting at your position. Size is in blocks.',
+        description: 'Build a small curated shape (heart, tower, circle, cube, path, hall) out of a given block, starting at your position. Gathers the material and places each block by hand. Size is in blocks.',
         params: {
             'shape': { type: 'string', description: 'One of: heart, tower, circle, cube, path, hall.' },
             'block': { type: 'BlockOrItemName', description: 'The block type to build with.' },
@@ -335,10 +365,8 @@ export const actionsList = [
             let bot = agent.bot;
             let pos = bot.entity.position;
             let bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
-            let placed = 0;
-            const put = async (x, y, z) => {
-                if (await skills.placeBlock(bot, block, x, y, z)) placed++;
-            };
+            const positions = [];
+            const put = (x, y, z) => positions.push([x, y, z]);
 
             const HEART = [
                 '.XX.XX.',
@@ -357,26 +385,26 @@ export const actionsList = [
                         if (HEART[r][c] === 'X')
                             for (let sy = 0; sy < scale; sy++)
                                 for (let sx = 0; sx < scale; sx++)
-                                    await put(bx + c*scale + sx, by + (HEART.length-1-r)*scale + sy, bz);
+                                    put(bx + c*scale + sx, by + (HEART.length-1-r)*scale + sy, bz);
             }
             else if (shape === 'tower') {
-                for (let i = 0; i < size; i++) await put(bx, by + i, bz);
+                for (let i = 0; i < size; i++) put(bx, by + i, bz);
             }
             else if (shape === 'circle') {
                 let r = size;
                 for (let dx = -r; dx <= r; dx++)
                     for (let dz = -r; dz <= r; dz++)
                         if (dx*dx + dz*dz <= r*r)
-                            await put(bx+dx, by, bz+dz);
+                            put(bx+dx, by, bz+dz);
             }
             else if (shape === 'cube') {
                 for (let dx = 0; dx < size; dx++)
                 for (let dy = 0; dy < size; dy++)
                 for (let dz = 0; dz < size; dz++)
-                    await put(bx+dx, by+dy, bz+dz);
+                    put(bx+dx, by+dy, bz+dz);
             }
             else if (shape === 'path') {
-                for (let i = 0; i < size; i++) await put(bx+i, by, bz);
+                for (let i = 0; i < size; i++) put(bx+i, by, bz);
             }
             else if (shape === 'hall') {
                 // 3-wide tunnel of size length, 3 tall, open center
@@ -385,19 +413,20 @@ export const actionsList = [
                     for (let dx = -1; dx <= 1; dx++)
                     for (let dy = 0; dy <= 2; dy++) {
                         if (dx === 0 && dy === 1) continue; // open doorway
-                        await put(bx+dx, by+dy, bz+i);
+                        put(bx+dx, by+dy, bz+i);
                     }
                 }
             }
             else {
                 return `Unknown shape '${shape}'. Try heart, tower, circle, cube, path, or hall.`;
             }
-            return `Built a ${shape} of ${block} (${placed} blocks placed).`;
-        })
+            const placed = await skills.placeBlockList(bot, block, positions);
+            return `Built a ${shape} of ${block} (${placed} blocks placed by hand).`;
+        }, false, 10)
     },
     {
         name: '!build',
-        description: 'Build a real structure near you from a block. Use for houses, bridges, farms, towers and walls — NOT single blocks (use !placeHere) or small shapes (use !buildShape).',
+        description: 'Build a real structure near you. Gathers and crafts the material, then places every block by hand. Use for houses, bridges, farms, towers and walls — NOT single blocks (use !placeHere) or small shapes (use !buildShape).',
         params: {
             'structure': { type: 'string', description: 'One of: house, bridge, farm, tower, wall.' },
             'block': { type: 'BlockOrItemName', description: 'The main block to build with (e.g. oak_planks, stone_bricks).' },
@@ -408,63 +437,141 @@ export const actionsList = [
             const pos = bot.entity.position;
             const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
             size = size || 7;
-            const cmd = async (c) => { bot.chat(c); await new Promise(r => setTimeout(r, 150)); };
             structure = (structure || 'house').toLowerCase();
-            const recordBuild = () => {
+            const recordBuild = (blockOverride) => {
                 const p = './bots/UwU/structures.json';
                 let d = { builds: [] };
                 if (existsSync(p)) { try { d = JSON.parse(readFileSync(p, 'utf8')); } catch { d = { builds: [] }; } }
                 d.builds = d.builds || [];
-                d.builds.push({ type: structure, block, x: bx, y: by, z: bz, t: Date.now() });
+                d.builds.push({ type: structure, block: blockOverride || block, x: bx, y: by, z: bz, t: Date.now() });
                 writeFileSync(p, JSON.stringify(d, null, 2));
             };
+            const positions = [];
+            const add = (x, y, z) => positions.push([x, y, z]);
+            let label = '';
 
             if (structure === 'house') {
                 const w = size, d = Math.max(4, size - 2), h = 4;
                 const x2 = bx + w - 1, z2 = bz + d - 1, y2 = by + h - 1;
-                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${y2} ${z2} ${block} hollow`);
                 const dx = bx + Math.floor(w / 2);
-                await cmd(`/fill ${dx} ${by} ${bz} ${dx + 1} ${by + 1} ${bz} air`); // doorway
-                await cmd(`/fill ${bx + 1} ${by + 1} ${bz} ${bx + 2} ${by + 2} ${bz} air`); // window
-                await cmd(`/fill ${x2 - 2} ${by + 1} ${bz} ${x2 - 1} ${by + 2} ${bz} air`); // window
-                await cmd(`/fill ${bx - 1} ${y2 + 1} ${bz - 1} ${x2 + 1} ${y2 + 1} ${z2 + 1} ${block}`); // roof rim
-                await cmd(`/fill ${bx} ${y2 + 2} ${bz} ${x2} ${y2 + 2} ${z2} ${block}`); // roof ridge
-                recordBuild();
-                skills.log(bot, `Built a ${w}x${d} hollow house of ${block} with a doorway, windows and roof.`);
+                for (let x = bx; x <= x2; x++)
+                    for (let y = by; y <= y2; y++)
+                        for (let z = bz; z <= z2; z++) {
+                            const shell = x === bx || x === x2 || y === by || y === y2 || z === bz || z === z2;
+                            if (!shell) continue;
+                            if (z === bz && y <= by + 1 && x >= dx && x <= dx + 1) continue; // doorway
+                            if (z === bz && y >= by + 1 && y <= by + 2 && ((x >= bx + 1 && x <= bx + 2) || (x >= x2 - 2 && x <= x2 - 1))) continue; // windows
+                            add(x, y, z);
+                        }
+                label = `a ${w}x${d} hollow house of ${block} with a doorway and windows`;
             }
             else if (structure === 'bridge') {
                 const x2 = bx + size - 1;
-                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by} ${bz + 2} ${block}`); // deck
-                await cmd(`/fill ${bx} ${by + 1} ${bz} ${x2} ${by + 1} ${bz} ${block}`); // rail
-                await cmd(`/fill ${bx} ${by + 1} ${bz + 2} ${x2} ${by + 1} ${bz + 2} ${block}`); // rail
-                recordBuild();
-                skills.log(bot, `Built a ${size}-long bridge of ${block}.`);
-            }
-            else if (structure === 'farm') {
-                const x2 = bx + size - 1, z2 = bz + size - 1;
-                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by} ${z2} farmland`); // tilled plot
-                await cmd(`/fill ${bx + Math.floor(size / 2)} ${by} ${bz} ${bx + Math.floor(size / 2)} ${by} ${z2} water`); // irrigation
-                await cmd(`/fill ${bx - 1} ${by} ${bz - 1} ${x2 + 1} ${by + 1} ${z2 + 1} oak_fence hollow`); // fence
-                recordBuild();
-                skills.log(bot, `Built a ${size}x${size} farm with farmland, water and a fence.`);
+                for (let x = bx; x <= x2; x++) {
+                    add(x, by, bz); add(x, by, bz + 1); add(x, by, bz + 2); // deck
+                    add(x, by + 1, bz); add(x, by + 1, bz + 2); // rails
+                }
+                label = `a ${size}-long bridge of ${block}`;
             }
             else if (structure === 'tower') {
                 const h = Math.max(5, size), x2 = bx + size - 1, z2 = bz + size - 1, y2 = by + h - 1;
-                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${y2} ${z2} ${block} hollow`);
-                await cmd(`/fill ${bx + Math.floor(size / 2)} ${by} ${bz} ${bx + Math.floor(size / 2)} ${by + 1} ${bz} air`); // entrance
-                recordBuild();
-                skills.log(bot, `Built a ${h}-tall hollow tower of ${block}.`);
+                const dx = bx + Math.floor(size / 2);
+                for (let x = bx; x <= x2; x++)
+                    for (let y = by; y <= y2; y++)
+                        for (let z = bz; z <= z2; z++) {
+                            const shell = x === bx || x === x2 || y === by || y === y2 || z === bz || z === z2;
+                            if (!shell) continue;
+                            if (z === bz && y <= by + 1 && x >= dx && x <= dx + 1) continue; // entrance
+                            add(x, y, z);
+                        }
+                label = `a ${h}-tall hollow tower of ${block}`;
             }
             else if (structure === 'wall') {
                 const x2 = bx + size - 1;
-                await cmd(`/fill ${bx} ${by} ${bz} ${x2} ${by + 3} ${bz} ${block}`);
-                recordBuild();
-                skills.log(bot, `Built a ${size}-long wall of ${block}.`);
+                for (let x = bx; x <= x2; x++)
+                    for (let y = by; y <= by + 3; y++)
+                        add(x, y, bz);
+                label = `a ${size}-long wall of ${block}`;
+            }
+            else if (structure === 'farm') {
+                // A fenced plot + a water source in the middle — fence posts by hand.
+                const x2 = bx + size - 1, z2 = bz + size - 1;
+                const cx = bx + Math.floor(size / 2), cz = bz + Math.floor(size / 2);
+                for (let x = bx; x <= x2; x++) { add(x, by, bz); add(x, by, z2); }
+                for (let z = bz; z <= z2; z++) { add(bx, by, z); add(x2, by, z); }
+                const placed = await skills.placeBlockList(bot, 'oak_fence', positions);
+                const bucket = bot.inventory.findInventoryItem('water_bucket');
+                if (bucket) {
+                    await skills.placeBlock(bot, 'water', cx, by, cz, 'bottom', true);
+                    skills.log(bot, `Fenced a ${size}x${size} farm plot (${placed} fence posts) and irrigated it.`);
+                } else {
+                    skills.log(bot, `Fenced a ${size}x${size} farm plot (${placed} fence posts). I don't have a water bucket yet to irrigate it.`);
+                }
+                recordBuild('oak_fence');
+                return;
             }
             else {
                 skills.log(bot, `Unknown structure '${structure}'. Try house, bridge, farm, tower, or wall.`);
+                return;
             }
-        })
+
+            const placed = await skills.placeBlockList(bot, block, positions);
+            skills.log(bot, `Built ${label} (${placed} blocks placed by hand).`);
+            recordBuild();
+        }, false, 10)
+    },
+    {
+        name: '!pasteSchematic',
+        description: 'Build a whole structure from a saved schematic (schematics/*.json, .schem or .schematic), block-perfect and optionally rotated. Give just the name to paste it in the nearest free space near you; optionally give x y z to paste at exact coordinates, then a rotation (0/90/180/270). Use !listSchematics to see what exists and !captureBlueprint to make your own. For SIMPLE shapes use !buildShape/!build instead.',
+        params: {
+            'name': { type: 'string', description: 'Schematic name or filename, e.g. "cozy_house" or "cozy_house.schem".' },
+            'x': { type: 'int', description: 'Optional absolute X of the schematic corner (default: free space near you).', default: null },
+            'y': { type: 'int', description: 'Optional absolute Y.', default: null },
+            'z': { type: 'int', description: 'Optional absolute Z.', default: null },
+            'rotation': { type: 'int', description: 'Optional rotation in degrees: 0, 90, 180 or 270 (default 0).', default: null },
+        },
+        perform: runAsAction(async (agent, name, x, y, z, rotation) => {
+            const bot = agent.bot;
+            const fp = schematic.schematicPath(name);
+            if (!existsSync(fp)) { skills.log(bot, `No schematic found for "${name}". Use !listSchematics to see what exists.`); return; }
+            let sch;
+            try { sch = await schematic.loadSchematic(fp); }
+            catch (e) { skills.log(bot, `Could not load schematic "${name}": ${e.message}`); return; }
+            const origin = (x != null && y != null && z != null)
+                ? { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) }
+                : schematic.findFreeSpace(bot, sch);
+            const rot = rotation || 0;
+            try {
+                const placed = await schematic.placeSchematic(bot, sch, origin, rot);
+                skills.log(bot, `Pasted schematic "${name}" (${placed} blocks) at ${origin.x},${origin.y},${origin.z}${rot ? ` rotated ${rot} degrees` : ''}.`);
+            } catch (e) {
+                skills.log(bot, `Failed to paste "${name}": ${e.message}`);
+            }
+        }, false, 10)
+    },
+    {
+        name: '!captureBlueprint',
+        description: 'Snapshot a world region (two opposite corners, inclusive) into a reusable schematic you can paste elsewhere with !pasteSchematic. Use it to COPY or STUDY an existing structure. Saves to schematics/<name>.json. Capture near yourself so the chunks are loaded.',
+        params: {
+            'name': { type: 'string', description: 'Name to save it as, e.g. "nice_house".' },
+            'x1': { type: 'int', description: 'First corner X.' },
+            'y1': { type: 'int', description: 'First corner Y.' },
+            'z1': { type: 'int', description: 'First corner Z.' },
+            'x2': { type: 'int', description: 'Opposite corner X.' },
+            'y2': { type: 'int', description: 'Opposite corner Y.' },
+            'z2': { type: 'int', description: 'Opposite corner Z.' },
+        },
+        perform: runAsAction(async (agent, name, x1, y1, z1, x2, y2, z2) => {
+            const bot = agent.bot;
+            try {
+                const sch = await schematic.captureRegion(bot, new Vec3(x1, y1, z1), new Vec3(x2, y2, z2));
+                schematic.saveSchematic(name, sch);
+                const note = sch.unloaded ? ` (${sch.unloaded} cells were unloaded and skipped — capture closer or move there first)` : '';
+                skills.log(bot, `Captured a ${sch.size.x}x${sch.size.y}x${sch.size.z} region as "${name}" (${sch.blocks.length} blocks)${note}.`);
+            } catch (e) {
+                skills.log(bot, `Could not capture "${name}": ${e.message}`);
+            }
+        }, false, 15)
     },
     {
         name: '!myBuilds',

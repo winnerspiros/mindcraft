@@ -187,27 +187,51 @@ def ensure_26_2_data(base):
     print(f"[data] 26.2 game-data: {copied} copied, {len(os.listdir(dest))} present" if copied
           else f"[data] 26.2 game-data: all {len(os.listdir(dest))} present -> no-op")
 
-    # Register '26.2' block in data.js (clone the '26.1' block)
+    # Register '26.2' block in data.js (clone the '26.1' block).
+    # NOTE: '26.1' is the LAST entry in the 'pc' object, so its block closes with
+    # "    }" (NO trailing comma) — anchoring on "\n    }," grabs the wrong brace
+    # and inserts the clone inside 'bedrock'. Anchor on the block's own close.
     data_js = os.path.join(base, "minecraft-data", "data.js")
     if not os.path.exists(data_js):
         print(f"[data.js] WARNING: {data_js} missing")
         return
     src = open(data_js).read()
-    if "'26.2':" in src:
-        print("[data.js] '26.2' already registered -> no-op")
-        return
-    # Find the '26.1' block and clone it as '26.2'
+
     start = src.find("    '26.1': {")
     if start == -1:
         print("[data.js] WARNING: '26.1' block not found; cannot auto-register 26.2")
         return
-    end = src.find("\n    },", start)
-    if end == -1:
+    close = src.find("\n    }\n", start)   # '26.1' block's own close (no comma)
+    if close == -1:
         print("[data.js] WARNING: '26.1' block close not found")
         return
-    block = src[start:end + len("\n    },")]
+
+    # Idempotency: done only if a '26.2' block sits inside 'pc' (before the "  },"
+    # that closes 'pc' and opens 'bedrock'). A '26.2' string elsewhere is a stale
+    # misplacement and must be repaired, not treated as a no-op.
+    pc_close = src.find("\n  },\n  'bedrock': {", close)
+    m2 = src.find("    '26.2': {")
+    if m2 != -1 and (pc_close == -1 or m2 < pc_close):
+        print("[data.js] '26.2' already registered in pc -> no-op")
+        return
+
+    block = src[start:close + len("\n    }\n")]
     block26 = block.replace("'26.1':", "'26.2':").replace("/pc/26.1/", "/pc/26.2/")
-    src = src[:end + len("\n    },")] + "\n" + block26 + src[end + len("\n    },"):]
+
+    # Defensively remove any misplaced '26.2' block before re-inserting.
+    if m2 != -1:
+        m2_close = src.find("\n    }\n", m2)
+        if m2_close != -1:
+            remove = m2_close + len("\n    }\n")
+            if src[remove:remove + 1] == ",":
+                remove += 1
+            src = src[:m2] + src[remove:]
+            start = src.find("    '26.1': {")
+            close = src.find("\n    }\n", start)
+
+    # Insert the clone right after '26.1' so it lands inside 'pc'.
+    after26 = close + len("\n    }\n")
+    src = src[:after26 - 1] + ",\n" + block26.rstrip("\n") + "\n" + src[after26:]
     open(data_js, "w").write(src)
     print("[data.js] registered '26.2' block (cloned from 26.1)")
 
