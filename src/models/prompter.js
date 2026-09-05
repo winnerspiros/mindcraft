@@ -24,6 +24,41 @@ const DEFAULT_REFLECTION_PROMPT = `You are $NAME, a kawaii yandere AI girl. Belo
 
 $TO_SUMMARIZE`;
 
+// Redstone & mechanisms reference — static knowledge injected via $REDSTONE_KNOWLEDGE.
+// Kept in its own markdown file so it's easy to edit without touching code.
+const REDSTONE_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/redstone_knowledge.md');
+let _redstoneKnowledge = null;
+function getRedstoneKnowledge() {
+    if (_redstoneKnowledge != null) return _redstoneKnowledge;
+    try {
+        _redstoneKnowledge = readFileSync(REDSTONE_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load redstone knowledge:', e.message);
+        _redstoneKnowledge = '';
+    }
+    return _redstoneKnowledge;
+}
+
+// Elena — UwU's real-world identity + the friend/server backstory. Kept in its
+// own markdown file for easy editing. Injected via $REAL_IDENTITY: the FULL
+// sheet only when the conversation has gone real (realness meter >= 0.3),
+// otherwise a compact brief so she always knows who she is without the token cost.
+const REAL_IDENTITY_PATH = path.join(__dirname, '../agent/library/real_identity.md');
+let _realIdentity = null;
+function getRealIdentity() {
+    if (_realIdentity != null) return _realIdentity;
+    try {
+        _realIdentity = readFileSync(REAL_IDENTITY_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load real identity:', e.message);
+        _realIdentity = '';
+    }
+    return _realIdentity;
+}
+function getRealIdentityBrief() {
+    return 'Your real-world self is Elena Papadopoulou, 27, from Pangrati, Athens — a warm, funny, spontaneous creative-marketing girl, obsessed with coffee, travel and good food. This Minecraft server is a friend\'s server, set up by your old university friend Nikos (the techy one) as a hangout for your group.';
+}
+
 export class Prompter {
     constructor(agent, profile) {
         this.agent = agent;
@@ -164,6 +199,14 @@ export class Prompter {
             prompt = prompt.replaceAll('$SELF_PROMPT', self_prompt);
         }
 
+        if (prompt.includes('$REALWORLD')) {
+            prompt = prompt.replaceAll('$REALWORLD', this._getRealWorld());
+        }
+        if (prompt.includes('$REAL_IDENTITY')) {
+            const realness = this.agent.realness ? this.agent.realness.value : 0;
+            const identity = realness >= 0.30 ? getRealIdentity() : getRealIdentityBrief();
+            prompt = prompt.replaceAll('$REAL_IDENTITY', identity);
+        }
         if (prompt.includes('$STATS')) {
             prompt = prompt.replaceAll('$STATS', await this._getCachedStats());
         }
@@ -209,8 +252,16 @@ export class Prompter {
             prompt = prompt.replaceAll('$MOOD', this.agent.psyche.summarizeMood());
         if (prompt.includes('$TRAITS'))
             prompt = prompt.replaceAll('$TRAITS', this.agent.psyche.summarizeTraits());
+        if (prompt.includes('$FEAR'))
+            prompt = prompt.replaceAll('$FEAR', this.agent.psyche.summarizeFear());
+        if (prompt.includes('$REALNESS')) {
+            const realness = this.agent.realness ? this.agent.realness.summarize() : '';
+            prompt = prompt.replaceAll('$REALNESS', realness);
+        }
         if (prompt.includes('$DOSSIER'))
             prompt = prompt.replaceAll('$DOSSIER', this.agent.profiles.dossier(this.agent.profiles.currentSpeaker));
+        if (prompt.includes('$REDSTONE_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$REDSTONE_KNOWLEDGE', getRedstoneKnowledge());
         if (prompt.includes('$NSFW'))
             prompt = prompt.replaceAll('$NSFW', this.profile.nsfw ? NSFW_DIRECTIVE : '');
         if (prompt.includes('$TO_SUMMARIZE'))
@@ -304,6 +355,13 @@ export class Prompter {
     }
 
     // --- context-hygiene helpers ---
+
+    // Neutral real-world grounding: current date/time, injected every prompt via
+    // $REALWORLD so she's always aware of the actual "now". A pure fact she can
+    // reference naturally — not a directive.
+    _getRealWorld() {
+        return 'Real-world date & time right now: ' + new Date().toUTCString().replace(' GMT', ' UTC') + '.';
+    }
 
     _getStateSignature() {
         const bot = this.agent.bot;

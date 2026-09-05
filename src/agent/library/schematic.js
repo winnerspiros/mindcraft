@@ -33,6 +33,23 @@ function rotateRelative(x, z, sx, sz, steps) {
     }
 }
 
+const H_DIRS = ['north', 'east', 'south', 'west'];
+// Rotate a block-state `props` object with the schematic. `facing` (a horizontal
+// direction) is remapped; everything else (powered, delay, extended, up/down, ...)
+// is invariant under a Y rotation.
+function rotateProps(props, steps) {
+    if (!steps || !props || typeof props !== 'object') return props || {};
+    const out = {};
+    for (const [k, v] of Object.entries(props)) {
+        if (k === 'facing' && H_DIRS.includes(String(v))) {
+            out[k] = H_DIRS[(H_DIRS.indexOf(String(v)) + steps) % 4];
+        } else {
+            out[k] = v;
+        }
+    }
+    return out;
+}
+
 /**
  * Normalize any schematic (our .json capture, a .schem, or a .schematic) into:
  *   { size: {x,y,z}, blocks: [{x,y,z,name,props}] }
@@ -120,8 +137,26 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
 
     const rotated = schematic.blocks.map((b) => {
         const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
-        return { x, y: b.y, z, name: b.name };
+        return { x, y: b.y, z, name: b.name, props: rotateProps(b.props || {}, steps) };
     });
+
+    // A stateful schematic (redstone/mechanisms — any block carrying props) is placed
+    // precisely with /setblock so facing/power survive. Gathering materials is pointless
+    // for those and would just fail on hard-to-craft parts. Decorative schematics keep
+    // the gather-then-place-by-hand path below.
+    const stateful = schematic.instant === true || rotated.some((b) => b.props && Object.keys(b.props).length > 0);
+    if (stateful) {
+        rotated.sort((a, b) => a.y - b.y);
+        let placed = 0;
+        for (const b of rotated) {
+            if (bot.interrupt_code) break;
+            const wx = Math.floor(origin.x) + b.x;
+            const wy = Math.floor(origin.y) + b.y;
+            const wz = Math.floor(origin.z) + b.z;
+            if (await skills.placeBlockState(bot, b.name, b.props, wx, wy, wz)) placed++;
+        }
+        return placed;
+    }
 
     // Gather + craft materials for every block type before placing anything.
     const byName = {};

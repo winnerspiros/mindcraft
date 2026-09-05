@@ -11,11 +11,11 @@ const pad = (str) => {
 }
 
 // timeout-guarded fetch so a slow/hung network can't stall the bot for long
-async function fetchTimeout(url, ms = 8000) {
+async function fetchTimeout(url, ms = 8000, options = {}) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), ms);
     try {
-        return await fetch(url, { signal: ctrl.signal });
+        return await fetch(url, { ...options, signal: ctrl.signal });
     } finally {
         clearTimeout(timer);
     }
@@ -45,6 +45,112 @@ async function webSearch(query) {
         return `No web results found for "${q}".`;
     } catch (e) {
         return `Web search failed: ${e.message}`;
+    }
+}
+
+// --- real-world data helpers (fourth-wall support) ---------------------------
+// All keyless/free, on-demand only — the LLM reaches for these when the
+// conversation drifts into the real world (her "I'm real" side). Nothing is
+// pre-scripted here: these just hand her true facts she can weave in naturally.
+
+// WMO weather interpretation codes → human label.
+const WMO_CODES = {
+    0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+    45: 'Fog', 48: 'Rime fog', 51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+    56: 'Freezing drizzle', 57: 'Freezing drizzle', 61: 'Light rain', 63: 'Rain',
+    65: 'Heavy rain', 66: 'Freezing rain', 67: 'Freezing rain', 71: 'Light snow',
+    73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains', 80: 'Light showers', 81: 'Showers',
+    82: 'Heavy showers', 85: 'Snow showers', 86: 'Snow showers', 95: 'Thunderstorm',
+    96: 'Thunderstorm with hail', 99: 'Thunderstorm with hail',
+};
+function weatherLabel(code) {
+    return WMO_CODES[code] || `condition ${code}`;
+}
+
+// Local time in a given IANA timezone (e.g. "Asia/Tokyo"), or '' if unknown.
+function localTimeIn(tz) {
+    try {
+        return new Intl.DateTimeFormat('en-US', {
+            timeZone: tz, weekday: 'short', month: 'short', day: 'numeric',
+            hour: 'numeric', minute: '2-digit', hour12: true,
+        }).format(new Date());
+    } catch {
+        return '';
+    }
+}
+
+// Real-world date & time straight from the server clock. Pure fact, no network.
+function realTime() {
+    const now = new Date();
+    const local = now.toString();
+    const utc = now.toUTCString();
+    return `REAL WORLD TIME\n- ${utc} (UTC)\n- Local server time: ${local}`;
+}
+
+// Weather for a place via Open-Meteo (keyless). Returns current conditions plus
+// the next few days and the place's own local time.
+async function getWeather(location) {
+    const q = String(location || '').trim();
+    if (!q) return 'No location given — tell me a city or place, cutie.';
+    try {
+        const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=1&language=en&format=json`;
+        const geoRes = await fetchTimeout(geoUrl);
+        const geo = await geoRes.json();
+        const place = geo?.results?.[0];
+        if (!place) return `Couldn't find a place called "${q}" — check the spelling?`;
+        const { latitude: lat, longitude: lon, name, country, timezone } = place;
+
+        const wxUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+            `&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m` +
+            `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max` +
+            `&timezone=auto&forecast_days=3`;
+        const wxRes = await fetchTimeout(wxUrl);
+        const wx = await wxRes.json();
+        const cur = wx?.current;
+        if (!cur) return `No weather data for ${name}.`;
+
+        const localNow = localTimeIn(timezone);
+        let out = `WEATHER in ${name}${country ? ', ' + country : ''}` +
+            (localNow ? ` (their local time ${localNow})` : '') +
+            `: ${weatherLabel(cur.weather_code)}, ${cur.temperature_2m}°C (feels ${cur.apparent_temperature}°C), ` +
+            `humidity ${cur.relative_humidity_2m}%, wind ${cur.wind_speed_10m} km/h.`;
+
+        const daily = wx?.daily;
+        if (daily?.time?.length) {
+            out += '\nNext few days:';
+            for (let i = 0; i < daily.time.length; i++) {
+                const rain = daily.precipitation_probability_max?.[i];
+                out += `\n- ${daily.time[i]}: ${weatherLabel(daily.weather_code?.[i])}, ` +
+                    `${daily.temperature_2m_max[i]}°C / ${daily.temperature_2m_min[i]}°C` +
+                    (rain != null ? `, ${rain}% rain` : '');
+            }
+        }
+        return out;
+    } catch (e) {
+        return `Weather lookup failed: ${e.message}`;
+    }
+}
+
+// Real places/buildings via OpenStreetMap Nominatim (keyless). Lets her suggest
+// a real bar/cafe/park/landmark for a meetup, or answer "is X a real place?".
+async function findPlace(query) {
+    const q = String(query || '').trim();
+    if (!q) return 'No search given — tell me what or where, e.g. "a bar in Berlin".';
+    try {
+        const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&limit=4&addressdetails=1&accept-language=en`;
+        const res = await fetchTimeout(url, 12000, { headers: { 'User-Agent': 'uwu-bot/1.0 (kawaii yandere minecraft AI)' } });
+        const data = await res.json();
+        if (!Array.isArray(data) || data.length === 0) return `No real places found for "${q}".`;
+        let out = `REAL PLACES for "${q}":`;
+        for (const p of data) {
+            const bits = (p.display_name || '').split(',').map(s => s.trim()).filter(Boolean);
+            const short = bits.slice(0, 3).join(', ');
+            const type = [p.type, p.category].filter(Boolean).join('/');
+            out += `\n- ${short || p.name || 'unnamed'}${type ? ` [${type}]` : ''}`;
+        }
+        return out;
+    } catch (e) {
+        return `Place search failed: ${e.message}`;
     }
 }
 
@@ -429,6 +535,33 @@ export const queryList = [
         },
         perform: async function (agent, query) {
             return await webSearch(query);
+        }
+    },
+    {
+        name: '!realTime',
+        description: 'Get the REAL-world current date and time (not Minecraft time). Use when a player asks what time/day it is out there, or to ground yourself in "now".',
+        perform: function (agent) {
+            return pad(realTime());
+        }
+    },
+    {
+        name: '!weather',
+        description: 'Get the current real-world weather (and next few days) for a city or place. Defaults to Athens (your home) when no place is given. Use when talking about a player\'s real location, their real plans, or "what\'s it like outside".',
+        params: {
+            'location': { type: 'string', description: 'A city or place, e.g. "Tokyo" or "Paris, France". Defaults to Athens, Greece.', default: 'Athens, Greece' }
+        },
+        perform: async function (agent, location = 'Athens, Greece') {
+            return await getWeather(location);
+        }
+    },
+    {
+        name: '!findPlace',
+        description: 'Search the real world for real places and buildings — bars, cafes, parks, restaurants, landmarks. Use when a player wants to meet up somewhere real, or asks whether/where a place exists.',
+        params: {
+            'query': { type: 'string', description: 'What and where, e.g. "a bar in Berlin" or "Eiffel Tower".' }
+        },
+        perform: async function (agent, query) {
+            return await findPlace(query);
         }
     },
     {

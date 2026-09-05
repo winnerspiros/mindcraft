@@ -24,6 +24,7 @@ import { RelationshipManager } from './relationship.js';
 import { PlayerProfiles } from './profiles.js';
 import { ReliabilityTracker } from './reliability.js';
 import { Psyche } from './psyche.js';
+import { RealnessTracker } from './realness.js';
 import { ReflectiveMemory } from './reflective_memory.js';
 import Vec3 from 'vec3';
 
@@ -87,6 +88,10 @@ export class Agent {
 
         // Psyche: persistent self-mood + self-tuning traits (zero LLM cost).
         this.psyche = new Psyche(this);
+
+        // Realness: in-memory meter for how "real-world" the live conversation
+        // has gotten (drives her tone via $REALNESS — no persistence).
+        this.realness = new RealnessTracker(this);
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
@@ -255,6 +260,7 @@ export class Agent {
                 console.log(this.name, 'received message from', username, ':', message);
                 this.relationship.onMessage(username, message);
                 this.psyche.onMessage(message);
+                this.realness.onMessage(message, username);
                 this.profiles.markSeen(username);
                 this.profiles.onMessage(username, message);
                 this.profiles.currentSpeaker = username;
@@ -382,6 +388,7 @@ export class Agent {
                     return false;
                 }
                 this.routeResponse(source, `*${source} used ${user_command_name.substring(1)}*`);
+                this.realness.onCommand(user_command_name);
                 if (user_command_name === '!newAction') {
                     // all user-initiated commands are ignored by the bot except for this one
                     // add the preceding message to the history to give context for newAction
@@ -465,6 +472,7 @@ export class Agent {
                 }
 
                 let execute_res = await executeCommand(this, res);
+                this.realness.onCommand(command_name);
 
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
                 used_command = true;
@@ -725,6 +733,8 @@ export class Agent {
         this.relationship.decay();
         this.profiles.sweep();
         this.psyche.update(delta);
+        this.psyche.sampleEnvironment(this.bot);
+        this.realness.update(delta);
         await this.checkTaskDone();
     }
 

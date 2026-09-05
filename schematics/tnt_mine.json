@@ -1,0 +1,40 @@
+{
+  "name": "tnt_mine",
+  "description": "A pressure-plate mine: step on the plate and the buried TNT next to it ignites. Bury it under a path and cover the plate to hide it.",
+  "size": {
+    "x": 3,
+    "y": 2,
+    "z": 1
+  },
+  "instant": true,
+  "blocks": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 0,
+      "name": "tnt",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 0,
+      "name": "stone_pressure_plate",
+      "props": {}
+    }
+  ]
+}
