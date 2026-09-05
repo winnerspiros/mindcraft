@@ -808,6 +808,15 @@ export class Agent {
             }
             this.bot.chat(`/give ${this.name} arrow 64`);
             await new Promise(r => setTimeout(r, 400));
+            // Elytra + boost fuel. Safe to /give before equipAll: the armor manager
+            // only equips items named *helmet/chestplate/leggings/boots, so it leaves
+            // the elytra in her inventory for her to swap in when she wants to fly
+            // (and it never strips her diamond chestplate on its own). Both are
+            // protected gear, never discarded.
+            this.bot.chat(`/give ${this.name} elytra 1`);
+            await new Promise(r => setTimeout(r, 120));
+            this.bot.chat(`/give ${this.name} firework_rocket 64`);
+            await new Promise(r => setTimeout(r, 120));
             this.bot.armorManager.equipAll();
             const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
             if (sword) await this.bot.equip(sword, 'hand');
