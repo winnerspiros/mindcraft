@@ -3,6 +3,24 @@ import { cosineSimilarity } from '../utils/math.js';
 import { wordOverlapScore } from '../utils/text.js';
 import settings from './settings.js';
 
+// Generative-Agents "poignancy" scoring: not every memory is equal. A fact about
+// a promise, betrayal, secret or strong feeling should outrank mundane chatter.
+// Cheap deterministic stand-in for the original's LLM-rated 1-10 importance.
+const SIGNIFICANT_WORDS = [
+    'promise', 'secret', 'trust', 'betray', 'lied', 'lie', 'love', 'hate',
+    'kill', 'hurt', 'forgive', 'sorry', 'marry', 'friend', 'enemy', 'favorite',
+    'favourite', 'never', 'always', 'remember',
+];
+const RECENCY_HALF_LIFE = 7 * 24 * 60 * 60 * 1000; // 7 days — recency weight halves
+
+function _importance(text) {
+    const t = String(text || '').toLowerCase();
+    let s = 0.3;
+    for (const w of SIGNIFICANT_WORDS) if (t.includes(w)) s += 0.15;
+    if (t.length > 60) s += 0.1; // more specific = more meaningful
+    return Math.min(1, s);
+}
+
 // Durable, semantically-searchable long-term memory (Generative-Agents style
 // "reflection" + RAG recall), inspired by kimjammer/Neuro's memory module.
 // Distinct from History.memory (a single rolling 500-char summary): this stores
@@ -29,6 +47,10 @@ export class ReflectiveMemory {
             if (existsSync(this.fp)) {
                 const data = JSON.parse(readFileSync(this.fp, 'utf8'));
                 this.memories = Array.isArray(data.memories) ? data.memories : [];
+                for (const m of this.memories) {
+                    if (!m.created) m.created = Date.now();
+                    if (m.importance == null) m.importance = _importance(m.text);
+                }
             }
         } catch (e) {
             console.warn('Failed to load reflections:', e.message);
@@ -61,7 +83,7 @@ export class ReflectiveMemory {
             const raw = await this.agent.prompter.promptReflection(turns);
             const facts = this._parse(raw);
             for (const text of facts) {
-                const mem = { id: this._id(), text };
+                const mem = { id: this._id(), text, created: Date.now(), importance: _importance(text) };
                 const embedding = await this._embed(text);
                 if (embedding) mem.embedding = embedding;
                 this.memories.push(mem);
@@ -98,24 +120,29 @@ export class ReflectiveMemory {
         return 'm' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
     }
 
-    // Rank memories by relevance to the query; fall back to word overlap when the
-    // embedding model is unavailable (mirrors SkillLibrary's degradation).
+    // Rank memories by a weighted blend of relevance × importance × recency
+    // (Generative-Agents "poignancy" retrieval): relevance dominates, importance
+    // keeps meaningful facts (promises, betrayals) above mundane chatter, and a
+    // gentle recency decay favours fresher memories. Falls back to word overlap
+    // when the embedding model is unavailable.
     async recall(query, k = this.recall_count) {
         if (!this.enabled || this.memories.length === 0) return '';
         const q = String(query || '').trim();
         k = Math.min(k, this.memories.length);
+        const now = Date.now();
 
-        let ranked = this.memories.map(m => ({ m, s: wordOverlapScore(q, m.text) }));
-        if (q) {
-            const qEmb = await this._embed(q);
-            if (qEmb) {
-                ranked = this.memories.map(m => ({
-                    m,
-                    s: m.embedding ? cosineSimilarity(qEmb, m.embedding) : wordOverlapScore(q, m.text),
-                }));
-            }
-        }
-        ranked.sort((a, b) => b.s - a.s);
-        return ranked.slice(0, k).map(x => x.m.text).join('\n');
+        let qEmb = null;
+        if (q) qEmb = await this._embed(q);
+
+        const scored = this.memories.map(m => {
+            let rel = 0;
+            if (q && qEmb && m.embedding) rel = Math.max(0, cosineSimilarity(qEmb, m.embedding));
+            else if (q) rel = wordOverlapScore(q, m.text);
+            const imp = m.importance ?? _importance(m.text);
+            const rec = Math.exp(-(now - (m.created ?? now)) / RECENCY_HALF_LIFE);
+            return { m, s: rel * 3 + imp * 2 + rec * 0.5 };
+        });
+        scored.sort((a, b) => b.s - a.s);
+        return scored.slice(0, k).map(x => x.m.text).join('\n');
     }
 }
