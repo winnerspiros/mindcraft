@@ -256,6 +256,23 @@ def main():
     else:
         print(f"[8b] WARNING: {md26_2} missing (is the 26.2 data copied? see playbook section 3)")
 
+    # 8b MUST also be applied to the NESTED minecraft-data copy that
+    # minecraft-protocol actually resolves (node_modules/minecraft-protocol/
+    # node_modules/minecraft-data). The top-level copy above feeds mineflayer's
+    # registry (blocks/items), but packet *serialization* goes through the fork's
+    # nested copy. Without this, block_place/use_item stay at 0x41/0x42 and the
+    # vanilla server rejects them with "Failed to decode packet use_item_on".
+    nested_md26_2 = os.path.join(
+        BASE, "minecraft-protocol", "node_modules", "minecraft-data",
+        "minecraft-data", "data", "pc", "26.2", "protocol.json",
+    )
+    if os.path.exists(nested_md26_2):
+        patch_protocol_json(nested_md26_2)
+    else:
+        # Nested copy may be hoisted (npm dedupe); try the top-level path of the fork's data.
+        print(f"[8b] INFO: nested fork data not present at {nested_md26_2} (hoisted? skipping; "
+              f"serialization already uses top-level in that case)")
+
     if os.path.exists(entities_js):
         patch_js(entities_js, ENT_OLD, ENT_NEW, "26.2 splits attack into its own packet", "useEntity")
     else:
