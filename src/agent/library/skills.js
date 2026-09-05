@@ -33,10 +33,88 @@ async function equipHighestAttack(bot) {
         await bot.equip(weapon, 'hand');
 }
 
-async function fill(bot, x1, y1, z1, x2, y2, z2, block, mode) {
-    const m = mode ? ` ${mode}` : '';
-    bot.chat(`/fill ${x1} ${y1} ${z1} ${x2} ${y2} ${z2} ${block}${m}`);
-    await new Promise(r => setTimeout(r, 120));
+export async function acquireBlocks(bot, blockType, count, _depth = 0) {
+    /**
+     * Ensure the bot has at least `count` of `blockType` in inventory by gathering
+     * raw materials and crafting, survival-style (no /give, no /fill). Returns the
+     * number of `blockType` now held (may be less than requested if materials ran out).
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} blockType - the block/item to acquire, e.g. 'oak_planks'.
+     * @param {number} count - how many are wanted.
+     * @returns {Promise<number>} the number of blocks now in inventory.
+     * @example
+     * await skills.acquireBlocks(bot, 'oak_planks', 64);
+     **/
+    count = Math.max(1, Math.floor(count));
+    const haveCount = () => world.getInventoryCounts(bot)[blockType] || 0;
+
+    let have = haveCount();
+    if (have >= count) return have;
+
+    if (_depth > 6) {
+        log(bot, `Recipe chain too deep for ${blockType}.`);
+        return have;
+    }
+
+    const recipes = mc.getItemCraftingRecipes(blockType);
+    if (recipes && recipes.length > 0) {
+        // recipes[0] = [ {ingredientName: countPerCraft, ...}, {craftedCount} ]
+        const [ingredients, out] = recipes[0];
+        const craftedCount = (out && out.craftedCount) || 1;
+        const need = count - have;
+        const crafts = Math.ceil(need / craftedCount);
+        for (const [ing, perCraft] of Object.entries(ingredients)) {
+            if (bot.interrupt_code) return haveCount();
+            await acquireBlocks(bot, ing, crafts * perCraft, _depth + 1);
+        }
+        await craftRecipe(bot, blockType, crafts);
+        have = haveCount();
+        if (have >= count) return have;
+        log(bot, `Couldn't gather enough ${blockType} (have ${have}, need ${count}).`);
+        return have;
+    }
+
+    // Not craftable — collect it directly from the world.
+    await collectBlock(bot, blockType, count - have);
+    return haveCount();
+}
+
+export async function placeBlockList(bot, block, positions) {
+    /**
+     * Place a list of [x, y, z] positions one block at a time, survival-style
+     * (real placement that consumes inventory — no /fill or /setblock cheat).
+     * Gathers and crafts the material first, then places bottom-up so every block
+     * has support. Returns the number of blocks actually placed.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block type to build with, e.g. 'oak_planks'.
+     * @param {number[][]} positions - array of [x, y, z] integer coordinates.
+     * @returns {Promise<number>} blocks placed.
+     * @example
+     * await skills.placeBlockList(bot, 'oak_planks', [[0,64,0],[1,64,0]]);
+     **/
+    if (!positions.length) return 0;
+
+    // Bottom-up (y asc) so lower layers are placed first; within a layer, place
+    // edge blocks before interior so ceiling blocks always have a neighbour to
+    // build off of.
+    const xs = positions.map(p => p[0]), zs = positions.map(p => p[2]);
+    const minX = Math.min(...xs), maxX = Math.max(...xs);
+    const minZ = Math.min(...zs), maxZ = Math.max(...zs);
+    const edgeDist = (p) => Math.min(p[0] - minX, maxX - p[0], p[2] - minZ, maxZ - p[2]);
+    positions = [...positions].sort((a, b) => a[1] - b[1] || edgeDist(a) - edgeDist(b));
+
+    const have = await acquireBlocks(bot, block, positions.length);
+    if (have < positions.length) {
+        log(bot, `Only gathered ${have}/${positions.length} ${block} — building with what I have.`);
+    }
+
+    let placed = 0;
+    for (const [x, y, z] of positions) {
+        if (bot.interrupt_code) break;
+        if (await placeBlock(bot, block, x, y, z, 'bottom', true)) placed++;
+    }
+    log(bot, `Placed ${placed}/${positions.length} ${block} blocks.`);
+    return placed;
 }
 
 export async function hollowBox(bot, block, width, depth, height) {
@@ -55,9 +133,17 @@ export async function hollowBox(bot, block, width, depth, height) {
      **/
     const pos = bot.entity.position;
     const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
-    await fill(bot, bx, by, bz, bx + width - 1, by + height - 1, bz + depth - 1, block, 'hollow');
-    log(bot, `Built hollow ${block} box ${width}x${depth}x${height}.`);
-    return true;
+    const positions = [];
+    for (let x = bx; x < bx + width; x++)
+        for (let y = by; y < by + height; y++)
+            for (let z = bz; z < bz + depth; z++) {
+                const shell = x === bx || x === bx + width - 1 || y === by ||
+                    y === by + height - 1 || z === bz || z === bz + depth - 1;
+                if (shell) positions.push([x, y, z]);
+            }
+    const placed = await placeBlockList(bot, block, positions);
+    log(bot, `Built hollow ${block} box ${width}x${depth}x${height} (${placed} blocks placed by hand).`);
+    return placed > 0;
 }
 
 export async function buildFloor(bot, block, width, depth) {
@@ -73,9 +159,13 @@ export async function buildFloor(bot, block, width, depth) {
      **/
     const pos = bot.entity.position;
     const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
-    await fill(bot, bx, by, bz, bx + width - 1, by, bz + depth - 1, block);
-    log(bot, `Built ${block} floor ${width}x${depth}.`);
-    return true;
+    const positions = [];
+    for (let x = bx; x < bx + width; x++)
+        for (let z = bz; z < bz + depth; z++)
+            positions.push([x, by, z]);
+    const placed = await placeBlockList(bot, block, positions);
+    log(bot, `Built ${block} floor ${width}x${depth} (${placed} blocks placed by hand).`);
+    return placed > 0;
 }
 
 export async function buildWalls(bot, block, length, height = 4) {
@@ -92,9 +182,13 @@ export async function buildWalls(bot, block, length, height = 4) {
      **/
     const pos = bot.entity.position;
     const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
-    await fill(bot, bx, by, bz, bx + length - 1, by + height - 1, bz, block);
-    log(bot, `Built ${block} wall ${length}x${height}.`);
-    return true;
+    const positions = [];
+    for (let x = bx; x < bx + length; x++)
+        for (let y = by; y < by + height; y++)
+            positions.push([x, y, bz]);
+    const placed = await placeBlockList(bot, block, positions);
+    log(bot, `Built ${block} wall ${length}x${height} (${placed} blocks placed by hand).`);
+    return placed > 0;
 }
 
 export async function buildBridge(bot, block, length, width = 3) {
@@ -111,11 +205,15 @@ export async function buildBridge(bot, block, length, width = 3) {
      **/
     const pos = bot.entity.position;
     const bx = Math.floor(pos.x), by = Math.floor(pos.y), bz = Math.floor(pos.z);
-    await fill(bot, bx, by, bz, bx + length - 1, by, bz + width - 1, block);
-    await fill(bot, bx, by + 1, bz, bx + length - 1, by + 1, bz, block);
-    await fill(bot, bx, by + 1, bz + width - 1, bx + length - 1, by + 1, bz + width - 1, block);
-    log(bot, `Built ${block} bridge ${length} long x ${width} wide.`);
-    return true;
+    const positions = [];
+    for (let x = bx; x < bx + length; x++) {
+        for (let z = bz; z < bz + width; z++) positions.push([x, by, z]); // deck
+        positions.push([x, by + 1, bz]); // rail
+        positions.push([x, by + 1, bz + width - 1]); // rail
+    }
+    const placed = await placeBlockList(bot, block, positions);
+    log(bot, `Built ${block} bridge ${length} long x ${width} wide (${placed} blocks placed by hand).`);
+    return placed > 0;
 }
 
 export async function mountNearestEntity(bot, type) {
@@ -793,6 +891,38 @@ export async function breakBlockAt(bot, x, y, z) {
 }
 
 
+export async function writeSign(bot, text, blockType='oak_sign') {
+    /**
+     * Place a standing sign in front of the bot and write text on it.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} text, the sign text; use \n to separate up to 4 lines (max 45 chars each).
+     * @param {string} blockType, the standing sign block name (default 'oak_sign').
+     * @returns {Promise<boolean>} true if the sign was placed and written.
+     * @example await skills.writeSign(bot, "UwU was here\n<3");
+     **/
+    try {
+        const p = bot.entity.position;
+        const yaw = bot.entity.yaw || 0;
+        // one block directly in front of the bot, at her feet level
+        const x = Math.floor(p.x - Math.sin(yaw));
+        const z = Math.floor(p.z - Math.cos(yaw));
+        const y = Math.floor(p.y);
+        if (!(await placeBlock(bot, blockType, x, y, z, 'bottom', false))) {
+            log(bot, `Couldn't place a ${blockType} sign to write on.`);
+            return false;
+        }
+        await new Promise(resolve => setTimeout(resolve, 300)); // let the sign register server-side
+        const pos = new Vec3(x, y, z);
+        const sign = bot.blockAt(pos) || { position: pos };
+        bot.updateSign(sign, String(text));
+        log(bot, `Wrote sign: ${String(text).replace(/\n/g, ' / ')}`);
+        return true;
+    } catch (e) {
+        log(bot, `writeSign failed: ${e.message}`);
+        return false;
+    }
+}
+
 export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false) {
     /**
      * Place the given block type at the given position. It will build off from any adjacent blocks. Will fail if there is a block in the way or nothing to build off of.
@@ -1055,6 +1185,7 @@ export async function unequip(bot, destination) {
 const PROTECTED_GEAR = new Set([
     'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
     'diamond_sword', 'shield',
+    'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
 ]);
 
 function isProtectedGear(bot, itemName) {
@@ -1865,6 +1996,43 @@ export async function sleepNearPlayer(bot, playerName, distance=3) {
         }
     }
     return false;
+}
+
+// Bounded burst of alternating sneak + jump — reads as playful copy/excitement.
+// Self-terminating (never a persistent loop): clears control states when done.
+export async function spamJumpCrouch(bot, durationMs = 3000) {
+    const end = Date.now() + durationMs;
+    let crouch = true;
+    while (Date.now() < end) {
+        bot.setControlState('sneak', crouch);
+        if (crouch) {
+            bot.setControlState('jump', true);
+            await new Promise(resolve => setTimeout(resolve, 180));
+            bot.setControlState('jump', false);
+        }
+        await new Promise(resolve => setTimeout(resolve, 200));
+        crouch = !crouch;
+    }
+    bot.setControlState('sneak', false);
+    bot.setControlState('jump', false);
+}
+
+export async function bounceOnBed(bot, playerName, durationMs = 3500) {
+    /**
+     * Cheeky yandere gesture: hop over to a sleeping player and bounce on their bed
+     * with a short jump + spam-crouch burst. One-off by design (non-persistent).
+     * @param {MinecraftBot} bot
+     * @param {string} playerName
+     * @param {number} durationMs
+     * @returns {Promise<boolean>} true if she went over and bounced, false otherwise.
+     **/
+    const player = bot.players[playerName]?.entity;
+    if (!player) return false;
+    await goToPlayer(bot, playerName, 1);
+    try { await bot.lookAt(player.position.offset(0, 1, 0)); } catch (e) { /* non-fatal */ }
+    await spamJumpCrouch(bot, durationMs);
+    log(bot, `Bounced on ${playerName}'s bed.`);
+    return true;
 }
 
 export async function goToBed(bot) {

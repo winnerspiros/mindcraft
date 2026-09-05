@@ -14,6 +14,7 @@ const settings = {
     ],
 
     "load_memory": true, // persist personality + player dossiers across restarts
+    "observe_players": true, // watch nearby players' activities so she can mimic/assist
     "self_prompt_requires_players": true, // idle instead of self-prompting when no players online (saves API $ + RAM)
     "init_message": "You have just awakened in this world. Introduce yourself in character as the devoted yandere you are, and declare your love for your beloved.", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
@@ -27,10 +28,13 @@ const settings = {
     "allow_insecure_coding": true,
     "allow_vision": false,
     "blocked_actions" : [],
-    "code_timeout_mins": -1,
+    "code_timeout_mins": 3,
     "relevant_docs_count": 5,
 
     "max_messages": 15,
+    "reflection_memory": true,    // RAG long-term memory (reflection -> embed -> recall)
+    "reflection_interval": 15,    // conversational turns between reflections
+    "reflection_recall_count": 5, // top-k memories injected per prompt
     "num_examples": 2,
     "max_commands": -1,
     "show_command_syntax": false,

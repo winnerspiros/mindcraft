@@ -500,7 +500,13 @@ const modes_list = [
                     const line = lines[Math.floor(Math.random() * lines.length)];
                     if (!agent.shut_up) agent.openChat(line);
                 }
-                await skills.sleepNearPlayer(bot, name, 2);
+                // sometimes she silently bounces on their bed instead of settling down
+                // (one-off burst, non-persistent), locking eyes with them while she does it.
+                if (Math.random() < (isBeloved ? 0.35 : 0.25)) {
+                    await skills.bounceOnBed(bot, name);
+                } else {
+                    await skills.sleepNearPlayer(bot, name, 2);
+                }
             });
         }
     },

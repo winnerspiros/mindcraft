@@ -4,7 +4,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo } from './commands/index.js';
+import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -19,10 +19,12 @@ import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
 import { ModerationWatcher } from './moderation.js';
+import { PlayerActivityWatcher } from './player_activity.js';
 import { RelationshipManager } from './relationship.js';
 import { PlayerProfiles } from './profiles.js';
 import { ReliabilityTracker } from './reliability.js';
 import { Psyche } from './psyche.js';
+import { ReflectiveMemory } from './reflective_memory.js';
 import Vec3 from 'vec3';
 
 export class Agent {
@@ -31,6 +33,8 @@ export class Agent {
         this.count_id = count_id;
         this._disconnectHandled = false;
         this._last_death_react = 0;
+        this._escapingSuffocation = false;   // guard against overlapping suffocation rescues
+        this._suffocationInterval = null;
         this.grudge = {}; // playerName -> { count, handled } harm record for retaliation escalation
         this.ignored_players = {}; // playerName -> timestamp until which to ignore (dismissals)
 
@@ -55,6 +59,7 @@ export class Agent {
         this.memory_bank = new MemoryBank();
         this.relationship = new RelationshipManager(this);
         this.profiles = new PlayerProfiles(this);
+        this.reflective_memory = new ReflectiveMemory(this);
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
@@ -147,6 +152,10 @@ export class Agent {
                 // She's OP (level 4) and would otherwise box-punch mobs with no armor.
                 // Give her a real survival kit so she stops dying.
                 await this._gearUp();
+
+                // Suffocation self-rescue: poll independently of the mode loop so it
+                // still fires while a combat action (pvp.attack) blocks update().
+                this._suffocationInterval = setInterval(() => this._checkSuffocation(), 300);
               
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
@@ -270,6 +279,11 @@ export class Agent {
         this.moderation = new ModerationWatcher(this);
         this.moderation.loadDossiers();
         this.moderation.start();
+
+        // uwu: observe what players are doing so she can mirror/assist (crouch/jump
+        // spam, mining, building, fighting, hunting).
+        this.activity = new PlayerActivityWatcher(this);
+        this.activity.start();
 
         // Set up auto-eat
         this.bot.autoEat.options = {
@@ -448,8 +462,15 @@ export class Agent {
                 console.log('Agent executed:', command_name, 'and got:', execute_res);
                 used_command = true;
 
-                if (execute_res)
-                    this.history.add('system', execute_res);
+                if (execute_res) {
+                    // Actionable-error retry: when a command fails validation, tell her
+                    // what went wrong and that she should correct it, then let the loop
+                    // give her another pass (neuro-sdk "success:false -> retry" pattern).
+                    if (isRetryableError(execute_res))
+                        this.history.add('system', execute_res + '\nThat command failed. Fix the problem and try again.');
+                    else
+                        this.history.add('system', execute_res);
+                }
                 else
                     break;
             }
@@ -720,6 +741,7 @@ export class Agent {
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'shield', 'cooked_beef', 'cooked_beef', 'cooked_beef',
+            'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
         ];
         try {
             for (const item of gear) {
@@ -756,7 +778,49 @@ export class Agent {
         if (shield) await this.bot.equip(shield, 'off-hand');
         console.log(`${this.name} re-armored after respawn.`);
     }
-    
+
+    // Suffocation self-rescue: pvp/pathfinder can clip her head into a wall while
+    // fighting (the "UwU suffocated in a wall" deaths). Detect it before the damage
+    // kills her and escape to open air (she's OP, /tp resolves).
+    _checkSuffocation() {
+        if (this._escapingSuffocation) return;
+        const bot = this.bot;
+        if (!bot.entity || !bot.entity.position) return;
+        const pos = bot.entity.position;
+        const h = bot.entity.height || 1.8;
+        // Her head block only — a solid full block there means she's clipping a wall.
+        // (Checking feet would false-positive on slabs/fences she merely stands on.)
+        const head = bot.blockAt(pos.offset(0, Math.max(0.5, h - 0.1), 0));
+        if (!head || head.boundingBox !== 'block') return;
+
+        this._escapingSuffocation = true;
+        this._escapeSuffocation().finally(() => { this._escapingSuffocation = false; });
+    }
+
+    async _escapeSuffocation() {
+        const bot = this.bot;
+        try {
+            bot.pathfinder.stop();
+            bot.pvp?.stop?.();
+            bot.clearControlStates();
+            const pos = bot.entity.position;
+            const x = Math.floor(pos.x), z = Math.floor(pos.z);
+            const isAir = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air';
+            let safeY = Math.floor(pos.y);
+            for (let dy = 0; dy < 48; dy++) {
+                if (isAir(bot.blockAt(new Vec3(x, safeY + dy, z))) &&
+                    isAir(bot.blockAt(new Vec3(x, safeY + dy + 1, z)))) {
+                    safeY += dy;
+                    break;
+                }
+            }
+            bot.chat(`/tp @s ${x + 0.5} ${safeY} ${z + 0.5}`);
+            console.log(`[suffocation] escaped to ${x + 0.5},${safeY},${z + 0.5}`);
+            await new Promise(r => setTimeout(r, 1500));
+        } catch (e) {
+            console.warn('suffocation escape failed:', e.message);
+        }
+    }
 
     cleanKill(msg='Killing agent process...', code=1) {
         this.history.add('system', msg);
