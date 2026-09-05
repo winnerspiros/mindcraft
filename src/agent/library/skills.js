@@ -1471,6 +1471,21 @@ export async function pointAtPosition(bot, x, y, z, what = 'there') {
     return `Pointed at ${what}.`;
 }
 
+export async function teleportPlayer(bot, playerName) {
+    /**
+     * Teleport a player to your current position (you are OP, so /tp works).
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} playerName - the player to bring to you.
+     * @returns {Promise<string>} human-readable result.
+     * @example
+     * await skills.teleportPlayer(bot, 'Steve');
+     **/
+    const p = bot.entity.position;
+    bot.chat(`/tp ${playerName} ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`);
+    log(bot, `Teleported ${playerName} to you.`);
+    return `Teleported ${playerName} to you.`;
+}
+
 
 export async function giveToPlayer(bot, itemType, username, num=1) {
     /**

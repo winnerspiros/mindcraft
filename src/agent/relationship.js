@@ -15,12 +15,21 @@ import path from 'path';
 //   trust       — how much she believes them / shares secrets
 //   fear        — how much they intimidate her (drives avoidance / submission)
 //   jealousy    — how possessive she feels about them (spikes when they flirt with others)
+//   annoyance   — short-term irritation; spikes on meanness, cools fast (drives cold shoulder / ignore)
+//   respect     — how much she defers to them (drives whether she obeys their requests)
 //   interactions— raw count, decides whether they appear in her prompt at all
 //
 // rank (derived): stranger < acquaintance < friend < darling < BELOVED; enemy overrides.
 
-const STAT_DEFS = ['love', 'hate', 'attention', 'trust', 'fear', 'jealousy'];
+const STAT_DEFS = ['love', 'hate', 'attention', 'trust', 'fear', 'jealousy', 'annoyance', 'respect'];
 const MAX = 100;
+
+// Per-tick decay toward neutral (0) for each dynamic stat, applied to players who
+// haven't interacted with her in a while. Fast-cooling vs sticky stats.
+const DECAY_PER_TICK = {
+    attention: 5, annoyance: 15, jealousy: 5, fear: 3,
+    hate: 2, trust: 2, respect: 2, love: 1,
+};
 
 function clamp(v, lo = 0, hi = MAX) {
     return Math.max(lo, Math.min(hi, Math.round(v)));
@@ -29,6 +38,7 @@ function clamp(v, lo = 0, hi = MAX) {
 function defaultEntry() {
     return {
         love: 0, hate: 0, attention: 0, trust: 0, fear: 0, jealousy: 0,
+        annoyance: 0, respect: 0, lastTone: 'neutral', grievance: '',
         interactions: 0, rank: 'stranger', lastSeen: Date.now(), notes: '',
     };
 }
@@ -46,6 +56,11 @@ const HATE_WORDS = [
 ];
 const TRUST_WORDS = ['promise', 'secret', 'trust', 'believe', 'honest', 'true', 'real', 'tell you'];
 const FEAR_WORDS = ['scared', 'afraid', 'threat', 'kill you', 'hurt you', 'gonna kill', 'threaten'];
+const APOLOGY_WORDS = [
+    'sorry', 'apolog', 'forgive', 'my bad', 'my fault', 'i was wrong',
+    'come back', 'talk to me', 'notice me', 'pay attention', 'dont ignore', 'miss you',
+];
+const POLITE_WORDS = ['please', 'pls', 'could you', 'would you', 'may i', 'can i', 'if you want', 'mind'];
 
 function score(text, words) {
     const t = text.toLowerCase();
@@ -144,13 +159,21 @@ export class RelationshipManager {
         const hateHit = score(text, HATE_WORDS);
         const trustHit = score(text, TRUST_WORDS);
         const fearHit = score(text, FEAR_WORDS);
+        const politeHit = score(text, POLITE_WORDS);
 
         const d = {};
         d.attention = 10;
-        if (loveHit > 0) d.love = Math.min(6, 2 + loveHit);
-        if (hateHit > 0) { d.hate = Math.min(6, 2 + hateHit); d.love = -Math.min(4, hateHit); }
-        if (trustHit > 0) d.trust = Math.min(5, 2 + trustHit);
-        if (fearHit > 0) { d.fear = Math.min(5, 2 + fearHit); d.hate = Math.min(4, fearHit); }
+        if (loveHit > 0) { d.love = Math.min(6, 2 + loveHit); d.annoyance = -Math.min(6, 1 + loveHit); }
+        if (hateHit > 0) { d.hate = Math.min(6, 2 + hateHit); d.love = -Math.min(4, hateHit); d.annoyance = Math.min(8, 3 + hateHit); }
+        if (trustHit > 0) { d.trust = Math.min(5, 2 + trustHit); d.respect = Math.min(4, 1 + trustHit); }
+        if (fearHit > 0) { d.fear = Math.min(5, 2 + fearHit); d.hate = Math.min(4, fearHit); d.annoyance = Math.min(6, 2 + fearHit); }
+        if (politeHit > 0 && hateHit === 0 && fearHit === 0) { d.respect = Math.min(4, 1 + politeHit); d.attention = 4; }
+
+        this.get(name).lastTone = this.detectTone(text);
+        if (hateHit > 0 || fearHit > 0) {
+            const mean = [...HATE_WORDS, ...FEAR_WORDS].filter(w => text.toLowerCase().includes(w));
+            this.get(name).grievance = mean.length ? `said "${mean[0]}" to you` : 'was mean to you';
+        }
         this.adjust(name, d);
     }
 
@@ -185,19 +208,57 @@ export class RelationshipManager {
         this.adjust(name, { jealousy: 6, attention: 6 });
     }
 
-    // Attention decays for players she hasn't interacted with in a while.
-    // Called periodically (self-throttled to at most once per minute).
-    decayAttention(now = Date.now(), staleMs = 10 * 60 * 1000) {
+    // She deliberately gave a player the cold shoulder (chose to ignore them).
+    onIgnore(name) {
+        this.adjust(name, { hate: 10, annoyance: 15, love: -5, trust: -5, respect: -5, attention: -5 });
+    }
+
+    // She forgave them / stopped ignoring.
+    onUnignore(name) {
+        this.adjust(name, { hate: -5, annoyance: -10, attention: 5 });
+        const e = this.get(name);
+        if (e.grievance) { e.grievance = ''; this.save(); }
+    }
+
+    // They're trying to win her back — apology or a plea for attention.
+    onAttentionSeek(name) {
+        this.adjust(name, { love: 6, attention: 12, annoyance: -10, hate: -4 });
+        const e = this.get(name);
+        if (e.grievance) { e.grievance = ''; this.save(); }
+    }
+
+    // Cheap deterministic check: is this message an apology / plea for attention?
+    isAttentionSeeking(text) {
+        return text != null && score(text, APOLOGY_WORDS) > 0;
+    }
+
+    // Classify how she's currently being treated: 'nice', 'neutral', or 'mean'.
+    detectTone(text) {
+        if (text == null) return 'neutral';
+        const nice = score(text, LOVE_WORDS) + score(text, POLITE_WORDS);
+        const mean = score(text, HATE_WORDS) + score(text, FEAR_WORDS);
+        if (mean > nice) return 'mean';
+        if (nice > 0) return 'nice';
+        return 'neutral';
+    }
+
+    // All dynamic stats drift back toward neutral (0) on their own for players she
+    // hasn't interacted with in a while. Attention/annoyance/jealousy cool fastest;
+    // love and hate are stickiest. Called periodically (at most once per minute).
+    decay(now = Date.now(), staleMs = 10 * 60 * 1000) {
         if (now - (this._lastDecay || 0) < 60000) return; // run at most once/min
         this._lastDecay = now;
         let changed = false;
         for (const [name, e] of Object.entries(this.players)) {
-            if (now - e.lastSeen > staleMs && e.attention > 0) {
-                e.attention = clamp(e.attention - 5);
-                changed = true;
+            if (now - e.lastSeen <= staleMs) continue;
+            for (const [stat, rate] of Object.entries(DECAY_PER_TICK)) {
+                if (e[stat] > 0) { e[stat] = clamp(e[stat] - rate); changed = true; }
             }
         }
-        if (changed) this.save();
+        if (changed) {
+            for (const name of Object.keys(this.players)) this._recompute(name);
+            this.save();
+        }
     }
 
     // ---- prompt surface ----------------------------------------------------
@@ -221,7 +282,9 @@ export class RelationshipManager {
         const lines = entries.map(([name, e]) => {
             const bits = [];
             for (const s of STAT_DEFS) bits.push(`${s} ${e[s]}`);
-            let line = `- ${name}: ${bits.join(', ')}, rank ${e.rank.toUpperCase()}`;
+            let line = `- ${name}: ${bits.join(', ')}, rank ${e.rank.toUpperCase()}, tone ${e.lastTone || 'neutral'}`;
+            if (e.grievance) line += `, grievance: ${e.grievance}`;
+            if (this.agent && this.agent.ignored_players && this.agent.ignored_players[name]) line += ', IGNORING';
             if (e.notes) line += `, notes: ${e.notes}`;
             return line;
         });

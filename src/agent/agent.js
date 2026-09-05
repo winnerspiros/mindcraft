@@ -212,16 +212,23 @@ export class Agent {
                 const dynamicBeloved = (this.relationship.currentBeloved() || '').toLowerCase();
                 const isBeloved = username.toLowerCase() === beloved || (dynamicBeloved && username.toLowerCase() === dynamicBeloved);
 
-                // If someone tells her to go away, she respects it — unless it's her beloved.
+                // If someone tells her to go away, she backs off for a few minutes — unless it's her beloved.
                 if (!isBeloved && DISMISS_PHRASES.some(re => re.test(message))) {
                     this.ignored_players[username] = Date.now() + 5 * 60 * 1000; // 5 minutes
+                    this.relationship.adjust(username, { annoyance: 10, attention: -5 });
                     console.log(this.name, 'dismissed by', username, '- ignoring them for 5 min');
                     return;
                 }
 
-                // While ignoring a player, only break out if they address her by name.
+                // While ignoring a player — either a temporary dismissal or a deliberate
+                // cold shoulder — stay silent, unless they sincerely try to make amends.
                 if (!isBeloved && this.ignored_players[username]) {
-                    if (Date.now() < this.ignored_players[username]) {
+                    if (this.ignored_players[username] === true) {
+                        // deliberate ignore: only an apology/plea addressed to her breaks it
+                        if (!(msg_lc.includes(name_lc) && this.relationship.isAttentionSeeking(message))) return;
+                        this.relationship.onAttentionSeek(username);
+                        delete this.ignored_players[username];
+                    } else if (Date.now() < this.ignored_players[username]) {
                         if (!msg_lc.includes(name_lc)) return;
                         delete this.ignored_players[username];
                     } else {
@@ -715,7 +722,7 @@ export class Agent {
     async update(delta) {
         await this.bot.modes.update();
         this.self_prompter.update(delta);
-        this.relationship.decayAttention();
+        this.relationship.decay();
         this.profiles.sweep();
         this.psyche.update(delta);
         await this.checkTaskDone();
