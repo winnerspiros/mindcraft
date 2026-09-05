@@ -333,7 +333,7 @@ const modes_list = [
     },
     {
         name: 'idle_staring',
-        description: 'Animation to look around at entities when idle.',
+        description: 'Animation to look around when idle — but fixate on nearby players, staring into their eyes.',
         interrupts: [],
         on: true,
         active: false,
@@ -342,27 +342,45 @@ const modes_list = [
         last_entity: null,
         next_change: 0,
         update: function (agent) {
-            const entity = agent.bot.nearestEntity();
-            let entity_in_view = entity && entity.position.distanceTo(agent.bot.entity.position) < 10 && entity.name !== 'enderman';
-            if (entity_in_view && entity !== this.last_entity) {
+            const bot = agent.bot;
+
+            // Prefer human players so she locks eyes with them; otherwise watch a nearby mob.
+            const nearbyPlayers = world.getNearbyPlayers(bot, 16);
+            const player = nearbyPlayers[0] || null;
+            const nearestMob = player ? null : bot.nearestEntity(e =>
+                e.type !== 'player' && e.name !== 'enderman' &&
+                e.position.distanceTo(bot.entity.position) < 10);
+            const target = player || nearestMob;
+            const isPlayer = !!player;
+
+            if (target && target !== this.last_entity) {
                 this.staring = true;
-                this.last_entity = entity;
-                this.next_change = Date.now() + Math.random() * 1000 + 4000;
+                this.last_entity = target;
+                // stare longer at a person: ~6-10s locked on, vs ~4-5s for a mob
+                this.next_change = Date.now() + (isPlayer ? 6000 + Math.random() * 4000 : 4000 + Math.random() * 1000);
             }
-            if (entity_in_view && this.staring) {
-                let isbaby = entity.type !== 'player' && entity.metadata[16];
-                let height = isbaby ? entity.height/2 : entity.height;
-                agent.bot.lookAt(entity.position.offset(0, height, 0));
+
+            if (target && this.staring) {
+                if (isPlayer) {
+                    // aim at eye height (~1.62), not the top of the head
+                    bot.lookAt(target.position.offset(0, 1.62, 0));
+                } else {
+                    const isbaby = target.metadata && target.metadata[16];
+                    const height = isbaby ? target.height / 2 : target.height;
+                    bot.lookAt(target.position.offset(0, height, 0));
+                }
             }
-            if (!entity_in_view)
+
+            if (!target)
                 this.last_entity = null;
+
             if (Date.now() > this.next_change) {
-                // look in random direction
-                this.staring = Math.random() < 0.3;
+                // keep staring far more often when it's a person
+                this.staring = Math.random() < (isPlayer ? 0.8 : 0.3);
                 if (!this.staring) {
                     const yaw = Math.random() * Math.PI * 2;
-                    const pitch = (Math.random() * Math.PI/2) - Math.PI/4;
-                    agent.bot.look(yaw, pitch, false);
+                    const pitch = (Math.random() * Math.PI / 2) - Math.PI / 4;
+                    bot.look(yaw, pitch, false);
                 }
                 this.next_change = Date.now() + Math.random() * 10000 + 2000;
             }

@@ -1358,6 +1358,46 @@ export async function consume(bot, itemName="") {
     return true;
 }
 
+export async function fish(bot, timeoutMs = 30000) {
+    /**
+     * Cast a fishing rod and reel in when a fish bites. Uses mineflayer's built-in
+     * fishing loop (auto-casts and auto-reels on a bite).
+     * @param {MinecraftBot} bot - the bot.
+     * @param {number} timeoutMs - how long to wait for a bite before giving up.
+     * @returns {Promise<string>} human-readable result.
+     * @example
+     * await skills.fish(bot, 30000);
+     **/
+    const rod = bot.inventory.findInventoryItem('fishing_rod');
+    if (!rod) {
+        log(bot, 'No fishing rod in inventory.');
+        return 'No fishing rod in inventory.';
+    }
+    await bot.equip(rod, 'hand');
+
+    let timer = null;
+    const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('timed out')), timeoutMs);
+    });
+    const fishing = bot.fish();
+    fishing.catch(() => {}); // swallow the late rejection from reeling in on timeout
+
+    try {
+        await Promise.race([fishing, timeout]);
+        log(bot, 'Caught a fish.');
+        return 'Caught a fish.';
+    } catch (err) {
+        const msg = (err && err.message === 'timed out')
+            ? 'Fishing timed out — no bite.'
+            : `Fishing failed: ${err.message}`;
+        log(bot, msg);
+        return msg;
+    } finally {
+        clearTimeout(timer);
+        try { bot.deactivateItem(); } catch {}
+    }
+}
+
 
 export async function giveToPlayer(bot, itemType, username, num=1) {
     /**
