@@ -88,6 +88,7 @@ export class History {
             const data = {
                 memory: this.memory,
                 turns: this.turns,
+                places: this.agent.memory_bank.getJson(),
                 self_prompting_state: this.agent.self_prompter.state,
                 self_prompt: this.agent.self_prompter.isStopped() ? null : this.agent.self_prompter.prompt,
                 taskStart: this.agent.task.taskStartTime,
@@ -110,6 +111,7 @@ export class History {
             const data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
             this.memory = data.memory || '';
             this.turns = data.turns || [];
+            if (data.places) this.agent.memory_bank.loadJson(data.places);
             console.log('Loaded memory:', this.memory);
             return data;
         } catch (error) {

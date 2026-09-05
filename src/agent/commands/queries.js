@@ -207,6 +207,13 @@ export const queryList = [
         }
     },
     {
+        name: "!map",
+        description: "Get a top-down ASCII map of the terrain around the bot (one char per column).",
+        perform: function (agent) {
+            return pad('MAP\n' + world.getTopDownMap(agent.bot));
+        }
+    },
+    {
         name: "!craftable",
         description: "Get the craftable items with the bot's inventory.",
         perform: function (agent) {

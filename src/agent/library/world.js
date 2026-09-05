@@ -468,3 +468,42 @@ export function getTerrainProfile(bot, range = 24) {
     lines.push(`above: ${getFirstBlockAboveHead(bot, null, 32)}`);
     return lines;
 }
+
+export function getTopDownMap(bot, radius = 10) {
+    /**
+     * ASCII top-down map of the terrain around the bot, one char per column.
+     * @param {Bot} bot - the bot.
+     * @param {number} radius - half-width of the square map.
+     * @returns {string} newline-joined map with a legend.
+     * @example
+     * console.log(world.getTopDownMap(bot));
+     **/
+    const pos = bot.entity.position;
+    const px = Math.floor(pos.x), py = Math.floor(pos.y), pz = Math.floor(pos.z);
+    const solid = (b) => b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air';
+    const charFor = (name) => {
+        if (name === 'water' || name === 'lava') return '~';
+        if (name.endsWith('_log') || name.includes('leaves')) return 'T';
+        if (name === 'short_grass' || name === 'tall_grass' || name === 'fern' || name === 'snow' || name === 'dead_bush') return ',';
+        if (['grass_block', 'dirt', 'coarse_dirt', 'sand', 'gravel', 'farmland', 'dirt_path', 'mud', 'clay', 'snow_block', 'podzol', 'mycelium', 'red_sand', 'rooted_dirt'].includes(name)) return '.';
+        return '#';
+    };
+    const surface = (x, z) => {
+        for (let y = 319; y >= -64; y--) {
+            const b = bot.blockAt(pos.offset(x - px, y - py, z - pz));
+            if (solid(b)) return charFor(b.name);
+        }
+        return ' ';
+    };
+    const lines = [];
+    for (let z = pz - radius; z <= pz + radius; z++) {
+        let line = '';
+        for (let x = px - radius; x <= px + radius; x++) {
+            line += (x === px && z === pz) ? '@' : surface(x, z);
+        }
+        lines.push(line);
+    }
+    lines.push('');
+    lines.push('.=ground  #=solid  T=tree  ~=water/lava  ,=plant  @=you');
+    return lines.join('\n');
+}

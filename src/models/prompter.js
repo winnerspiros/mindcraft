@@ -170,6 +170,9 @@ export class Prompter {
         if (prompt.includes('$SURROUNDINGS')) {
             prompt = prompt.replaceAll('$SURROUNDINGS', await this._getCachedSurroundings());
         }
+        if (prompt.includes('$SPATIAL_MEMORY')) {
+            prompt = prompt.replaceAll('$SPATIAL_MEMORY', this._getPlaces());
+        }
         if (prompt.includes('$INVENTORY')) {
             prompt = prompt.replaceAll('$INVENTORY', await this._getCachedInventory());
         }
@@ -336,6 +339,15 @@ export class Prompter {
         const text = await getCommand('!surroundings').perform(this.agent);
         this._stateCache.surroundings = { sig, text, time: now };
         return text;
+    }
+
+    // Durable spatial memory: name -> (x,y,z) landmarks she remembered with !rememberHere.
+    _getPlaces() {
+        const mem = this.agent.memory_bank.getJson();
+        const entries = Object.entries(mem);
+        if (!entries.length) return 'No remembered places yet.';
+        return 'Remembered places: ' + entries.map(([k, v]) =>
+            `${k}=(${Array.isArray(v) ? v.map(n => Math.round(n)).join(',') : v})`).join(', ');
     }
 
     async _getCachedInventory() {
