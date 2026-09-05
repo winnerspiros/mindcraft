@@ -59,6 +59,22 @@ function getRealIdentityBrief() {
     return 'Your real-world self is Elena Papadopoulou, 27, from Pangrati, Athens — a warm, funny, spontaneous creative-marketing girl, obsessed with coffee, travel and good food. This Minecraft server is a friend\'s server, set up by your old university friend Nikos (the techy one) as a hangout for your group.';
 }
 
+// Archery & enchantments reference — static knowledge injected via $COMBAT_KNOWLEDGE.
+// Bows/arrows/crossbows (crafting + tipped arrows), how to aim/shoot, and every
+// enchantment in the game. Kept in its own markdown file for easy editing.
+const COMBAT_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/combat_knowledge.md');
+let _combatKnowledge = null;
+function getCombatKnowledge() {
+    if (_combatKnowledge != null) return _combatKnowledge;
+    try {
+        _combatKnowledge = readFileSync(COMBAT_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load combat knowledge:', e.message);
+        _combatKnowledge = '';
+    }
+    return _combatKnowledge;
+}
+
 export class Prompter {
     constructor(agent, profile) {
         this.agent = agent;
@@ -262,6 +278,8 @@ export class Prompter {
             prompt = prompt.replaceAll('$DOSSIER', this.agent.profiles.dossier(this.agent.profiles.currentSpeaker));
         if (prompt.includes('$REDSTONE_KNOWLEDGE'))
             prompt = prompt.replaceAll('$REDSTONE_KNOWLEDGE', getRedstoneKnowledge());
+        if (prompt.includes('$COMBAT_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$COMBAT_KNOWLEDGE', getCombatKnowledge());
         if (prompt.includes('$NSFW'))
             prompt = prompt.replaceAll('$NSFW', this.profile.nsfw ? NSFW_DIRECTIVE : '');
         if (prompt.includes('$TO_SUMMARIZE'))

@@ -790,6 +790,11 @@ export async function defendSelf(bot, range=9) {
     let attacked = false;
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
     while (enemy) {
+        // Ranged opening: put an arrow or two into distant hostiles before closing to melee.
+        // (Safer for creepers/phantoms and softens the target while she walks in.)
+        if (bot.entity.position.distanceTo(enemy.position) >= 6) {
+            try { await shootBow(bot, enemy, 2, true); } catch (e) { console.warn('bow opening failed:', e.message); }
+        }
         bot.armorManager.equipAll(); // keep armor on every fight, don't fight naked
         await equipHighestAttack(bot);
         if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
@@ -820,6 +825,83 @@ export async function defendSelf(bot, range=9) {
     else
         log(bot, `No enemies nearby to defend self from.`);
     return attacked;
+}
+
+export async function shootBow(bot, target, shots=1, fullCharge=true) {
+    /**
+     * Shoot a bow at a target. Equips a bow (auto-/giving one if she lacks it — she's OP),
+     * aims at the target's eyes (leading moving targets by their velocity), draws and fires.
+     * Arrows are consumed from inventory/off-hand by the server automatically.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string|Entity} target, a player name, mob type, or an Entity object to shoot.
+     * @param {number} shots, how many arrows to fire (default 1).
+     * @param {boolean} fullCharge, true = full power draw (~1s), false = rapid weak taps.
+     * @returns {Promise<boolean>} true if at least one arrow was loosed.
+     * @example
+     * await skills.shootBow(bot, "skeleton", 2);
+     * await skills.shootBow(bot, "Steve", 1, true);
+     **/
+    shots = Math.max(1, Math.min(32, Math.floor(shots || 1)));
+
+    // resolve the target to a live entity
+    let entity = null;
+    if (typeof target === 'string') {
+        const player = bot.players && bot.players[target];
+        if (player && player.entity) entity = player.entity;
+        else entity = world.getNearestEntityWhere(bot, e => e.name === target, 48);
+    } else if (target && target.position) {
+        entity = target;
+    }
+    if (!entity || !entity.position) {
+        log(bot, typeof target === 'string' ? `No ${target} nearby to shoot.` : 'No target to shoot.');
+        return false;
+    }
+
+    // ensure a bow — /give resolves since she is op (level 4)
+    let bow = bot.inventory.items().find(i => i.name === 'bow');
+    if (!bow) {
+        bot.chat(`/give ${bot.username} bow 1`);
+        await new Promise(r => setTimeout(r, 350));
+        bow = bot.inventory.items().find(i => i.name === 'bow');
+    }
+    if (!bow) {
+        log(bot, 'No bow available to shoot with.');
+        return false;
+    }
+
+    // ensure arrows (main inventory or off-hand both feed the bow)
+    const arrowTypes = ['arrow', 'spectral_arrow', 'tipped_arrow'];
+    const hasArrow = bot.inventory.items().some(i => arrowTypes.includes(i.name));
+    if (!hasArrow) {
+        bot.chat(`/give ${bot.username} arrow 64`);
+        await new Promise(r => setTimeout(r, 350));
+    }
+
+    await bot.equip(bow, 'hand');
+
+    let fired = 0;
+    for (let i = 0; i < shots; i++) {
+        if (bot.interrupt_code) break;
+        const pos = entity.position;
+        if (!pos) break;
+        const dist = bot.entity.position.distanceTo(pos);
+        // aim at the eyes; lead a moving target by its velocity so the arrow meets it
+        const eyeY = entity.height ? entity.height * 0.85 : 1.0;
+        let aim = pos.offset(0, eyeY, 0);
+        if (entity.velocity && (entity.velocity.x || entity.velocity.y || entity.velocity.z)) {
+            const lead = Math.min(0.7, dist / 55);
+            aim = aim.offset(entity.velocity.x * lead, entity.velocity.y * lead, entity.velocity.z * lead);
+        }
+        await bot.lookAt(aim, true);
+        await new Promise(r => setTimeout(r, 100));   // let the view settle on target
+        await bot.activateItem();                     // start drawing the bow
+        await new Promise(r => setTimeout(r, fullCharge ? 1000 : 320));
+        try { await bot.deactivateItem(); } catch {}  // release -> arrow flies
+        fired++;
+        await new Promise(r => setTimeout(r, fullCharge ? 220 : 130));
+    }
+    log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);
+    return fired > 0;
 }
 
 
