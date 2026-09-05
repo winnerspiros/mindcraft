@@ -1,0 +1,37 @@
+{
+  "name": "not_gate",
+  "description": "A NOT gate (inverter): with the lever OFF the torch is lit; flip the lever ON and the torch goes dark. The building block of every logic gate.",
+  "size": {
+    "x": 2,
+    "y": 2,
+    "z": 1
+  },
+  "instant": true,
+  "blocks": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 0,
+      "name": "redstone_wall_torch",
+      "props": {
+        "facing": "east"
+      }
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 0,
+      "name": "lever",
+      "props": {
+        "face": "floor"
+      }
+    }
+  ]
+}

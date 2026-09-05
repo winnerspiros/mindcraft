@@ -61,6 +61,8 @@ export class Psyche {
         this._dirty = false;
         this._lastSave = 0;
         this._lastContact = Date.now();
+        this._lastEnvSample = 0;
+        this.fearSources = [];
         this.load();
     }
 
@@ -134,6 +136,9 @@ export class Psyche {
     onJealousy(){ this._nudgeMood({ jealousy: 0.20, anger: 0.06, sadness: 0.04 }); this._nudgeTraits({ possessiveness: 0.03, cruelty: 0.01 }); this.save(); }
     onHurtThem(){ this._nudgeMood({ satisfaction: 0.04, excitement: 0.04 }); this._nudgeTraits({ cruelty: 0.01, possessiveness: 0.01 }); this.save(); }
     onAttackedBy(){ this._nudgeMood({ fear: 0.18, anger: 0.12, sadness: 0.05 }); this._nudgeTraits({ cruelty: 0.02, volatility: 0.01 }); this.save(); }
+    // Someone keeps doubting she's real or demanding proof — mild irritation,
+    // so a player can actually get under her skin instead of only ever charming her.
+    onPestered(){ this._nudgeMood({ anger: 0.06, satisfaction: -0.02 }); this._nudgeTraits({ volatility: 0.01 }); this.save(); }
     onDeath()  { this._nudgeMood({ sadness: 0.20, fear: 0.12, anger: 0.08 }); this._nudgeTraits({ volatility: 0.01 }); this.save(); }
     onBelovedLogin() { this._nudgeMood({ love: 0.20, joy: 0.15, excitement: 0.12, loneliness: -0.15 }); this._nudgeTraits({ warmth: 0.01 }); this.save(); }
     onBelovedLogout(){ this._nudgeMood({ loneliness: 0.18, sadness: 0.10, love: 0.04 }); this.save(); }
@@ -142,6 +147,63 @@ export class Psyche {
     onIdle(seconds) {
         this._nudgeMood({ loneliness: Math.min(0.05, seconds / 600) });
         this.save();
+    }
+
+    // ---- environmental fear: darkness / hostile mobs / dangerous height ----
+    // Sampled on a throttle (every ~2s) and nudges the `fear` emotion. The nudge
+    // is scaled by (1 - boldness) so a bold/boldness personality feels far less
+    // fear than a timid one — bravery is emergent, not a hard override. The
+    // sources are remembered so $FEAR can tell her *why* she is scared.
+    sampleEnvironment(bot) {
+        if (!bot || !bot.entity || !bot.entity.position) return;
+        const now = Date.now();
+        if (now - this._lastEnvSample < 2000) return;
+        this._lastEnvSample = now;
+
+        const pos = bot.entity.position;
+        const bravery = this.traits.boldness;               // 0..1, high = fearless
+        const feel = (amt) => amt * (1 - bravery);          // fear scales with cowardice
+        let fearDelta = 0;
+        const sources = [];
+
+        // 1) darkness — night or an enclosed space with no light source nearby
+        const timeOfDay = bot.time && typeof bot.time.timeOfDay === 'number' ? bot.time.timeOfDay : 0;
+        const isNight = timeOfDay > 13000;
+        const roof = bot.blockAt(pos.offset(0, 2, 0));
+        const enclosed = roof && roof.boundingBox === 'block' && roof.name !== 'leaves';
+        const LIGHT = ['torch', 'lantern', 'glowstone', 'sea_lantern', 'campfire',
+            'jack_o_lantern', 'shroomlight', 'end_rod', 'candle', 'lava'];
+        const lit = bot.findBlocks({ matching: (b) => LIGHT.some((l) => b.name.includes(l)), maxDistance: 10, count: 1 }).length > 0;
+        if ((isNight || enclosed) && !lit) {
+            fearDelta += (enclosed && isNight) ? 0.16 : 0.10;
+            sources.push(enclosed ? 'it is dark in here with no light' : 'it is dark out and there is no light nearby');
+        }
+
+        // 2) a hostile mob nearby
+        const hostile = (e) => e && (e.type === 'mob' || e.type === 'hostile') &&
+            e.name !== 'iron_golem' && e.name !== 'snow_golem';
+        let mob = null, mobDist = 16;
+        for (const e of Object.values(bot.entities || {})) {
+            if (!hostile(e) || !e.position) continue;
+            const d = e.position.distanceTo(pos);
+            if (d < mobDist) { mobDist = d; mob = e; }
+        }
+        if (mob) {
+            fearDelta += 0.12;
+            sources.push(`a ${mob.name.replace(/_/g, ' ')} is ${Math.round(mobDist)} blocks away`);
+        }
+
+        // 3) falling from a height / standing above a big drop
+        if (!bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
+            fearDelta += 0.25;
+            sources.push('you are falling from a height');
+        }
+
+        this.fearSources = sources;
+        if (fearDelta > 0) {
+            this._nudgeMood({ fear: feel(fearDelta) });
+            this.save();
+        }
     }
 
     // ---- per-tick decay: mood drifts toward baseline (inertia), traits decay
@@ -199,5 +261,20 @@ export class Psyche {
             return `${k} ${v.toFixed(2)} (${adj})`;
         });
         return 'Your developed traits: ' + parts.join(', ') + '.';
+    }
+
+    // One compact neutral line for $FEAR — how scared she is, how brave, and why.
+    // Never prescribes an action; the LLM decides how to react in her own voice.
+    summarizeFear() {
+        const fear = this.mood.fear;
+        const bravery = this.traits.boldness;
+        const braveWord = bravery >= 0.65 ? 'bold and fearless' : bravery >= 0.4 ? 'cautious' : 'timid and easily spooked';
+        let line = `Fear meter ${fear.toFixed(2)} / bravery ${bravery.toFixed(2)} (${braveWord}).`;
+        if (this.fearSources && this.fearSources.length) {
+            line += ` You are scared right now because: ${this.fearSources.join('; ')}.`;
+        } else if (fear < 0.25) {
+            line += ' You feel safe and unafraid right now.';
+        }
+        return line;
     }
 }

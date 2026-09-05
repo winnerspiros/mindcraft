@@ -1,0 +1,51 @@
+{
+  "name": "piston_door",
+  "description": "A hidden piston door: flip the lever and the sticky piston pushes the stone block into the gap (closed); flip back and it retracts, opening the way. A 1x1 showcase you can scale up.",
+  "size": {
+    "x": 4,
+    "y": 2,
+    "z": 1
+  },
+  "instant": true,
+  "blocks": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 0,
+      "name": "sticky_piston",
+      "props": {
+        "facing": "east"
+      }
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "z": 0,
+      "name": "air",
+      "props": {}
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 0,
+      "name": "lever",
+      "props": {
+        "face": "floor"
+      }
+    }
+  ]
+}

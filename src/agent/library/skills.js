@@ -298,6 +298,133 @@ export async function rideHorse(bot) {
     catch (e) { log(bot, `Could not mount horse: ${e.message}`); return false; }
 }
 
+export async function waterBucketClutch(bot) {
+    /**
+     * The classic "MLG water bucket" — survive a fall from height by placing a
+     * water source at your landing spot so you splash down safely instead of
+     * taking fall damage. Works while falling or standing above a big drop.
+     * @param {MinecraftBot} bot - the bot.
+     * @returns {Promise<boolean>} true if water was placed, false if not needed.
+     * @example
+     * await skills.waterBucketClutch(bot);
+     **/
+    const pos = bot.entity.position;
+    const solid = (b) => b && b.boundingBox === 'block' && !['leaves', 'water', 'lava'].includes(b.name);
+    // find the first solid landing block straight down
+    let landing = null;
+    for (let y = Math.floor(pos.y); y >= Math.floor(pos.y) - 96; y--) {
+        const b = bot.blockAt(new Vec3(Math.floor(pos.x), y, Math.floor(pos.z)));
+        if (!b) continue;
+        if (b.name === 'water') {
+            log(bot, 'There is already water below to land in — no clutch needed.');
+            return false;
+        }
+        if (solid(b)) { landing = b; break; }
+    }
+    if (!landing) { log(bot, 'No ground below to clutch onto.'); return false; }
+    const drop = Math.floor(pos.y) - landing.position.y;
+    if (drop <= 3) { log(bot, 'Not high enough to hurt — no water bucket needed.'); return false; }
+    // place a water source one block above the landing surface so it does not replace the ground
+    const placed = await placeBlock(bot, 'water', landing.position.x, landing.position.y + 1, landing.position.z);
+    if (placed) log(bot, `Placed water to break a ${drop}-block fall.`);
+    return placed;
+}
+
+export async function findShelter(bot, range = 40) {
+    /**
+     * Find shelter from weather, night or mobs: an existing building (a bed or
+     * door) or a natural overhang/cave with a roof overhead, and move inside.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {number} range - search radius in blocks (default 40).
+     * @returns {Promise<boolean>} true if shelter was found and reached.
+     * @example
+     * await skills.findShelter(bot);
+     **/
+    const pos = bot.entity.position;
+    const solid = (b) => b && b.boundingBox === 'block' && b.name !== 'leaves';
+    const airy = (b) => b && ['air', 'cave_air', 'void_air'].includes(b.name);
+    // 1) an existing structure: a bed or a door nearby
+    const markers = bot.findBlocks({
+        matching: (b) => b.name.includes('bed') || b.name.includes('door'),
+        maxDistance: range,
+        count: 10,
+    });
+    if (markers.length) {
+        const m = markers[0];
+        await goToPosition(bot, m.x, m.y, m.z, 1.5);
+        log(bot, `Found an existing shelter at (${m.x}, ${m.y}, ${m.z}) and went inside.`);
+        return true;
+    }
+    // 2) natural cover: a solid roof over a spot she can stand on
+    const fy = Math.floor(pos.y);
+    const radius = Math.min(12, Math.floor(range / 2));
+    for (let dx = -radius; dx <= radius; dx++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+            const x = Math.floor(pos.x) + dx, z = Math.floor(pos.z) + dz;
+            for (let y = fy + 3; y >= fy - 6; y--) {
+                const floor = bot.blockAt(new Vec3(x, y, z));
+                const head = bot.blockAt(new Vec3(x, y + 1, z));
+                const roof = bot.blockAt(new Vec3(x, y + 2, z));
+                if (solid(floor) && airy(head) && solid(roof)) {
+                    await goToPosition(bot, x + 0.5, y, z + 0.5, 1);
+                    log(bot, `Found a covered spot at (${x}, ${y}, ${z}) and took shelter under it.`);
+                    return true;
+                }
+            }
+        }
+    }
+    log(bot, 'No shelter found nearby.');
+    return false;
+}
+
+export async function buildShelter(bot, block = 'oak_planks') {
+    /**
+     * Build a quick emergency shelter — a small hollow room with a doorway —
+     * around yourself, to hide from weather, night or mobs.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} block - block to build with, e.g. 'oak_planks'.
+     * @returns {Promise<boolean>} true if built.
+     * @example
+     * await skills.buildShelter(bot);
+     **/
+    const pos = bot.entity.position;
+    const bx = Math.floor(pos.x) - 2, by = Math.floor(pos.y), bz = Math.floor(pos.z) - 2;
+    const w = 5, d = 5;
+    const x2 = bx + w - 1, z2 = bz + d - 1;
+    const doorX = bx + Math.floor(w / 2);
+    const positions = [];
+    for (let x = bx; x <= x2; x++)
+        for (let z = bz; z <= z2; z++)
+            for (let y = by; y <= by + 3; y++) {
+                const isWall = x === bx || x === x2 || z === bz || z === z2;
+                const isRoof = y === by + 3;
+                if (isWall || isRoof) {
+                    // doorway: 2 wide x 2 tall gap in the -Z wall
+                    if (z === bz && y <= by + 1 && x >= doorX && x <= doorX + 1) continue;
+                    positions.push([x, y, z]);
+                }
+            }
+    const placed = await placeBlockList(bot, block, positions);
+    log(bot, `Built a quick ${block} shelter (${placed} blocks) with a doorway.`);
+    return placed > 0;
+}
+
+export async function askForHelp(bot, topic = 'help') {
+    /**
+     * Prime yourself to ask nearby players (or your beloved) for help or advice
+     * about anything you are stuck on — directions, a recipe, where to find
+     * something, a favour. YOU write the actual question in your own words.
+     * Save any useful answer with !remember so you can reuse it later (!recall).
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} topic - what you need help with.
+     * @returns {Promise<boolean>} true.
+     * @example
+     * await skills.askForHelp(bot, 'finding a village');
+     **/
+    log(bot, `You decided to ask for help with: ${topic}. Ask the players now, in your own words, being specific about what you need.`);
+    return true;
+}
+
 export async function requestItems(bot, itemName, count = 1) {
     /**
      * Ask your beloved (or nearby players) in chat for an item you need but don't
@@ -978,6 +1105,12 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         if (blockType === 'ladder' || blockType === 'repeater' || blockType === 'comparator') {
             blockType += `[facing=${face}]`;
         }
+        // six-way facing blocks (pistons, observers, dispensers, ...) — up/down when
+        // placed against the top/bottom face, else a horizontal facing.
+        if (['piston', 'sticky_piston', 'observer', 'dispenser', 'dropper', 'hopper'].includes(blockType)) {
+            const vertical = placeOn === 'top' ? 'up' : placeOn === 'bottom' ? 'down' : null;
+            blockType += `[facing=${vertical || face}]`;
+        }
         if (blockType.includes('stairs')) {
             blockType += `[facing=${face}]`;
         }
@@ -1101,6 +1234,52 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         log(bot, `Failed to place ${blockType} at ${target_dest}.`);
         return false;
     }
+}
+
+export async function placeBlockState(bot, blockType, props, x, y, z) {
+    /**
+     * Place a block with an exact block-state (facing, powered, extended, delay...)
+     * using /setblock. For redstone and other orientation-sensitive builds where a
+     * wrong facing breaks the whole circuit. Requires operator (cheat mode).
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} blockType - the block name, e.g. 'repeater'.
+     * @param {object} props - block-state properties, e.g. { facing: 'north', delay: 2 }.
+     * @param {number} x, y, z - absolute coordinates.
+     * @returns {Promise<boolean>} true on success.
+     * @example
+     * await skills.placeBlockState(bot, 'repeater', { facing: 'north', delay: 2 }, 10, 64, 10);
+     **/
+    let block = blockType;
+    const keys = props ? Object.keys(props) : [];
+    if (keys.length)
+        block += '[' + keys.map(k => `${k}=${props[k]}`).join(',') + ']';
+    bot.chat(`/setblock ${Math.floor(x)} ${Math.floor(y)} ${Math.floor(z)} ${block}`);
+    if (useDelay) await new Promise(resolve => setTimeout(resolve, blockPlaceDelay));
+    return true;
+}
+
+export async function spamBlock(bot, type, times = 4, intervalMs = 350) {
+    /**
+     * Repeatedly activate (open/shut/flip/ring) the nearest block of a given type to
+     * make noise and get attention — spam a door, a chest, a lever, a bell, a note block.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {string} type - block type to spam, e.g. 'door', 'chest', 'lever', 'bell' (substring-matched, so 'door' hits any wood door).
+     * @param {number} times - how many activate cycles (default 4).
+     * @param {number} intervalMs - ms between toggles (default 350).
+     * @returns {Promise<boolean>} true if something was spammed.
+     * @example
+     * await skills.spamBlock(bot, 'door', 6);
+     **/
+    const blocks = world.getNearestBlocksWhere(bot, b => b && b.name && b.name.includes(type), 8, 1);
+    const block = blocks[0];
+    if (!block) { log(bot, `No ${type} nearby to spam.`); return false; }
+    for (let i = 0; i < times; i++) {
+        if (bot.interrupt_code) break;
+        try { await bot.activateBlock(block); } catch (e) { /* ignore */ }
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+    log(bot, `Spammed ${type} ${times} times.`);
+    return true;
 }
 
 export async function equip(bot, itemName) {

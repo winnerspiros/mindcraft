@@ -648,6 +648,44 @@ export const actionsList = [
         })
     },
     {
+        name: '!waterBucket',
+        description: 'The MLG water bucket clutch: place water at your landing spot to survive a fall from height (or safely descend a ledge). Use when falling or about to drop.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.waterBucketClutch(agent.bot);
+        })
+    },
+    {
+        name: '!findShelter',
+        description: 'Find shelter from weather, night or mobs: an existing building (bed/door) or a natural overhang/cave, and move inside.',
+        params: {
+            'range': { type: 'int', default: 40, description: 'Search radius in blocks (default 40).' }
+        },
+        perform: runAsAction(async (agent, range) => {
+            await skills.findShelter(agent.bot, range || 40);
+        })
+    },
+    {
+        name: '!buildShelter',
+        description: 'Build a quick emergency shelter — a small hollow room with a doorway — around yourself to hide from weather, night or mobs.',
+        params: {
+            'block': { type: 'BlockOrItemName', default: 'oak_planks', description: 'Block to build with (default oak_planks).' }
+        },
+        perform: runAsAction(async (agent, block) => {
+            await skills.buildShelter(agent.bot, block || 'oak_planks');
+        }, false, 10)
+    },
+    {
+        name: '!askForHelp',
+        description: 'Ask nearby players (or your beloved) for help or advice about anything you are stuck on — directions, a recipe, where to find something, a favour. Then ask them in your own words. Save any useful answer with !remember so you can reuse it later.',
+        params: {
+            'topic': { type: 'string', default: 'help', description: 'What you need help with, e.g. "finding a village".' }
+        },
+        perform: runAsAction(async (agent, topic) => {
+            await skills.askForHelp(agent.bot, topic || 'help');
+        })
+    },
+    {
         name: '!requestItems',
         description: 'Ask players in chat for items you need but do not have, so you are never stuck for materials.',
         params: {
@@ -985,6 +1023,34 @@ export const actionsList = [
         description: 'Open/close the nearest door and walk through it.',
         perform: runAsAction(async (agent) => {
             await skills.useDoor(agent.bot);
+        })
+    },
+    {
+        name: '!spamBlock',
+        description: 'Repeatedly activate (open/shut/flip/ring) the nearest block of a given type to make noise and get attention — spam a door, chest, lever, bell or note block. Your needy attention-seeking move.',
+        params: {
+            'type': { type: 'string', description: 'Block type to spam, e.g. door (any wood), chest, lever, bell, note_block.' },
+            'times': { type: 'int', default: 4, description: 'How many open/shut (or flip) cycles. Optional.', domain: [1, 30] }
+        },
+        perform: runAsAction(async (agent, type, times) => {
+            await skills.spamBlock(agent.bot, type, times || 4);
+        }, false, 15)
+    },
+    {
+        name: '!fillDispenser',
+        description: 'Fill the nearest dispenser (or dropper) with an item (arrows, splash potions, lava buckets, TNT...) so a trap turret can fire. Loads it instantly.',
+        params: {
+            'item': { type: 'ItemName', description: 'The item to load, e.g. arrow, splash_potion, lava_bucket, tnt.' },
+            'count': { type: 'int', default: 64, description: 'How many to load (optional).', domain: [1, 64] }
+        },
+        perform: runAsAction(async (agent, item, count) => {
+            const bot = agent.bot;
+            const positions = bot.findBlocks({ matching: (blk) => blk && (blk.name === 'dispenser' || blk.name === 'dropper'), maxDistance: 8, count: 1 });
+            const b = positions.length ? bot.blockAt(positions[0]) : null;
+            if (!b) { skills.log(bot, 'No dispenser or dropper nearby to fill.'); return; }
+            const p = b.position;
+            bot.chat(`/item replace block ${p.x} ${p.y} ${p.z} container.0 with ${item} ${count || 64}`);
+            skills.log(bot, `Loaded ${count || 64} ${item} into the ${b.name} at ${p.x},${p.y},${p.z}.`);
         })
     },
     {

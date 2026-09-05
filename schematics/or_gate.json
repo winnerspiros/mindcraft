@@ -1,0 +1,156 @@
+{
+  "name": "or_gate",
+  "description": "An OR gate: flip EITHER lever and the lamp lights. A teaching build — read it to see how dust merges.",
+  "size": {
+    "x": 4,
+    "y": 2,
+    "z": 3
+  },
+  "instant": true,
+  "blocks": [
+    {
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 0,
+      "y": 0,
+      "z": 1,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 0,
+      "y": 0,
+      "z": 2,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 1,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 0,
+      "z": 2,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 1,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 0,
+      "z": 2,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "z": 0,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "z": 1,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 3,
+      "y": 0,
+      "z": 2,
+      "name": "stone",
+      "props": {}
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 0,
+      "name": "lever",
+      "props": {
+        "face": "floor"
+      }
+    },
+    {
+      "x": 0,
+      "y": 1,
+      "z": 2,
+      "name": "lever",
+      "props": {
+        "face": "floor"
+      }
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 0,
+      "name": "redstone_wire",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 0,
+      "name": "redstone_wire",
+      "props": {}
+    },
+    {
+      "x": 1,
+      "y": 1,
+      "z": 2,
+      "name": "redstone_wire",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 2,
+      "name": "redstone_wire",
+      "props": {}
+    },
+    {
+      "x": 2,
+      "y": 1,
+      "z": 1,
+      "name": "redstone_wire",
+      "props": {}
+    },
+    {
+      "x": 3,
+      "y": 1,
+      "z": 1,
+      "name": "redstone_lamp",
+      "props": {}
+    }
+  ]
+}

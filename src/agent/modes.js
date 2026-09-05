@@ -31,13 +31,23 @@ const modes_list = [
         fall_blocks: ['sand', 'gravel', 'concrete_powder'], // includes matching substrings like 'sandstone' and 'red_sand'
         last_dying_shout: 0,
         last_ate: 0,
+        last_clutch: 0,
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            if (blockAbove.name === 'water') {
+            // falling from a height — MLG water bucket to survive the fall
+            if (!bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
+                if (Date.now() - this.last_clutch > 2000) {
+                    this.last_clutch = Date.now();
+                    execute(this, agent, async () => {
+                        await skills.waterBucketClutch(bot);
+                    });
+                }
+            }
+            else if (blockAbove.name === 'water') {
                 // does not call execute so does not interrupt other actions
                 if (!bot.pathfinder.goal) {
                     bot.setControlState('jump', true);
@@ -142,8 +152,26 @@ const modes_list = [
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
                 execute(this, agent, async () => {
-                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 10000);
+                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 20000);
+                    const start = bot.entity.position.clone();
                     await skills.moveAway(bot, 5);
+                    await new Promise(r => setTimeout(r, 600));
+                    if (bot.entity.position.distanceTo(start) < 1.5) {
+                        // still stuck — clear the blocks trapping her, then jump free
+                        const feet = bot.entity.position.floored();
+                        const around = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,2,0],[1,1,0],[-1,1,0],[0,1,1],[0,1,-1]];
+                        for (const [dx,dy,dz] of around) {
+                            const p = feet.offset(dx, dy, dz);
+                            const b = bot.blockAt(p);
+                            if (b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'water' && b.name !== 'lava' && b.name !== 'bedrock') {
+                                await skills.breakBlockAt(bot, p.x, p.y, p.z);
+                            }
+                        }
+                        bot.setControlState('jump', true);
+                        await new Promise(r => setTimeout(r, 800));
+                        bot.setControlState('jump', false);
+                        await skills.moveAway(bot, 5);
+                    }
                     clearTimeout(crashTimeout);
                     say(agent, 'I\'m free.');
                 });
