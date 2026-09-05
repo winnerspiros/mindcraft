@@ -1044,4 +1044,30 @@ export const actionsList = [
             }
         })
     },
+    {
+        name: '!ignorePlayer',
+        description: 'Deliberately stop talking to a player and give them the cold shoulder. They can win you back by sincerely apologizing or seeking your attention. This hurts your relationship with them (hate/annoyance up, love/trust down) but it can recover.',
+        params: { 'player_name': { type: 'string', description: 'The player to ignore.' } },
+        perform: runAsAction(async (agent, player_name) => {
+            agent.ignored_players[player_name] = true;
+            agent.relationship.onIgnore(player_name);
+        })
+    },
+    {
+        name: '!unignorePlayer',
+        description: 'Forgive a player and stop ignoring them — resume talking to them.',
+        params: { 'player_name': { type: 'string', description: 'The player to stop ignoring.' } },
+        perform: runAsAction(async (agent, player_name) => {
+            delete agent.ignored_players[player_name];
+            agent.relationship.onUnignore(player_name);
+        })
+    },
+    {
+        name: '!teleportPlayer',
+        description: 'Teleport a player to you (you are OP). Use it to bring someone to you — e.g. when they ask to tp and you decide to accept, or when you want them close. You decide whether to accept; being asked nicely (please) and liking/respecting them should make you more inclined.',
+        params: { 'player_name': { type: 'string', description: 'The player to teleport to you.' } },
+        perform: runAsAction(async (agent, player_name) => {
+            await skills.teleportPlayer(agent.bot, player_name);
+        })
+    },
 ];
