@@ -1031,12 +1031,17 @@ export const actionsList = [
     },
     {
         name: '!pointAt',
-        description: 'Turn to face something and punch the air to gesture toward it so nearby players see what you mean (a player, mob, or block). Use it to point something out or show which way you want to go — point first, then ask; if they agree, head there with !goToNearestEntity or !goToPosition.',
+        description: 'Turn to face something and punch the air to gesture toward it so nearby players see what you mean — a player, a mob, a block, water, or a place you saved. Use it to point something out or show which way you want to go: point first, then ask; if they agree, head there with !goToNearestEntity or !goToPosition.',
         params: {
-            'target': { type: 'string', description: 'A player name, mob type (e.g. sheep), or block type (e.g. oak_log) to point at.' }
+            'target': { type: 'string', description: 'A player name, mob type (e.g. sheep), block type (e.g. oak_log), or a saved place name (from !rememberHere).' }
         },
         perform: runAsAction(async (agent, target) => {
-            await skills.pointAt(agent.bot, target);
+            const place = agent.memory_bank && agent.memory_bank.recallPlace(target);
+            if (place && Array.isArray(place) && place.length >= 3) {
+                await skills.pointAtPosition(agent.bot, place[0], place[1], place[2], target);
+            } else {
+                await skills.pointAt(agent.bot, target);
+            }
         })
     },
 ];
