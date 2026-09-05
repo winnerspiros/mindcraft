@@ -791,9 +791,9 @@ export class Agent {
         // then armorManager equips the armor and the best sword is moved to hand.
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
-            'diamond_sword', 'shield', 'cooked_beef', 'cooked_beef', 'cooked_beef',
+            'diamond_sword', 'shield', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
-            'bow',
+            'bow', 'chest',
         ];
         try {
             for (const item of gear) {
