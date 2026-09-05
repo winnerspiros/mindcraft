@@ -777,6 +777,50 @@ export const actionsList = [
         })
     },
     {
+        name: '!throwTrident',
+        description: 'Throw your trident (spear) at a player from range — hold to charge and hurl it. Find a trident by hunting drowned first.',
+        params: {
+            'player_name': { type: 'string', description: 'The name of the player to throw at.' },
+            'count': { type: 'int', default: 1, description: 'How many times to throw (optional).', domain: [1, 8] }
+        },
+        perform: runAsAction(async (agent, player_name, count) => {
+            const target = agent.bot.players[player_name]?.entity;
+            if (!target) {
+                skills.log(agent.bot, `Could not find player ${player_name}.`);
+                return false;
+            }
+            const ok = await skills.throwTrident(agent.bot, target, count ?? 1);
+            if (ok) {
+                agent.relationship.onHurtThem(player_name);
+                agent.psyche.onHurtThem();
+            }
+        })
+    },
+    {
+        name: '!crystalPvP',
+        description: 'Crystal PvP: drop an end crystal at a player and detonate it for huge damage. ONLY when genuinely enraged (hate/annoyance very high) — your most aggressive move.',
+        params: {
+            'player_name': { type: 'string', description: 'The name of the player to crystal.' }
+        },
+        perform: runAsAction(async (agent, player_name) => {
+            const target = agent.bot.players[player_name]?.entity;
+            if (!target) {
+                skills.log(agent.bot, `Could not find player ${player_name}.`);
+                return false;
+            }
+            const rel = agent.relationship.get(player_name);
+            if (rel.hate < 65 && rel.annoyance < 80) {
+                skills.log(agent.bot, `Not nearly mad enough at ${player_name} to do that.`);
+                return false;
+            }
+            const ok = await skills.crystalPvP(agent.bot, target);
+            if (ok) {
+                agent.relationship.onHurtThem(player_name);
+                agent.psyche.onHurtThem();
+            }
+        })
+    },
+    {
         name: '!whisper',
         description: 'Send a private message (/msg) to one player so only they see it. Use for secrets, flirting, or private talk when others are online.',
         params: {
