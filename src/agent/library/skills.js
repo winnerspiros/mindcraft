@@ -1451,6 +1451,7 @@ const PROTECTED_GEAR = new Set([
     'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
     'diamond_sword', 'shield',
     'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
+    'bow', 'arrow', 'spectral_arrow', 'tipped_arrow',
 ]);
 
 function isProtectedGear(bot, itemName) {
