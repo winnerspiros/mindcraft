@@ -522,7 +522,7 @@ export const actionsList = [
     },
     {
         name: '!pasteSchematic',
-        description: 'Build a whole structure from a saved schematic (schematics/*.json, .schem or .schematic), block-perfect and optionally rotated. Give just the name to paste it in the nearest free space near you; optionally give x y z to paste at exact coordinates, then a rotation (0/90/180/270). Use !listSchematics to see what exists and !captureBlueprint to make your own. For SIMPLE shapes use !buildShape/!build instead.',
+        description: 'Build a whole structure from a saved schematic (schematics/*.json, .schem or .schematic), like a real player: gather/craft each material, then place every block by hand (no instant /setblock). Give just the name to build it in the nearest free space near you; optionally give x y z to build at exact coordinates, then a rotation (0/90/180/270). This is slow — a big build takes a while. Use !listSchematics to see what exists and !captureBlueprint to make your own. For SIMPLE shapes use !buildShape/!build instead.',
         params: {
             'name': { type: 'string', description: 'Schematic name or filename, e.g. "cozy_house" or "cozy_house.schem".' },
             'x': { type: 'int', description: 'Optional absolute X of the schematic corner (default: free space near you).', default: null },
@@ -543,11 +543,12 @@ export const actionsList = [
             const rot = rotation || 0;
             try {
                 const placed = await schematic.placeSchematic(bot, sch, origin, rot);
-                skills.log(bot, `Pasted schematic "${name}" (${placed} blocks) at ${origin.x},${origin.y},${origin.z}${rot ? ` rotated ${rot} degrees` : ''}.`);
+                const v = await schematic.verifySchematic(bot, sch, origin, rot);
+                skills.log(bot, `Built "${name}" block-by-block at ${origin.x},${origin.y},${origin.z}${rot ? ` rotated ${rot}°` : ''}: placed ${placed}/${sch.blocks.length} blocks; verified ${v.ok}/${v.checked} sampled blocks correct.`);
             } catch (e) {
-                skills.log(bot, `Failed to paste "${name}": ${e.message}`);
+                skills.log(bot, `Failed to build "${name}": ${e.message}`);
             }
-        }, false, 10)
+        }, false, 60)
     },
     {
         name: '!captureBlueprint',

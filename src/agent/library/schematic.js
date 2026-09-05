@@ -23,25 +23,6 @@ function isAir(block) {
 const MAX_BLOCKS = 10000;
 
 // Y-axis rotation helpers. steps = 0..3 (each = 90 deg clockwise viewed from above).
-// Facing north -> east -> south -> west matches the coordinate rotation below.
-const FACING_CW = ['north', 'east', 'south', 'west'];
-
-function rotateProps(props, steps) {
-    if (!props || steps === 0) return props || {};
-    const p = { ...props };
-    if (typeof p.facing === 'string' && FACING_CW.includes(p.facing)) {
-        p.facing = FACING_CW[(FACING_CW.indexOf(p.facing) + steps) % 4];
-    }
-    if (typeof p.axis === 'string' && (p.axis === 'x' || p.axis === 'z') && steps % 2 === 1) {
-        p.axis = p.axis === 'x' ? 'z' : 'x';
-    }
-    if (p.rotation !== undefined) {
-        const r = parseInt(p.rotation, 10);
-        if (!isNaN(r)) p.rotation = String((r + steps * 4) % 16);
-    }
-    return p;
-}
-
 function rotateRelative(x, z, sx, sz, steps) {
     // rotate a relative (x,z) inside an (sx,sz) footprint, clockwise steps*90.
     switch (steps % 4) {
@@ -124,43 +105,70 @@ export async function captureRegion(bot, p1, p2) {
 
 /**
  * Place a schematic with its min corner at `origin`, optionally rotated.
- * Cheat mode (OP) emits /setblock per block (instant, any distance); otherwise
- * falls back to survival placement via skills.placeBlock (loses block-state props).
- * Returns the number of blocks placed.
+ * Builds like a real player: gathers/crafts every material first (acquireBlocks),
+ * then places each block one at a time by hand (placeBlock, no /setblock cheat).
+ * Block-state orientation (stairs facing, log axis, ...) is dropped — blocks place
+ * in their default orientation, same as a player who isn't being fussy.
+ * Returns the number of blocks actually placed.
  */
-export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, dontCheat = false) {
+export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
     const steps = ((Math.round(rotationDeg / 90) % 4) + 4) % 4;
-    const { x: sx, y: sy, z: sz } = schematic.size;
+    const { x: sx, z: sz } = schematic.size;
     if (schematic.blocks.length > MAX_BLOCKS) {
         throw new Error(`Schematic has ${schematic.blocks.length} blocks (cap ${MAX_BLOCKS}). Split it or use a smaller one.`);
     }
 
     const rotated = schematic.blocks.map((b) => {
         const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
-        return { ...b, x, z, props: rotateProps(b.props, steps) };
+        return { x, y: b.y, z, name: b.name };
     });
-    // bottom-up so the lower layers are set first (matters for the survival path)
-    rotated.sort((a, b) => a.y - b.y);
 
-    const cheat = !dontCheat && bot.modes && bot.modes.isOn && bot.modes.isOn('cheat');
+    // Gather + craft materials for every block type before placing anything.
+    const byName = {};
+    for (const b of rotated) (byName[b.name] ||= []).push(b);
+    for (const [name, list] of Object.entries(byName)) {
+        if (bot.interrupt_code) break;
+        const have = await skills.acquireBlocks(bot, name, list.length);
+        if (have < list.length) {
+            skills.log(bot, `Only gathered ${have}/${list.length} ${name} — building with what I have.`);
+        }
+    }
+
+    // Bottom-up so lower layers are placed first; edge blocks before interior so
+    // ceiling blocks always have a neighbour to build off of.
+    const minX = Math.min(...rotated.map(b => b.x)), maxX = Math.max(...rotated.map(b => b.x));
+    const minZ = Math.min(...rotated.map(b => b.z)), maxZ = Math.max(...rotated.map(b => b.z));
+    const edgeDist = (b) => Math.min(b.x - minX, maxX - b.x, b.z - minZ, maxZ - b.z);
+    rotated.sort((a, b) => a.y - b.y || edgeDist(a) - edgeDist(b));
+
     let placed = 0;
     for (const b of rotated) {
         if (bot.interrupt_code) break;
         const wx = Math.floor(origin.x) + b.x;
         const wy = Math.floor(origin.y) + b.y;
         const wz = Math.floor(origin.z) + b.z;
-        if (cheat) {
-            const state = Object.entries(b.props || {})
-                .map(([k, v]) => `${k}="${v}"`).join(',');
-            bot.chat(`/setblock ${wx} ${wy} ${wz} ${b.name}${state ? `[${state}]` : ''}`);
-            placed++;
-        } else {
-            // survival: placeBlock handles inventory + support; props are dropped
-            const ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
-            if (ok) placed++;
-        }
+        if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) placed++;
     }
     return placed;
+}
+
+/**
+ * Verify a schematic was placed: sample the bottom layer and count how many
+ * cells now hold the expected block. Returns { ok, checked } so the caller can
+ * report self-verification (Blueprint.check-style) without trusting the paste blindly.
+ */
+export async function verifySchematic(bot, schematic, origin, rotationDeg = 0) {
+    const steps = ((Math.round(rotationDeg / 90) % 4) + 4) % 4;
+    const { x: sx, z: sz } = schematic.size;
+    const bottom = schematic.blocks.filter((b) => b.y === 0);
+    const sampled = bottom.length <= 40 ? bottom : bottom.filter((_, i) => i % Math.ceil(bottom.length / 40) === 0);
+    let ok = 0;
+    for (const b of sampled) {
+        const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
+        const blk = bot.blockAt(new Vec3(Math.floor(origin.x) + x, Math.floor(origin.y) + b.y, Math.floor(origin.z) + z));
+        if (blk && blk.name === b.name) ok++;
+    }
+    return { ok, checked: sampled.length };
 }
 
 export function schematicPath(name) {
