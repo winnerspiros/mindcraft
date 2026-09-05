@@ -1450,6 +1450,27 @@ export async function pointAt(bot, target, range = 48) {
     return `Pointed at ${what}.`;
 }
 
+export async function pointAtPosition(bot, x, y, z, what = 'there') {
+    /**
+     * Turn to face a coordinate and swing the arm (punch air) to gesture toward it.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {number} x - x coordinate.
+     * @param {number} y - y coordinate (ground level).
+     * @param {number} z - z coordinate.
+     * @param {string} what - human-readable label for the target.
+     * @returns {Promise<string>} human-readable result.
+     * @example
+     * await skills.pointAtPosition(bot, 120, 64, -450, 'home');
+     **/
+    await bot.lookAt(new Vec3(x, y + 1.62, z)); // aim at head height over the spot
+    for (let i = 0; i < 2; i++) {
+        bot.swingArm();
+        await wait(bot, 250);
+    }
+    log(bot, `Pointed at ${what}.`);
+    return `Pointed at ${what}.`;
+}
+
 
 export async function giveToPlayer(bot, itemType, username, num=1) {
     /**
