@@ -280,6 +280,10 @@ export class Prompter {
             prompt = prompt.replaceAll('$REDSTONE_KNOWLEDGE', getRedstoneKnowledge());
         if (prompt.includes('$COMBAT_KNOWLEDGE'))
             prompt = prompt.replaceAll('$COMBAT_KNOWLEDGE', getCombatKnowledge());
+        if (prompt.includes('$PERSONAL'))
+            prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
+        if (prompt.includes('$HEAT'))
+            prompt = prompt.replaceAll('$HEAT', this.agent.heat ? this.agent.heat.summarize() : '');
         if (prompt.includes('$NSFW'))
             prompt = prompt.replaceAll('$NSFW', this.profile.nsfw ? NSFW_DIRECTIVE : '');
         if (prompt.includes('$TO_SUMMARIZE'))

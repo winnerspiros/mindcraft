@@ -25,6 +25,8 @@ import { PlayerProfiles } from './profiles.js';
 import { ReliabilityTracker } from './reliability.js';
 import { Psyche } from './psyche.js';
 import { RealnessTracker } from './realness.js';
+import { PersonalnessTracker } from './personalness.js';
+import { HeatTracker } from './heat.js';
 import { ReflectiveMemory } from './reflective_memory.js';
 import Vec3 from 'vec3';
 
@@ -92,6 +94,14 @@ export class Agent {
         // Realness: in-memory meter for how "real-world" the live conversation
         // has gotten (drives her tone via $REALNESS — no persistence).
         this.realness = new RealnessTracker(this);
+
+        // Personalness: how private/intimate the live thread is — when high with
+        // others online, her replies go by whisper (/msg) instead of public chat.
+        this.personal = new PersonalnessTracker(this);
+
+        // Heat: how turned-on the conversation has gotten — graduated, slow to
+        // build, fast to cool. Drives hotter/NSFW talk via $HEAT.
+        this.heat = new HeatTracker(this);
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
@@ -261,6 +271,8 @@ export class Agent {
                 this.relationship.onMessage(username, message);
                 this.psyche.onMessage(message);
                 this.realness.onMessage(message, username);
+                this.personal.onMessage(message, username);
+                this.heat.onMessage(message, username);
                 this.profiles.markSeen(username);
                 this.profiles.onMessage(username, message);
                 this.profiles.currentSpeaker = username;
@@ -523,6 +535,12 @@ export class Agent {
             // if we're in an ongoing conversation with the other bot, send the response to it
             convoManager.sendToBot(to_player, message);
         }
+        else if (this.personal && this.personal.shouldWhisper() &&
+                 to_player && to_player !== 'system' && to_player !== this.name) {
+            // the thread has gone private/intimate and others are online — keep
+            // it between the two of them instead of broadcasting
+            this.openChat(message, to_player);
+        }
         else {
             // otherwise, use open chat
             this.openChat(message);
@@ -530,7 +548,7 @@ export class Agent {
         }
     }
 
-    async openChat(message) {
+    async openChat(message, whisperTo = null) {
         let to_translate = message;
         let remaining = '';
         const cmd_info = getCommandInfo(message);
@@ -547,6 +565,11 @@ export class Agent {
             for (let username of settings.only_chat_with) {
                 this.bot.whisper(username, message);
             }
+        }
+        else if (whisperTo) {
+            // a private /msg reply to one player
+            this.bot.whisper(whisperTo, message);
+            sendOutputToServer(this.name, message);
         }
         else {
             if (settings.speak) {
@@ -744,6 +767,8 @@ export class Agent {
         this.psyche.update(delta);
         this.psyche.sampleEnvironment(this.bot);
         this.realness.update(delta);
+        this.personal.update(delta);
+        this.heat.update(delta);
         await this.checkTaskDone();
     }
 

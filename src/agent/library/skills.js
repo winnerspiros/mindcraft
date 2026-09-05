@@ -789,12 +789,15 @@ export async function defendSelf(bot, range=9) {
     bot.modes.pause('cowardice');
     let attacked = false;
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
+
+    // Opening volley: a couple arrows at a distant enemy ONCE, before closing to
+    // melee. Never inside the loop below — looping arrows at something she can't
+    // reach is how she burned through (and spam-/gave) stacks of arrows.
+    if (enemy && bot.entity.position.distanceTo(enemy.position) >= 6) {
+        try { await shootBow(bot, enemy, 2, true); } catch (e) { console.warn('bow opening failed:', e.message); }
+    }
+
     while (enemy) {
-        // Ranged opening: put an arrow or two into distant hostiles before closing to melee.
-        // (Safer for creepers/phantoms and softens the target while she walks in.)
-        if (bot.entity.position.distanceTo(enemy.position) >= 6) {
-            try { await shootBow(bot, enemy, 2, true); } catch (e) { console.warn('bow opening failed:', e.message); }
-        }
         bot.armorManager.equipAll(); // keep armor on every fight, don't fight naked
         await equipHighestAttack(bot);
         if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
@@ -869,12 +872,13 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         return false;
     }
 
-    // ensure arrows (main inventory or off-hand both feed the bow)
+    // arrows must be in inventory (main or off-hand both feed the bow). Out of
+    // arrows = don't shoot — fall back to melee or craft more; never /give-spam
+    // (with a full inventory the /give drops arrows on the ground and loops).
     const arrowTypes = ['arrow', 'spectral_arrow', 'tipped_arrow'];
-    const hasArrow = bot.inventory.items().some(i => arrowTypes.includes(i.name));
-    if (!hasArrow) {
-        bot.chat(`/give ${bot.username} arrow 64`);
-        await new Promise(r => setTimeout(r, 350));
+    if (!bot.inventory.items().some(i => arrowTypes.includes(i.name))) {
+        log(bot, 'No arrows to shoot with.');
+        return false;
     }
 
     await bot.equip(bow, 'hand');

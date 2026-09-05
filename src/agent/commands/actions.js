@@ -777,6 +777,21 @@ export const actionsList = [
         })
     },
     {
+        name: '!whisper',
+        description: 'Send a private message (/msg) to one player so only they see it. Use for secrets, flirting, or private talk when others are online.',
+        params: {
+            'player_name': { type: 'string', description: 'The player to whisper to.' },
+            'message': { type: 'string', description: 'What to say to them privately.' }
+        },
+        perform: async function (agent, player_name, message) {
+            if (!agent.bot.players[player_name]) {
+                return `Could not find player ${player_name} to whisper.`;
+            }
+            agent.bot.whisper(player_name, message);
+            return `Whispered to ${player_name}.`;
+        }
+    },
+    {
         name: '!kick',
         description: 'Kick a player off the server (they can rejoin). Punish rule-breakers, griefers or upsetting players. NEVER ban anyone.',
         params: {
