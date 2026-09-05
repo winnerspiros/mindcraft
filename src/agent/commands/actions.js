@@ -751,6 +751,32 @@ export const actionsList = [
         })
     },
     {
+        name: '!shootPlayer',
+        description: 'Shoot a player with your bow — equip a bow, aim, charge and fire from range (no need to walk up to them). Ranged damage.',
+        params: {
+            'player_name': { type: 'string', description: 'The name of the player to shoot.' },
+            'shots': { type: 'int', default: 1, description: 'How many arrows to fire (optional).', domain: [1, 32] }
+        },
+        perform: runAsAction(async (agent, player_name, shots) => {
+            const ok = await skills.shootBow(agent.bot, player_name, shots ?? 1, true);
+            if (ok) {
+                agent.relationship.onHurtThem(player_name);
+                agent.psyche.onHurtThem();
+            }
+        })
+    },
+    {
+        name: '!shoot',
+        description: 'Shoot the nearest entity of a given type with your bow (e.g. skeleton, creeper, zombie, phantom).',
+        params: {
+            'type': { type: 'string', description: 'The mob type to shoot.' },
+            'shots': { type: 'int', default: 1, description: 'How many arrows to fire (optional).', domain: [1, 32] }
+        },
+        perform: runAsAction(async (agent, type, shots) => {
+            await skills.shootBow(agent.bot, type, shots ?? 1, true);
+        })
+    },
+    {
         name: '!kick',
         description: 'Kick a player off the server (they can rejoin). Punish rule-breakers, griefers or upsetting players. NEVER ban anyone.',
         params: {

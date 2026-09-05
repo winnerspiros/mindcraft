@@ -4,7 +4,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError } from './commands/index.js';
+import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -490,6 +490,15 @@ export class Agent {
                     break;
             }
             else { // conversation response
+                if (looksLikeCommand(res)) {
+                    // The model emitted something command-shaped that didn't parse
+                    // (typo / space-separated / missing bang). Never leak that raw
+                    // text into chat; nudge her to use proper !command syntax instead.
+                    console.warn('Scrubbed unparseable command-ish text from chat:', JSON.stringify(res));
+                    this.history.add(this.name, res);
+                    this.history.add('system', `Your last reply looked like a command but was malformed. If you meant to act, use the exact !command syntax (e.g. !defendSelf); otherwise say it naturally without the command name.`);
+                    break;
+                }
                 this.history.add(this.name, res);
                 this.routeResponse(source, res);
                 break;
@@ -759,12 +768,14 @@ export class Agent {
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'shield', 'cooked_beef', 'cooked_beef', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
+            'bow',
         ];
         try {
             for (const item of gear) {
                 this.bot.chat(`/give ${this.name} ${item} 1`);
                 await new Promise(r => setTimeout(r, 120));
             }
+            this.bot.chat(`/give ${this.name} arrow 64`);
             await new Promise(r => setTimeout(r, 400));
             this.bot.armorManager.equipAll();
             const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));

@@ -64,6 +64,34 @@ export function commandExists(commandName) {
 }
 
 /**
+ * Heuristic: did the model emit something meant to be a command that doesn't parse
+ * (a typo, space-separated words, or a missing bang)? Used to stop raw command-ish
+ * text from leaking into chat when command parsing fails — e.g. "defend self",
+ * "shoot player", or "!defend self".
+ * Only flags multi-word (camelCase) command names and bang-prefixed tokens; plain
+ * single-word commands ("stop", "attack", "follow") are common English and are left
+ * alone so ordinary prose isn't over-scrubbed.
+ */
+export function looksLikeCommand(message) {
+    if (!message) return false;
+    const text = message.trim();
+    if (!text) return false;
+
+    // a bang-prefixed token (valid or not) is a command attempt
+    if (/^[!！]/.test(text)) return true;
+
+    const words = text.toLowerCase().split(/\s+/);
+    for (const name of commandNames) {
+        if (!/[A-Z]/.test(name)) continue; // skip single-word command names
+        const lower = name.toLowerCase();
+        const expanded = name.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/\s+/);
+        if (words[0] === lower) return true;                    // "defendSelf" / "shootplayer"
+        if (expanded.length >= 2 && expanded.every((w, i) => words[i] === w)) return true; // "defend self"
+    }
+    return false;
+}
+
+/**
  * Converts a string into a boolean.
  * @param {string} input
  * @returns {boolean | null} the boolean or `null` if it could not be parsed.
