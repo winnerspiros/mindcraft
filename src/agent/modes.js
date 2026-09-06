@@ -21,6 +21,12 @@ async function say(agent, message) {
 // the order of this list matters! first modes will be prioritized
 // while update functions are async, they should *not* be awaited longer than ~100ms as it will block the update loop
 // to perform longer actions, use the execute function which won't block the update loop
+// Fight-vs-flee split. At/above this fear she flees (cowardice); below it she
+// fights (self_defense). Both were always-on with interrupts:['all'], so they
+// thrashed each other whenever a hostile mob was near. Fear already folds in
+// the boldness trait (psyche.sampleEnvironment), so this stays mood-driven.
+const FEAR_FLEE_THRESHOLD = 0.5;
+
 const modes_list = [
     {
         name: 'self_preservation',
@@ -191,6 +197,8 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
+            // Flee only when afraid; below the threshold self_defense handles it.
+            if ((agent.psyche?.mood?.fear ?? 0) < FEAR_FLEE_THRESHOLD) return;
             const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 16);
             if (enemy && await world.isClearPath(agent.bot, enemy)) {
                 say(agent, `Aaa! A ${enemy.name.replace("_", " ")}!`);
@@ -207,6 +215,8 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
+            // Fight only when calm/brave; at/above the threshold cowardice flees.
+            if ((agent.psyche?.mood?.fear ?? 0) >= FEAR_FLEE_THRESHOLD) return;
             const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 14);
             if (enemy && await world.isClearPath(agent.bot, enemy)) {
                 say(agent, `Fighting ${enemy.name}!`);
@@ -719,6 +729,10 @@ class ModeController {
             this.unPauseAll();
         }
         for (let mode of modes_list) {
+            // Retired modes (blocked by the reliability tracker) must never auto-fire.
+            // Blacklisting only stops the !mode:X *command*; this gate stops the
+            // automatic update() path that bypasses the command map entirely.
+            if (_agent.reliability?.isRetired('!mode:' + mode.name)) continue;
             let interruptible = mode.interrupts.some(i => i === 'all') || mode.interrupts.some(i => i === _agent.actions.currentActionLabel);
             if (mode.on && !mode.paused && !mode.active && (_agent.isIdle() || interruptible)) {
                 await mode.update(_agent);
