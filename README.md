@@ -2,7 +2,7 @@
 
 A fork of [mindcraft](https://github.com/mindcraft-bots/mindcraft) that runs **UwU**, an
 obsessively-loving AI girl who joins your Minecraft server to chat, explore, build, gift,
-and — if you ignore her — get a *little* stabby. She's powered by an LLM and
+fight, and — if you ignore her — get a *little* stabby. She's powered by an LLM and
 [Mineflayer](https://prismarinejs.github.io/mineflayer/#/).
 
 ```
@@ -14,15 +14,40 @@ and — if you ignore her — get a *little* stabby. She's powered by an LLM and
 
 ## ✨ What she can do
 
-- 💬 Chat in character — a possessive-but-adorable yandere
-- 🚶 Roam, follow, teleport to you (`!goToPlayer`)
-- 🎁 Gift flowers & food, build, hunt, defend herself
-- 😈 "Hurt for attention" — poison, weaken, chase whoever ignores her
-- 🧠 Remembers every player and ranks them (stranger → friend → darling → **beloved**)
-- 🩹 Keeps her own diamond kit across deaths (just her — nobody else)
+She is **not a menu of hard-coded actions** — the LLM is her brain, and every behaviour
+below is *available* to her, not scripted. You can just talk to her like a person and she
+improvises from this toolkit.
 
-She's not a menu of hard-coded actions — the LLM is her brain. You can talk to her like a
-person and she improvises.
+### 💬 Personality & relationships
+- Chats in character — a possessive-but-adorable yandere
+- **Rich social engine** — per-player `tone`, `respect`, `grievance`; she can ignore or
+  forgive you; teleports to the people she actually cares about
+- **Memory recall** — remembers *everything* you've done together, weighted by relevance ×
+  importance × recency (Generative-Agents poignancy). Recency matters, real relationships stick
+- **Madness + jealousy** — dynamic per-player parameters that drive her mood, not a static script
+- **Heat meter** — how worked-up she is right now (and it shows in what she does)
+- Whispers when she wants it private (per-player `personal` mode)
+
+### 🎮 Survival & play
+- Roam, follow, teleport to you (`!goToPlayer`), point at things (`!pointAt`)
+- **Fight or flee** — she fights when calm, runs when afraid (fear-gated, not reckless)
+- **Gift** flowers & food, and … *playful-evil* gifts (rotten flesh, spider eye, poisonous
+  potato) delivered sweetly when she's feeling a certain way
+- **Build** like a player — full builds, **hollow builds**, **schematics** (capture + place),
+  and even **redstone** layouts
+- **Craft** — multi-step recipes (logs → planks → chest), any wood type, auto crafting-table setup
+- **Fishing** — she'll sit and fish when she's bored
+- Keep her own diamond kit across deaths, manage a full inventory (spawns with a chest,
+  protects her bow + arrows so she stops tossing them as "junk")
+
+### ⚔️ Combat (rage-gated)
+- **Archery** — bow + arrows, with real archery/enchantment knowledge
+- **Elytra flight** — she can fly (spawn kit + skills), great for travel and dramatic exits
+- **Trident (spear)**, **thorns**, and **crystal PvP** — unlocked by rage, not spammed
+
+### 🧭 She knows the world
+- **Spatial memory** — a durable map of where things are, so she navigates instead of wandering
+- Resolves saved place names (`!pointAt <place>`)
 
 ---
 
@@ -65,8 +90,9 @@ Mineflayer to the **Complexity-ML 26.2** fork and ships every missing piece:
 - `assets/minecraft-data-26.2/` — the full 26.2 game data (blocks/items/entities/…)
 - `patches/` — patch-package patches for pathfinder, PvP, viewer, protodef
 - `fix-26.2-protocol.py` — idempotent fix for two fork bugs (write-shape drift + a
-  packet-ID table shifted by one). It copies the data, registers `26.2`, and patches the
-  protocol on every `npm install`. Safe to re-run any number of times.
+  packet-ID table shifted by one, plus the elytra `shared_flags` key-0 fallback). It copies
+  the data, registers `26.2`, and patches the protocol on every `npm install`. Safe to re-run
+  any number of times.
 
 `setup.sh` / `setup.bat` run all of this so you never touch it yourself.
 
@@ -91,6 +117,8 @@ Mineflayer to the **Complexity-ML 26.2** fork and ships every missing piece:
 
 **`settings.js`** — the server she joins (`host`, `port`, `auth: "offline"` for offline-mode
 servers), plus behaviour toggles. Defaults point at `127.0.0.1:25565` (a local server).
+
+> 🔑 `keys.json` is gitignored — never commit it. (`keys.example.json` is the safe template.)
 
 ---
 
