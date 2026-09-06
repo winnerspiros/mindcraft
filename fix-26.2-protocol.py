@@ -116,6 +116,46 @@ ENT_NEW = """  function useEntity (target, leftClick, x, y, z) {
   }
 """
 
+# --- 8a entities.js: shared_flags key-0 fallback (elytra/crouch) ---
+ENT_ELY_OLD = """      if (metas.shared_flags != null) {
+        if (bot.supportFeature('hasElytraFlying')) {
+          const elytraFlying = metas.shared_flags & 0x80
+          setElytraFlyingState(entity, Boolean(elytraFlying))
+        }
+
+        if (metas.shared_flags & 2) {
+          entity.crouching = true
+          bot.emit('entityCrouch', entity)
+        } else if (entity.crouching) { // prevent the initial entity_metadata packet from firing off an uncrouch event
+          entity.crouching = false
+          bot.emit('entityUncrouch', entity)
+        }
+      }
+"""
+
+ENT_ELY_NEW = """      // Fall back to the raw key-0 bitfield when the entity data lacks a name for
+      // shared_flags (some forks omit metadataKeys). Fixes elytra/crouch detection.
+      let sharedFlags = metas.shared_flags
+      if (sharedFlags == null) {
+        const bitField = packet.metadata.find(p => p.key === 0)
+        if (bitField !== undefined) sharedFlags = bitField.value
+      }
+      if (sharedFlags != null) {
+        if (bot.supportFeature('hasElytraFlying')) {
+          const elytraFlying = sharedFlags & 0x80
+          setElytraFlyingState(entity, Boolean(elytraFlying))
+        }
+
+        if (sharedFlags & 2) {
+          entity.crouching = true
+          bot.emit('entityCrouch', entity)
+        } else if (entity.crouching) { // prevent the initial entity_metadata packet from firing off an uncrouch event
+          entity.crouching = false
+          bot.emit('entityUncrouch', entity)
+        }
+      }
+"""
+
 # --- 8a inventory.js: activateEntity() ---
 INV_OLD = """  async function activateEntity (entity) {
     // TODO: tell the server that we are not sneaking while doing this
@@ -275,6 +315,7 @@ def main():
 
     if os.path.exists(entities_js):
         patch_js(entities_js, ENT_OLD, ENT_NEW, "26.2 splits attack into its own packet", "useEntity")
+        patch_js(entities_js, ENT_ELY_OLD, ENT_ELY_NEW, "key-0 bitfield", "elytra shared_flags fallback")
     else:
         print(f"[8a] WARNING: {entities_js} missing")
 
