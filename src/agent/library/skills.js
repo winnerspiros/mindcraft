@@ -469,7 +469,51 @@ export async function requestItems(bot, itemName, count = 1) {
     return true;
 }
 
-export async function craftRecipe(bot, itemName, num=1) {
+// Module-level recursion guard for multi-step crafting (logs -> planks -> chest).
+const craftingStack = new Set();
+
+/**
+ * Ensure the bot has enough ingredients to craft `itemName` `num` times,
+ * crafting intermediate items from more basic ones first. This lets the bot
+ * turn oak_log -> oak_planks -> chest automatically instead of getting stuck
+ * asking players for intermediate items it can craft itself. Base items
+ * (logs, ingots, ...) have no recipe and terminate the recursion.
+ */
+async function ensureCraftingPrereqs(bot, itemName, num = 1) {
+    if (craftingStack.has(itemName)) return;   // cycle guard
+    craftingStack.add(itemName);
+    try {
+        const recipes = mc.getItemCraftingRecipes(itemName);
+        if (!recipes || recipes.length === 0) return;  // base item — stop here
+
+        // A recipe can have many variants (e.g. a chest can be made from oak,
+        // spruce, birch, ... planks). Try each variant and craft intermediates
+        // for the first one the bot can fully source — so it accepts ANY log
+        // type instead of demanding oak specifically.
+        for (const [ingredients] of recipes) {
+            let sourceable = true;
+            for (const [ingName, ingPerExec] of Object.entries(ingredients)) {
+                const need = ingPerExec * num;
+                if ((world.getInventoryCounts(bot)[ingName] || 0) >= need) continue;
+
+                const ingRecipes = mc.getItemCraftingRecipes(ingName);
+                if (!ingRecipes || ingRecipes.length === 0) { sourceable = false; break; } // base ingredient — can't craft it
+
+                const ingCraftedCount = ingRecipes[0][1].craftedCount || 1;
+                const have = world.getInventoryCounts(bot)[ingName] || 0;
+                const ingExecs = Math.ceil((need - have) / ingCraftedCount);
+
+                await craftRecipe(bot, ingName, ingExecs, true);
+                if ((world.getInventoryCounts(bot)[ingName] || 0) < need) { sourceable = false; break; }
+            }
+            if (sourceable) return;  // this variant is fully sourced
+        }
+    } finally {
+        craftingStack.delete(itemName);
+    }
+}
+
+export async function craftRecipe(bot, itemName, num=1, quiet=false) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -481,9 +525,14 @@ export async function craftRecipe(bot, itemName, num=1) {
     let placedTable = false;
 
     if (mc.getItemCraftingRecipes(itemName).length == 0) {
-        log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
+        if (!quiet) log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
         return false;
     }
+
+    // Multi-step crafting: make sure intermediate ingredients exist (e.g.
+    // oak_log -> oak_planks) before we check the recipe, so the bot can craft
+    // a chest from raw logs instead of getting stuck asking for planks.
+    await ensureCraftingPrereqs(bot, itemName, num);
 
     // get recipes that don't require a crafting table
     let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
@@ -509,8 +558,22 @@ export async function craftRecipe(bot, itemName, num=1) {
                 }
             }
             else {
-                log(bot, `Crafting ${itemName} requires a crafting table.`)
-                return false;
+                // No crafting table handy — craft one from planks (multi-step),
+                // then place it and use it.
+                await craftRecipe(bot, 'crafting_table', 1);
+                if (world.getInventoryCounts(bot)['crafting_table'] > 0) {
+                    let pos = world.getNearestFreeSpace(bot, 1, 6);
+                    await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
+                    craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
+                    if (craftingTable) {
+                        recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
+                        placedTable = true;
+                    }
+                }
+                if (!craftingTable) {
+                    if (!quiet) log(bot, `Crafting ${itemName} requires a crafting table.`);
+                    return false;
+                }
             }
         }
         else {
@@ -518,8 +581,17 @@ export async function craftRecipe(bot, itemName, num=1) {
         }
     }
     if (!recipes || recipes.length === 0) {
-        const required = Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ');
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${required}. Ask your beloved or nearby players for these materials if you need them.`);
+        // Generalize wood variants so the bot asks for "any log/planks" instead
+        // of fixating on "oak" — a chest (and most wood recipes) accept ANY wood type.
+        if (!quiet) {
+            const required = Object.entries(mc.getItemCraftingRecipes(itemName)[0][0])
+                .map(([key, value]) => {
+                    const generic = key.replace(/^(oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|bamboo|crimson|warped)_/, '');
+                    return generic !== key ? `${generic} (any wood): ${value}` : `${key}: ${value}`;
+                })
+                .join(', ');
+            log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${required}. Ask your beloved or nearby players for these materials if you need them.`);
+        }
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }
