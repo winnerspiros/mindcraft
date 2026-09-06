@@ -91,6 +91,13 @@ export class OpenRouter {
     }
 
     async embed(text) {
-        throw new Error('Embeddings are not supported by Openrouter.');
+        if (text.length > 8191)
+            text = text.slice(0, 8191);
+        const embedding = await this.openai.embeddings.create({
+            model: 'openai/text-embedding-3-small',
+            input: text,
+            encoding_format: 'float',
+        });
+        return embedding.data[0].embedding;
     }
 }
