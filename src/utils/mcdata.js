@@ -71,6 +71,13 @@ export function initBot(username) {
 
     const bot = createBot(options);
 
+    // The collectblock plugin's cancelTask() waits on 'collectBlock_finished' via
+    // events.once each time collect() runs; repeated collects accumulate those
+    // one-shot listeners and trip the default 10-listener warning (and hold the
+    // event emitter open during shutdown). Bump the ceiling so heavy gathering
+    // stays silent and doesn't wedge process exit.
+    bot.setMaxListeners(0);
+
     // Throttle position packets to avoid kicks on Paper/Spigot servers
     // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
     // when mineflayer sends position updates faster than 50ms apart
@@ -131,6 +138,13 @@ export function initBot(username) {
         mc_version = bot.version;
         mcdata = minecraftData(mc_version);
         Item = prismarine_items(mc_version);
+
+        // Never let auto-deposit stash survival gear into a chest (bow, arrows, elytra,
+        // rockets, spare chests) — extend collectblock's default armor/tool guard, which
+        // only protects helmet/chestplate/leggings/boots/shield/sword/pickaxe/axe/shovel/hoe.
+        const _gearParts = ['helmet', 'chestplate', 'leggings', 'boots', 'shield', 'sword',
+            'pickaxe', 'axe', 'shovel', 'hoe', 'bow', 'arrow', 'elytra', 'firework_rocket', 'chest'];
+        bot.collectBlock.itemFilter = (item) => !_gearParts.some((p) => item.name.includes(p));
     });
 
     return bot;
@@ -404,6 +418,19 @@ export function getBlockTool(blockName) {
         return null;
     }
     return getItemName(Object.keys(block.harvestTools)[0]);  // Double check first tool is always simplest
+}
+
+// Every tool that can harvest this block (not just the simplest). Used to answer
+// "do I have something that can gather this?" rather than "do I have the wooden
+// version specifically".
+export function getBlockHarvestTools(blockName) {
+    let block = mcdata.blocksByName[blockName];
+    if (!block || !block.harvestTools) {
+        return null;
+    }
+    return Object.keys(block.harvestTools)
+        .map(id => getItemName(id))
+        .filter(Boolean);
 }
 
 export function makeItem(name, amount=1) {
