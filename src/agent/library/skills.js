@@ -1250,14 +1250,6 @@ export async function breakBlockAt(bot, x, y, z) {
     if (x == null || y == null || z == null) throw new Error('Invalid position to break block at.');
     let block = bot.blockAt(Vec3(x, y, z));
     if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
-        if (bot.modes.isOn('cheat')) {
-            if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
-            let msg = '/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z) + ' air';
-            bot.chat(msg);
-            log(bot, `Used /setblock to break block at ${x}, ${y}, ${z}.`);
-            return true;
-        }
-
         if (bot.entity.position.distanceTo(block.position) > 4.5) {
             let pos = block.position;
             let movements = new pf.Movements(bot);
@@ -1275,6 +1267,7 @@ export async function breakBlockAt(bot, x, y, z) {
             }
         }
         await bot.dig(block, true);
+        await pickupNearbyItems(bot);
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
     else {
@@ -1340,7 +1333,10 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         return await breakBlockAt(bot, x, y, z);
     }
 
-    if (bot.modes.isOn('cheat') && !dontCheat) {
+    // World-edit /setblock placement is disabled — she places every block by hand
+    // (no instant shortcuts), so blocks are actually consumed from inventory. The
+    // real place-by-hand logic below handles the placement.
+    if (false && !dontCheat) {
         if (bot.restrict_to_inventory) {
             let block = bot.inventory.findInventoryItem(blockType);
             if (!block) {
@@ -1698,11 +1694,25 @@ export async function putInChest(bot, itemName, num=-1) {
     }
     let item = bot.inventory.findInventoryItem(itemName);
     if (!item) {
-        log(bot, `You do not have any ${itemName} to put in the chest.`);
+        // Fuzzy fallback: the LLM names items loosely ("stone" for cobblestone,
+        // "wood"/"log" for oak_log). Match a non-gear item whose name contains (or
+        // is contained by) the request — but never auto-match survival gear, so
+        // "diamond" won't grab her diamond_sword/helmet.
+        const q = itemName.toLowerCase();
+        item = bot.inventory.items().find(i =>
+            !isProtectedGear(bot, i.name) &&
+            (i.name.toLowerCase().includes(q) || q.includes(i.name.toLowerCase())));
+    }
+    if (!item) {
+        const have = bot.inventory.items()
+            .filter(i => !isProtectedGear(bot, i.name))
+            .map(i => `${i.name} (${i.count})`)
+            .slice(0, 12).join(', ');
+        log(bot, `You do not have any ${itemName} to put in the chest.` + (have ? ` You have: ${have}.` : ''));
         return false;
     }
     let to_put = num === -1 ? item.count : Math.min(num, item.count);
-    await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
+    await goToBlockAdjacent(bot, chest);
     const chestContainer = await bot.openContainer(chest);
     await chestContainer.deposit(item.type, null, to_put);
     await chestContainer.close();
@@ -1725,11 +1735,16 @@ export async function takeFromChest(bot, itemName, num=-1) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
-    await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
+    await goToBlockAdjacent(bot, chest);
     const chestContainer = await bot.openContainer(chest);
     
-    // Find all matching items in the chest
+    // Find all matching items in the chest (exact, then loose-name fallback)
     let matchingItems = chestContainer.containerItems().filter(item => item.name === itemName);
+    if (matchingItems.length === 0) {
+        const q = itemName.toLowerCase();
+        matchingItems = chestContainer.containerItems().filter(item =>
+            item.name.toLowerCase().includes(q) || q.includes(item.name.toLowerCase()));
+    }
     if (matchingItems.length === 0) {
         log(bot, `Could not find any ${itemName} in the chest.`);
         await chestContainer.close();
@@ -1769,7 +1784,7 @@ export async function viewChest(bot) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
-    await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
+    await goToBlockAdjacent(bot, chest);
     const chestContainer = await bot.openContainer(chest);
     let items = chestContainer.containerItems();
     if (items.length === 0) {
@@ -2185,6 +2200,21 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
         clearInterval(progressInterval);
+        return false;
+    }
+}
+
+export async function goToBlockAdjacent(bot, block, min_distance=2) {
+    /**
+     * Walk (pathfind) to a spot adjacent to a block — never teleport, and never
+     * path INTO the block (which breaks container opening). The cheat /tp in
+     * goToPosition lands the bot inside the block, so chests/furnaces must walk.
+     */
+    try {
+        await goToGoal(bot, new pf.goals.GoalNear(block.position.x, block.position.y, block.position.z, min_distance));
+        return true;
+    } catch (err) {
+        log(bot, `Pathfinding stopped: ${err.message}.`);
         return false;
     }
 }
@@ -3470,3 +3500,243 @@ export async function useToolOn(bot, toolName, targetName) {
     log(bot, `Used ${toolName} on ${block.name}.`);
     return true;
  }
+
+// ===== ENCHANTING / ANVIL / BOOK / FARMING (normal-player depth) =====
+
+export async function enchantItem(bot, itemName, choice=null) {
+    /**
+     * Enchant an item at the nearest enchanting table. Puts the item + lapis,
+     * waits for the enchantment choices, picks one (highest level by default, or
+     * the 0-based `choice` index), and takes the enchanted item back.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} itemName, the item in inventory to enchant (e.g. diamond_sword).
+     * @param {number} [choice], optional 0-based index of which enchant to take; defaults to the highest-level option.
+     * @returns {Promise<boolean>} true if enchanted, false otherwise.
+     * @example await skills.enchantItem(bot, "diamond_sword");
+     **/
+    const tableBlock = world.getNearestBlock(bot, 'enchanting_table', 32);
+    if (!tableBlock) {
+        log(bot, 'No enchanting table nearby. Craft one (4 obsidian + 2 diamond + 1 book) and place it.');
+        return false;
+    }
+    await goToNearestBlock(bot, 'enchanting_table', 4, 32);
+
+    const item = bot.inventory.items().find(i => i.name === itemName)
+        || bot.inventory.items().find(i => i.name.includes(itemName));
+    if (!item) {
+        log(bot, `No ${itemName} in inventory to enchant.`);
+        return false;
+    }
+    const lapis = bot.inventory.items().find(i => i.name === 'lapis_lazuli');
+    if (!lapis) {
+        log(bot, 'No lapis_lazuli to spend on enchanting (mine it, or trade with a cleric villager).');
+        return false;
+    }
+
+    try {
+        const table = await bot.openEnchantmentTable(tableBlock);
+        await table.putTargetItem(item);
+        await table.putLapis(lapis);
+
+        // wait until the server sends real enchantment levels (the 'ready' event
+        // fires once all three choices have a level >= 0)
+        if (!table.enchantments || table.enchantments[0].level < 0) {
+            await new Promise((resolve, reject) => {
+                const t = setTimeout(() => reject(new Error('timed out waiting for enchantments')), 5000);
+                table.once('ready', () => { clearTimeout(t); resolve(); });
+            });
+        }
+
+        const choices = table.enchantments || [];
+        if (!choices.length) {
+            log(bot, 'No enchantments available — place bookshelves around the table for better options.');
+            table.close();
+            return false;
+        }
+        let idx = choice != null ? parseInt(choice) : choices.reduce((best, c, i) => (c.level > choices[best].level ? i : best), 0);
+        if (idx < 0 || idx >= choices.length) idx = 0;
+
+        await table.enchant(idx);
+        await table.takeTargetItem();
+        table.close();
+        log(bot, `Enchanted ${itemName} (cost ${choices[idx].level} levels).`);
+        return true;
+    } catch (err) {
+        log(bot, `Enchanting failed: ${err.message}`);
+        return false;
+    }
+}
+
+export async function useAnvil(bot, action, itemName1, itemName2=null, rename=null) {
+    /**
+     * Use the nearest anvil to rename an item or combine two items (merge
+     * enchantments / repair / apply an enchanted book).
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} action, 'rename' or 'combine'.
+     * @param {string} itemName1, first item (the tool/gear, or the item to rename).
+     * @param {string} [itemName2], second item (enchanted book or matching tool) for 'combine'.
+     * @param {string} [rename], new display name (optional).
+     * @returns {Promise<boolean>} true if the anvil action succeeded.
+     * @example await skills.useAnvil(bot, "combine", "diamond_sword", "enchanted_book");
+     **/
+    const anvilBlock = world.getNearestBlock(bot, 'anvil', 16)
+        || world.getNearestBlock(bot, 'chipped_anvil', 16)
+        || world.getNearestBlock(bot, 'damaged_anvil', 16);
+    if (!anvilBlock) {
+        log(bot, 'No anvil nearby. Craft one (3 iron_block + 4 iron_ingot) and place it.');
+        return false;
+    }
+    await goToPosition(bot, anvilBlock.position.x, anvilBlock.position.y, anvilBlock.position.z, 3);
+
+    const item1 = bot.inventory.items().find(i => i.name === itemName1)
+        || bot.inventory.items().find(i => i.name.includes(itemName1));
+    if (!item1) {
+        log(bot, `No ${itemName1} in inventory.`);
+        return false;
+    }
+
+    try {
+        const anvil = await bot.openAnvil(anvilBlock);
+        if (action === 'rename') {
+            if (!rename) {
+                log(bot, 'Rename needs a new name. Use !anvil(rename, <item>, , "<new name>").');
+                anvil.close();
+                return false;
+            }
+            await anvil.rename(item1, rename);
+        } else {
+            const item2 = bot.inventory.items().find(i => i.name === itemName2)
+                || bot.inventory.items().find(i => i.name.includes(itemName2));
+            if (!item2) {
+                log(bot, `No ${itemName2} in inventory to combine with.`);
+                anvil.close();
+                return false;
+            }
+            await anvil.combine(item1, item2, rename || null);
+        }
+        anvil.close();
+        log(bot, `Anvil ${action} done for ${itemName1}.`);
+        return true;
+    } catch (err) {
+        log(bot, `Anvil failed: ${err.message}`);
+        return false;
+    }
+}
+
+export async function writeBook(bot, title, pages) {
+    /**
+     * Write a book-and-quill in inventory. `pages` is a string or array of
+     * strings (one per page). After writing it becomes a signed written_book.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} title, the book's title.
+     * @param {string|string[]} pages, page text (string) or array of page strings.
+     * @returns {Promise<boolean>} true if written, false otherwise.
+     * @example await skills.writeBook(bot, "For my beloved", "I love you ~ nya ♥");
+     **/
+    const book = bot.inventory.items().find(i => i.name === 'writable_book');
+    if (!book) {
+        log(bot, 'No writable_book in inventory. Craft one (book + ink_sac + feather -> book_and_quill / writable_book).');
+        return false;
+    }
+    const pageList = Array.isArray(pages) ? pages : [pages];
+    try {
+        // signBook writes AND signs, so she produces a titled, signed written_book
+        await bot.signBook(book.slot, pageList, bot.username, title);
+        log(bot, `Wrote and signed "${title}".`);
+        return true;
+    } catch (err) {
+        log(bot, `Book writing failed: ${err.message}`);
+        return false;
+    }
+}
+
+const MATURE_CROP_AGE = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3 };
+function _cropAge(block) {
+    if (!block) return -1;
+    const props = typeof block.getProperties === 'function' ? block.getProperties() : null;
+    if (props && props.age != null) return props.age;
+    return block.metadata ?? -1;
+}
+
+export async function harvestCrops(bot, maxDistance=16) {
+    /**
+     * Find and harvest all mature crops (wheat, carrots, potatoes, beetroot)
+     * within maxDistance, collecting the drops. Only digs fully-grown crops.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} [maxDistance], search radius (default 16).
+     * @returns {Promise<number>} number of crops harvested.
+     * @example await skills.harvestCrops(bot);
+     **/
+    let harvested = 0;
+    for (const crop of Object.keys(MATURE_CROP_AGE)) {
+        const maxAge = MATURE_CROP_AGE[crop];
+        const mature = world.getNearestBlocksWhere(
+            bot,
+            (b) => b && b.name === crop && _cropAge(b) >= maxAge,
+            maxDistance,
+            10000
+        );
+        for (const block of mature) {
+            try {
+                await bot.dig(block, true);
+                harvested++;
+            } catch (e) {
+                log(bot, `Failed to harvest ${crop}: ${e.message}`);
+                break;
+            }
+        }
+    }
+    if (harvested) {
+        await pickupNearbyItems(bot);
+        log(bot, `Harvested ${harvested} mature crops.`);
+    } else {
+        log(bot, 'No mature crops nearby to harvest.');
+    }
+    return harvested;
+}
+
+export async function breedAnimals(bot, maxDistance=16) {
+    /**
+     * Feed two nearby animals of the same type their breeding food to breed them.
+     * Handles sheep/cows (wheat), pigs/carrots, chickens/seeds, etc.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} [maxDistance], search radius (default 16).
+     * @returns {Promise<boolean>} true if a pair was fed, false otherwise.
+     * @example await skills.breedAnimals(bot);
+     **/
+    const BREED_FOOD = {
+        sheep: 'wheat', cow: 'wheat', mooshroom: 'wheat', goat: 'wheat',
+        pig: 'carrot', rabbit: 'carrot',
+        chicken: 'wheat_seeds',
+        horse: 'golden_apple', donkey: 'golden_apple',
+        cat: 'cod', wolf: 'bone',
+        turtle: 'seagrass', axolotl: 'tropical_fish', panda: 'bamboo',
+    };
+    const animals = Object.keys(bot.entities)
+        .map(id => bot.entities[id])
+        .filter(e => e && e.type === 'mob' && BREED_FOOD[e.name])
+        .filter(e => bot.entity.position.distanceTo(e.position) <= maxDistance);
+
+    // find two of the same type
+    const byType = {};
+    for (const a of animals) (byType[a.name] ||= []).push(a);
+    for (const [type, list] of Object.entries(byType)) {
+        if (list.length < 2) continue;
+        const foodName = BREED_FOOD[type];
+        const food = bot.inventory.items().find(i => i.name === foodName);
+        if (!food) {
+            log(bot, `Would breed ${type}s but have no ${foodName}.`);
+            continue;
+        }
+        await bot.equip(food, 'hand');
+        for (const a of list.slice(0, 2)) {
+            await bot.lookAt(a.position.offset(0, 1, 0));
+            await bot.useOn(a);
+            await new Promise(r => setTimeout(r, 400));
+        }
+        log(bot, `Fed two ${type}s to breed.`);
+        return true;
+    }
+    log(bot, 'No breedable pair of animals nearby (need 2 of the same type + their food).');
+    return false;
+}
