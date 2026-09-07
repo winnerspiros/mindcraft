@@ -143,7 +143,7 @@ function getBuildingKnowledge() {
 // which code then validates and realizes block-by-block. Kept as a constant so a
 // profile can override via the "build_design" field. The output is a strict JSON-only
 // contract — no prose.
-const DEFAULT_BUILD_DESIGN_PROMPT = `You are $NAME, a creative girl designing a Minecraft structure. Design a small-to-medium build for this request: "$DESCRIPTION".
+export const DEFAULT_BUILD_DESIGN_PROMPT = `You are $NAME, a creative girl designing a Minecraft structure. Design a small-to-medium build for this request: "$DESCRIPTION".
 
 Your surroundings and what you can realistically gather/craft right now:
 $CONTEXT
@@ -173,6 +173,7 @@ Rules:
 - Every string within a slice is the same length; every slice has the same number of strings. Rectangular, never ragged.
 - Keep the bottom slice solid (a base). Give houses walls and a roof and a hollow interior; give towers many slices; a single slice is a floor or wall, not a full building.
 - Make the footprint at least 4 wide and 4 deep so it reads as a real 3D structure, not a line.
+- Openings make a building real. Every wall should have a purpose, not be one solid slab: add a DOOR (a 1-wide, 2-tall air gap \".\" cut into the base of an outer wall) and WINDOWS (a gap in a wall filled with glass_pane — or glass for a big window/skylight). A window is glass_pane surrounded on all four sides by the wall block as a frame. Carve the same opening through consecutive slices at the same x,z spot so the hole lines up from bottom to top, not just on one layer. glass_pane is the flat normal-window block; glass is the chunky block for a lamp room or skylight.
 
 Output ONLY valid JSON, no backticks, no commentary.`;
 

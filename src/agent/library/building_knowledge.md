@@ -75,6 +75,20 @@ when you paste or design; check the note they leave ("Adapted materials: ...") s
 what changed and why. Prefer local, common materials over rare ones you would have to
 travel far or farm hard to get.
 
+## Doors and windows
+A real building has openings, not just solid walls. A door is a gap two blocks tall in an
+outer wall you can walk through. A window is a gap in a wall filled with glass_pane, framed
+on all four sides by the wall block — glass_pane is the flat block for an ordinary window;
+full glass is the chunky block for a big window, a skylight, or a lamp room. A window the size
+of one hole (open space) with a wooden frame looks clean; do not bury it under the roof or
+put it where the door is. To make one you carve the same opening through every slice from
+bottom to top so the hole lines up, then fill it.
+
+Glass comes from sand: dig sand at a beach or desert, smelt it into glass (!smeltItem), then
+craft glass into glass_pane (!craftRecipe). If you are nowhere near sand, either go find some,
+or make a rustic window with oak_fence instead of glass, or leave a simple open frame. Think
+about light: a room with a window feels warmer than a box.
+
 ## Site
 Build on open ground — leaves, grass, a clear area near where you want it. Check where
 you are about to place things so you do not bury a path, a garden, or someone's door.
