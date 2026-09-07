@@ -1061,6 +1061,57 @@ export const actionsList = [
         })
     },
     {
+        name: '!enchant',
+        description: 'Enchant an item at the nearest enchanting table (needs lapis_lazuli + XP levels).',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item in inventory to enchant, e.g. diamond_sword.' },
+            'choice': { type: 'int', default: -1, description: 'Optional 0-based index of the enchant to take; default is the highest-level option.', domain: [-1, 2] },
+        },
+        perform: runAsAction(async (agent, item_name, choice) => {
+            await skills.enchantItem(agent.bot, item_name, choice < 0 ? null : choice);
+        })
+    },
+    {
+        name: '!anvil',
+        description: 'Use the nearest anvil to rename an item or combine two items (merge enchants / repair / apply an enchanted book).',
+        params: {
+            'action': { type: 'string', description: "'rename' or 'combine'." },
+            'item_name': { type: 'ItemName', description: 'The first item (tool/gear, or the item to rename).' },
+            'item_name2': { type: 'ItemName', description: 'Optional second item for combine (enchanted_book or matching tool).' },
+            'rename': { type: 'string', description: 'Optional new display name.' },
+        },
+        perform: runAsAction(async (agent, action, item_name, item_name2, rename) => {
+            await skills.useAnvil(agent.bot, action, item_name, item_name2 || null, rename || null);
+        })
+    },
+    {
+        name: '!writeBook',
+        description: 'Write a book-and-quill in your inventory (title + one page of text). Great for love letters, journals, gifts.',
+        params: {
+            'title': { type: 'string', description: 'The book title.' },
+            'text': { type: 'string', description: 'The page text to write.' },
+        },
+        perform: runAsAction(async (agent, title, text) => {
+            await skills.writeBook(agent.bot, title, text);
+        })
+    },
+    {
+        name: '!harvestCrops',
+        description: 'Harvest all mature crops (wheat, carrots, potatoes, beetroot) nearby and collect the drops.',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.harvestCrops(agent.bot);
+        })
+    },
+    {
+        name: '!breedAnimals',
+        description: 'Feed two nearby animals of the same type to breed them (needs their food: wheat, seeds, carrot...).',
+        params: {},
+        perform: runAsAction(async (agent) => {
+            await skills.breedAnimals(agent.bot);
+        })
+    },
+    {
         name: '!startConversation',
         description: 'Start a conversation with a bot. (FOR OTHER BOTS ONLY)',
         params: {
