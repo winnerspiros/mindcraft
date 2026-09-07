@@ -148,21 +148,31 @@ const DEFAULT_BUILD_DESIGN_PROMPT = `You are $NAME, a creative girl designing a 
 Your surroundings and what you can realistically gather/craft right now:
 $CONTEXT
 
-Design it so it uses materials you can actually obtain (wood, stone, dirt, sand, wool from sheep, common plants). Prefer fewer block TYPES — 2 to 4 is elegant. Keep it compact (roughly 5-12 blocks wide, 5-12 deep, 2-8 tall) so you can build it yourself by hand.
+Design it so it uses materials you can actually obtain (wood, stone, dirt, sand, wool from sheep, common plants). Prefer fewer block TYPES — 2 to 4 is elegant. Keep it compact (roughly 5-12 blocks wide, 4-10 deep, 2-8 tall) so you can build it by hand.
 
 Reply with ONLY a JSON object, nothing else. The exact schema:
 
 {
   "name": "short_snake_case_name",
-  "palette": { "W": "oak_planks", "S": "oak_stairs", "G": "glass" },
-  "layers": [ ... ]
+  "palette": { "W": "oak_planks", "G": "glass" },
+  "layers": [
+    ["WWW", "WWW", "WWW"],
+    ["WWW", "W.W", "WWW"],
+    ["WWW", "WWW", "WWW"]
+  ]
 }
 
+How "layers" works (READ CAREFULLY — this is the whole skill):
+- It is a STACK of horizontal slices, from the BOTTOM slice (y=0) up to the TOP.
+- Each slice is a list of plain multi-character STRINGS. Each string is one row running across the z direction. Every string in a slice is the SAME length, and every slice has the SAME number of strings.
+- The example above is a 3-wide, 3-deep, 3-tall hollow box: the bottom slice ["WWW","WWW","WWW"] is a solid 3x3 floor; the middle slice ["WWW","W.W","WWW"] is a wall ring with an air (".") center; the top slice is a solid roof. This is a 3x3 footprint, 3 slices tall.
+- ONE character per cell. "." means air. A row is a single string like "WWW" — NEVER split it into one-letter strings like ["W","W","W"].
+
 Rules:
-- "palette" maps single characters to real Minecraft block names (lowercase snake_case, e.g. oak_planks, stone_bricks, white_wool, glass). Use "." for air.
-- "layers" is an array of the structure's horizontal slices, BOTTOM slice FIRST. Each slice is an array of equal-length strings; each string is one z-row. layers[y][z][x] is one cell. A character MUST match a palette key (or be "." for air).
-- Make every slice a full rectangle: every string the same length, every slice the same number of strings.
-- Keep the bottom layer solid (a base), use walls + a roof for houses, hollow interiors where it makes sense.
+- "palette" maps single characters to real Minecraft block names (lowercase snake_case, e.g. oak_planks, stone_bricks, white_wool, glass). "." is reserved for air (you do not put it in palette).
+- Every string within a slice is the same length; every slice has the same number of strings. Rectangular, never ragged.
+- Keep the bottom slice solid (a base). Give houses walls and a roof and a hollow interior; give towers many slices; a single slice is a floor or wall, not a full building.
+- Make the footprint at least 4 wide and 4 deep so it reads as a real 3D structure, not a line.
 
 Output ONLY valid JSON, no backticks, no commentary.`;
 

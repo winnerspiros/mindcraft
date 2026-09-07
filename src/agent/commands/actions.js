@@ -2,6 +2,7 @@ import * as skills from '../library/skills.js';
 import * as schematic from '../library/schematic.js';
 import * as buildsense from '../library/buildsense.js';
 import * as world from '../library/world.js';
+import { researchBuildTopic } from '../../utils/research.js';
 import Vec3 from 'vec3';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
@@ -723,13 +724,33 @@ export const actionsList = [
         description: 'Imagine a NEW structure of your OWN design and build it yourself, block by block. Describe what you want ("a cozy cottage with a small fenced garden", "a little stone watchtower"). You choose the shape, materials and size; the world realizes it slowly by hand from whatever you can gather. Optionally give a name to SAVE the design as a reusable schematic for later reuse.',
         params: {
             'description': { type: 'string', description: 'What to build, in your own words.' },
+            'reference': { type: 'string', description: 'Optional reference: name a saved schematic to echo its style, or a TOPIC to research online first (inspiration only, still your own design).', default: null },
             'name': { type: 'string', description: 'Optional name to save the design under (schematics/<name>.json).', default: null },
         },
-        perform: runAsAction(async (agent, description, name) => {
+        perform: runAsAction(async (agent, description, reference, name) => {
             const bot = agent.bot;
             if (!description) { skills.log(bot, 'Tell me what you have in mind and I will design it.'); return; }
 
-            const spec = await agent.prompter.promptBuildDesign(description, buildContextText(bot));
+            let context = buildContextText(bot);
+            if (reference) {
+                const refFp = schematic.schematicPath(reference);
+                if (existsSync(refFp)) {
+                    // her own saved schematic (a capture or a past design) — echo its style
+                    try {
+                        const refSch = await schematic.loadSchematic(refFp);
+                        context += `\nReference (one of your saved schematics) to echo loosely: ${buildsense.referenceSummary(refSch)}`;
+                    } catch (e) { skills.log(bot, `(I could not read "${reference}", designing freely.)`); }
+                } else {
+                    // not saved — research it as a topic instead
+                    try {
+                        const ref = await researchBuildTopic(reference);
+                        context += ref ? `\nDesign references I just researched (inspiration only — this is still YOUR own design, not a copy):\n${ref}` : '';
+                        if (!ref) skills.log(bot, `(no web reference found for "${reference}" — designing freely.)`);
+                    } catch (e) { /* research is best-effort */ }
+                }
+            }
+
+            const spec = await agent.prompter.promptBuildDesign(description, context);
             if (!spec) { skills.log(bot, 'I could not settle on a design for that. Let me describe it differently.'); return; }
 
             let sch;

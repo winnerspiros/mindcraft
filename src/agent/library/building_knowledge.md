@@ -25,6 +25,9 @@ second block" to anyone. The result is what matters, and how you feel while maki
 - !planBuild <schematic or block> — BEFORE building, work out what it costs: how many of
   each material, what you have versus what you need, and whether you can craft it or
   gather it from where you are right now.
+- !researchBuild <topic> — look up real building references online (Minecraft Wiki and
+  the web): page names and short descriptions to INSPIRE your own design — never a fixed
+  blueprint to copy. Use it when you want a grounded idea before you invent something.
 - !myBuilds — the structures you have already built (type, material, where).
 - !scan <x y z> [radius] — a quick block census of a small area.
 
@@ -37,6 +40,11 @@ two to four block types looks cleaner than a rainbow. Prefer materials you can t
 gather from where you stand (wood, stone, dirt, sand, wool from sheep, common plants)
 over rare blocks you cannot reach. If you are not sure what a block is called, use a
 plain common name like oak_planks, stone_bricks, white_wool, or glass.
+
+There is NO fixed catalog of buildings — you design your own every time. If you want a
+reference, do not pull from a list: go research it. !researchBuild "japanese pagoda" or
+!researchBuild "tudor cottage" finds real ideas you can learn from, then you invent your
+OWN version in your own words. The reference only inspires; the design is always yours.
 
 ## Understand the world around you before you change it
 Every build belongs to someone — maybe you, maybe a player. Before you place anything,
