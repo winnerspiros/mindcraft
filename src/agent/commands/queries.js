@@ -2,7 +2,7 @@ import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import * as schematic from '../library/schematic.js';
 import * as buildsense from '../library/buildsense.js';
-import { researchBuildTopic } from '../../utils/research.js';
+import { researchBuildTopic, searchSchematics } from '../../utils/research.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
@@ -335,6 +335,40 @@ export const queryList = [
             const ref = await researchBuildTopic(topic);
             if (!ref) return pad(`No web reference found for "${topic}" — you will have to design it from imagination.`);
             return pad(`RESEARCH: ${topic}\n${ref}`);
+        }
+    },
+    {
+        name: "!searchSchematics",
+        description: "Search GitHub (keyless) for real schematic FILES matching a topic, and return direct download links (.schem/.schematic) you can then pass to !fetchSchematic. Discovery only — it finds links, you decide what to pull.",
+        perform: async function (agent, term) {
+            if (!term) return pad('Tell me what to search for (e.g. "house", "castle", "tower").');
+            const hits = await searchSchematics(term);
+            if (!hits) return pad(`No downloadable schematics found for "${term}" (GitHub search came up empty). Try a simpler term.`);
+            return pad(`SCHEMATIC LINKS for "${term}":\n${hits}\n\nPick a .schem link and !fetchSchematic it.`);
+        }
+    },
+    {
+        name: "!fetchSchematic",
+        description: "Download a real schematic FILE from a direct link (.schem, .schematic or .json — e.g. a raw GitHub file), save it, and report its dimensions, materials and block count so you can build it (!pasteSchematic) or design in its style (!designBuild ... reference=name). Honors the 10k block build cap: big files are studied as reference, not pasted.",
+        params: {
+            'url': { type: 'string', description: 'Direct URL ending in .schem / .schematic / .json.' },
+            'name': { type: 'string', description: 'Optional name to save it under.', default: null },
+        },
+        perform: async function (agent, url, name) {
+            let dl;
+            try { dl = await schematic.downloadSchematic(url, name); }
+            catch (e) { return pad(`Could not download: ${e.message}`); }
+            let sch;
+            try { sch = await schematic.loadSchematic(schematic.schematicPath(dl.name)); }
+            catch (e) { return pad(`Downloaded ${dl.name} (${dl.bytes} bytes) but it cannot be read — it is corrupt, from an unsupported MC version, or too large. (${e.message}) Skipped.`); }
+            const blocks = sch.blocks ? sch.blocks.length : 0;
+            const buildable = blocks <= 10000;
+            const summary = buildsense.referenceSummary(sch);
+            const verdict = buildable
+                ? 'small enough to build by hand'
+                : `too big to build by hand (${blocks} blocks > 10000 cap) — study it as reference instead`;
+            return pad(`FETCHED ${dl.name} (${dl.bytes} bytes)\n${summary}\n- ${blocks} blocks => ${verdict}.\n` +
+                `Build it: !pasteSchematic(\"${dl.name}\") — or design in its style: !designBuild(\"...\", \"${dl.name}\").`);
         }
     },
     {

@@ -25,8 +25,49 @@ async function minecraftWikiSearch(query) {
     return (j?.query?.search || []).map(s => ({ title: s.title, snippet: (s.snippet || '').replace(/<[^>]+>/g, '') }));
 }
 
-// Research a build topic: return page titles + the most relevant snippet as a
-// design reference. Tries a few query wordings before giving up.
+// Find direct .schem/.schematic file URLs inside a GitHub repo (unauthenticated
+// tree walk). Returns up to `limit` { name, url } raw-download links, or [].
+async function findSchematicsInRepo(owner, repo, branch, limit = 5) {
+    try {
+        const r = await fetchTimeout(
+            `https://api.github.com/repos/${owner}/${repo}/git/trees/${branch}?recursive=1`
+        );
+        if (!r.ok) return [];
+        const j = await r.json();
+        if (j.truncated) return [];
+        return (j.tree || [])
+            .filter(e => e.type === 'blob' && /\.(schem|schematic)$/i.test(e.path))
+            .slice(0, limit)
+            .map(e => ({
+                name: e.path.split('/').pop(),
+                url: `https://raw.githubusercontent.com/${owner}/${repo}/${branch}/${e.path.split('/').map(encodeURIComponent).join('/')}`,
+            }));
+    } catch (e) { return []; }
+}
+
+// Search schematic-hosting sources for a topic and return actual .schem/.schematic
+// download links (GitHub, keyless). This is discovery: it finds FILE links she can
+// feed to !fetchSchematic. Most dedicated sites (planetminecraft, minecraft-schematics)
+// have no clean keyless API, so GitHub is the reliable source here.
+export async function searchSchematics(term) {
+    const q = String(term || '').trim();
+    if (!q) return '';
+    const out = [];
+    try {
+        const r = await fetchTimeout(
+            `https://api.github.com/search/repositories?q=${encodeURIComponent('minecraft schematic ' + q)}&per_page=5`
+        );
+        if (!r.ok) return '';
+        const j = await r.json();
+        for (const repo of (j.items || []).slice(0, 3)) {
+            const files = await findSchematicsInRepo(repo.owner.login, repo.name, repo.default_branch);
+            if (!files.length) continue;
+            out.push(`${repo.full_name} — ${files.length} schematic file${files.length > 1 ? 's' : ''}:`);
+            for (const f of files.slice(0, 3)) out.push(`    ${f.name}  ${f.url}`);
+        }
+    } catch (e) { /* discovery is best-effort */ }
+    return out.join('\n');
+}
 export async function researchBuildTopic(query) {
     const q = String(query || '').trim();
     if (!q) return '';
