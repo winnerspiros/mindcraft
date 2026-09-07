@@ -1112,6 +1112,17 @@ export const actionsList = [
         })
     },
     {
+        name: '!brewPotion',
+        description: 'Brew potions at the nearest brewing stand. Put water bottles + this ingredient + blaze_powder fuel, wait ~20s, take the result. Use nether_wart first for awkward_potion base, then the effect ingredient (sugar=swiftness, blaze_powder=strength, etc).',
+        params: {
+            'ingredient_name': { type: 'ItemName', description: 'The ingredient to brew with (nether_wart, sugar, blaze_powder, fermented_spider_eye, ...).' },
+            'count': { type: 'int', default: 1, description: 'How many potions to brew (1-3).', domain: [1, 3] },
+        },
+        perform: runAsAction(async (agent, ingredient_name, count) => {
+            await skills.brewPotion(agent.bot, ingredient_name, count);
+        })
+    },
+    {
         name: '!startConversation',
         description: 'Start a conversation with a bot. (FOR OTHER BOTS ONLY)',
         params: {

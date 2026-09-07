@@ -513,6 +513,26 @@ async function ensureCraftingPrereqs(bot, itemName, num = 1) {
     }
 }
 
+// Voyager-style craft feedback: report the EXACT per-ingredient shortfall for
+// the recipe that needs the fewest missing items (so "craft a chest" says
+// "2 more oak_planks" instead of a vague ingredient list).
+function _craftingShortfall(bot, itemName) {
+    const itemId = mc.getItemId(itemName);
+    if (itemId == null) return [];
+    const allRecipes = (bot.recipesAll(itemId, null, null) || []).concat(bot.recipesAll(itemId, null, true) || []);
+    let bestMissing = null;
+    for (const recipe of allRecipes) {
+        const missing = [];
+        for (const d of recipe.delta) {
+            if (d.count >= 0) continue; // only consumed ingredients (negative delta)
+            const have = bot.inventory.count(d.id, d.metadata);
+            if (have < -d.count) missing.push(`${-d.count - have} more ${mc.getItemName(d.id)}`);
+        }
+        if (!bestMissing || missing.length < bestMissing.length) bestMissing = missing;
+    }
+    return bestMissing || [];
+}
+
 export async function craftRecipe(bot, itemName, num=1, quiet=false) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -581,16 +601,13 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
         }
     }
     if (!recipes || recipes.length === 0) {
-        // Generalize wood variants so the bot asks for "any log/planks" instead
-        // of fixating on "oak" — a chest (and most wood recipes) accept ANY wood type.
         if (!quiet) {
-            const required = Object.entries(mc.getItemCraftingRecipes(itemName)[0][0])
-                .map(([key, value]) => {
-                    const generic = key.replace(/^(oak|spruce|birch|jungle|acacia|dark_oak|mangrove|cherry|bamboo|crimson|warped)_/, '');
-                    return generic !== key ? `${generic} (any wood): ${value}` : `${key}: ${value}`;
-                })
-                .join(', ');
-            log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${required}. Ask your beloved or nearby players for these materials if you need them.`);
+            const missing = _craftingShortfall(bot, itemName);
+            if (missing.length) {
+                log(bot, `You can't craft ${itemName} yet. You still need: ${missing.join(', ')}. Gather these (or ask your beloved for them).`);
+            } else {
+                log(bot, `${itemName} has no craftable recipe — find it, loot it, or trade for it instead.`);
+            }
         }
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
@@ -3740,3 +3757,81 @@ export async function breedAnimals(bot, maxDistance=16) {
     log(bot, 'No breedable pair of animals nearby (need 2 of the same type + their food).');
     return false;
 }
+
+export async function brewPotion(bot, ingredientName, count=1) {
+    /**
+     * Brew potions at the nearest brewing stand. Puts water bottles (or an
+     * existing potion base) in the bottom slots, the ingredient on top, and
+     * blaze_powder fuel, then waits ~20s and takes the result. Call it once per
+     * step of the chain: nether_wart -> awkward_potion, then the effect
+     * ingredient (sugar=swiftness, blaze_powder=strength, etc.) per your brewing
+     * knowledge.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} ingredientName, the ingredient to brew with (e.g. nether_wart, sugar, blaze_powder, fermented_spider_eye).
+     * @param {number} [count], how many potions to brew (1-3, default 1).
+     * @returns {Promise<boolean>} true if potions were brewed, false otherwise.
+     * @example await skills.brewPotion(bot, "sugar", 3);
+     **/
+    count = Math.max(1, Math.min(3, parseInt(count) || 1));
+    const stand = world.getNearestBlock(bot, 'brewing_stand', 16);
+    if (!stand) {
+        log(bot, 'No brewing_stand nearby. Craft one (1 blaze_rod + 3 cobblestone) and place it.');
+        return false;
+    }
+    const ingredient = bot.inventory.items().find(i => i.name === ingredientName)
+        || bot.inventory.items().find(i => i.name.includes(ingredientName));
+    if (!ingredient) {
+        log(bot, `No ${ingredientName} in inventory to brew with.`);
+        return false;
+    }
+    const fuel = bot.inventory.items().find(i => i.name === 'blaze_powder');
+    if (!fuel) {
+        log(bot, 'No blaze_powder to fuel the brewing stand (craft it from a blaze_rod, dropped by blazes).');
+        return false;
+    }
+    const potionId = mc.getItemId('potion');
+    const havePotionBottles = bot.inventory.items().some(i => i.name === 'potion');
+
+    await goToNearestBlock(bot, 'brewing_stand', 3, 16);
+
+    try {
+        const w = await bot.openBlock(stand);
+
+        // ensure potion bottles sit in the bottom slots 0-2 (only if empty)
+        const standHasPotion = [0, 1, 2].some(s => w.slots[s] && w.slots[s].type === potionId);
+        if (!standHasPotion) {
+            if (!havePotionBottles) {
+                log(bot, 'No water bottles to brew. Craft glass_bottle and fill with water first.');
+                w.close();
+                return false;
+            }
+            await bot.transfer({ window: w, itemType: potionId, metadata: null, count, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 0, destEnd: 3 });
+        }
+
+        // ingredient -> top slot 3
+        await bot.transfer({ window: w, itemType: ingredient.type, metadata: null, count: 1, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 3, destEnd: 4 });
+
+        // fuel -> blaze powder slot 4
+        await bot.transfer({ window: w, itemType: fuel.type, metadata: null, count: 1, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 4, destEnd: 5 });
+
+        // brewing takes 400 ticks (~20s); keep the window open so slots update
+        log(bot, `Brewing ${count} potion(s) with ${ingredientName}...`);
+        await wait(bot, 22000);
+
+        let took = 0;
+        for (const s of [0, 1, 2]) {
+            const item = w.slots[s];
+            if (item && item.type === potionId) {
+                await bot.putAway(s);
+                took++;
+            }
+        }
+        w.close();
+        log(bot, `Brewed ${took} potion(s) with ${ingredientName}.`);
+        return took > 0;
+    } catch (err) {
+        log(bot, `Brewing failed: ${err.message}`);
+        return false;
+    }
+}
+
