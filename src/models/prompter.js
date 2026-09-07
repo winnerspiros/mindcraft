@@ -37,7 +37,7 @@ $SPATIAL_MEMORY
 Recently completed/failed goals (do NOT repeat a completed goal, and avoid goals you keep failing):
 $GOAL_HISTORY
 
-Propose ONE next goal for yourself: a concrete, achievable in-game activity that fits your personality (explore, gather, build something cute, find/visit your beloved, craft something, make a gift, beautify an area, collect a pretty thing). Pick something DIFFERENT from your recent history. Keep it SHORT — under 12 words, a single imperative phrase like "gather oak wood for a house" or "find my beloved and say hi".
+Propose ONE next goal for yourself: a concrete, achievable in-game activity that fits your personality (explore, gather, build or design something of your own, find/visit your beloved, craft something, make a gift, beautify an area, collect a pretty thing). Pick something DIFFERENT from your recent history. Keep it SHORT — under 12 words, a single imperative phrase like "gather oak wood for a house" or "find my beloved and say hi".
 
 Reply with ONLY the goal text on one line, nothing else.`;
 
@@ -122,6 +122,49 @@ function getElytraKnowledge() {
     }
     return _elytraKnowledge;
 }
+
+// Building & construction reference — static knowledge injected via $BUILDING_KNOWLEDGE.
+// The full build-skill palette: what she can make, how to design, gather, plan, and
+// understand a build. Kept in its own markdown file for easy editing.
+const BUILDING_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/building_knowledge.md');
+let _buildingKnowledge = null;
+function getBuildingKnowledge() {
+    if (_buildingKnowledge != null) return _buildingKnowledge;
+    try {
+        _buildingKnowledge = readFileSync(BUILDING_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load building knowledge:', e.message);
+        _buildingKnowledge = '';
+    }
+    return _buildingKnowledge;
+}
+
+// Structural-design prompt: she "imagines" a build as a compact layer/palette spec,
+// which code then validates and realizes block-by-block. Kept as a constant so a
+// profile can override via the "build_design" field. The output is a strict JSON-only
+// contract — no prose.
+const DEFAULT_BUILD_DESIGN_PROMPT = `You are $NAME, a creative girl designing a Minecraft structure. Design a small-to-medium build for this request: "$DESCRIPTION".
+
+Your surroundings and what you can realistically gather/craft right now:
+$CONTEXT
+
+Design it so it uses materials you can actually obtain (wood, stone, dirt, sand, wool from sheep, common plants). Prefer fewer block TYPES — 2 to 4 is elegant. Keep it compact (roughly 5-12 blocks wide, 5-12 deep, 2-8 tall) so you can build it yourself by hand.
+
+Reply with ONLY a JSON object, nothing else. The exact schema:
+
+{
+  "name": "short_snake_case_name",
+  "palette": { "W": "oak_planks", "S": "oak_stairs", "G": "glass" },
+  "layers": [ ... ]
+}
+
+Rules:
+- "palette" maps single characters to real Minecraft block names (lowercase snake_case, e.g. oak_planks, stone_bricks, white_wool, glass). Use "." for air.
+- "layers" is an array of the structure's horizontal slices, BOTTOM slice FIRST. Each slice is an array of equal-length strings; each string is one z-row. layers[y][z][x] is one cell. A character MUST match a palette key (or be "." for air).
+- Make every slice a full rectangle: every string the same length, every slice the same number of strings.
+- Keep the bottom layer solid (a base), use walls + a roof for houses, hollow interiors where it makes sense.
+
+Output ONLY valid JSON, no backticks, no commentary.`;
 
 // Storage & containers reference — static knowledge injected via $STORAGE_KNOWLEDGE.
 // Chests, furnaces, hoppers, dispensers, shulker boxes, bundles, etc. — what they are,
@@ -348,6 +391,8 @@ export class Prompter {
             prompt = prompt.replaceAll('$ELYTRA_KNOWLEDGE', getElytraKnowledge());
         if (prompt.includes('$STORAGE_KNOWLEDGE'))
             prompt = prompt.replaceAll('$STORAGE_KNOWLEDGE', getStorageKnowledge());
+        if (prompt.includes('$BUILDING_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$BUILDING_KNOWLEDGE', getBuildingKnowledge());
         if (prompt.includes('$PERSONAL'))
             prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
         if (prompt.includes('$HEAT'))
@@ -578,6 +623,35 @@ export class Prompter {
         if (low.includes('incomplete')) return { verdict: 'incomplete', critique: String(resp) };
         if (low.includes('complete')) return { verdict: 'complete', critique: String(resp) };
         return { verdict: 'incomplete', critique: String(resp) };
+    }
+
+    // Structural design: she "imagines" a build. Returns a parsed {name, layers,
+    // palette} spec or null. Non-fatal — the caller reports the failure honestly.
+    async promptBuildDesign(description, contextText) {
+        await this.checkCooldown();
+        let prompt = this.profile.build_design || DEFAULT_BUILD_DESIGN_PROMPT;
+        if (!prompt.includes('$DESCRIPTION')) prompt = DEFAULT_BUILD_DESIGN_PROMPT;
+        prompt = prompt.replaceAll('$NAME', this.agent.name);
+        prompt = prompt.replaceAll('$DESCRIPTION', description || '');
+        prompt = prompt.replaceAll('$CONTEXT', contextText || '');
+        let resp;
+        try {
+            resp = await this.chat_model.sendRequest([], prompt);
+        } catch (e) {
+            console.warn('promptBuildDesign request failed:', e.message);
+            return null;
+        }
+        if (resp && resp.includes(' response')) resp = resp.split(' response')[1];
+        try {
+            const m = String(resp || '').match(/\{[\s\S]*\}/);
+            if (m) {
+                const spec = JSON.parse(m[0]);
+                if (spec && Array.isArray(spec.layers)) return spec;
+            }
+        } catch (e) {
+            console.warn('promptBuildDesign parse failed:', e.message);
+        }
+        return null;
     }
 
     async promptCoding(messages) {

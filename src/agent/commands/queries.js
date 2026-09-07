@@ -1,6 +1,7 @@
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import * as schematic from '../library/schematic.js';
+import * as buildsense from '../library/buildsense.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
@@ -310,6 +311,19 @@ export const queryList = [
             const list = schematic.listSchematics();
             if (list.length === 0) return pad('No schematics saved yet. Use !captureBlueprint to capture a structure.');
             return pad('SCHEMATICS\n- ' + list.join('\n- '));
+        }
+    },
+    {
+        name: "!knownBuilds",
+        description: "List the structures you have studied or identified (yours and other players'), with their type, size and where they are.",
+        perform: function (agent) {
+            const builds = buildsense.loadKnownBuilds(agent.name);
+            if (builds.length === 0) return pad('No builds studied yet. Use !studyBuild to look at one.');
+            return pad('KNOWN BUILDS\n- ' + builds.map((b, i) =>
+                `${i + 1}. ${b.name} — ${b.type}, ${b.size.x}x${b.size.y}x${b.size.z}` +
+                (b.dominant && b.dominant !== 'air' ? `, mostly ${b.dominant}` : '') +
+                (b.pos ? ` @ ${b.pos.x},${b.pos.y},${b.pos.z}` : '')
+            ).join('\n- '));
         }
     },
     {

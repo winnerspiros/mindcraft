@@ -1,5 +1,7 @@
 import * as skills from '../library/skills.js';
 import * as schematic from '../library/schematic.js';
+import * as buildsense from '../library/buildsense.js';
+import * as world from '../library/world.js';
 import Vec3 from 'vec3';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
@@ -27,6 +29,21 @@ function runAsAction (actionFn, resume = false, timeout = 3) {
     }
 
     return wrappedAction;
+}
+
+// Snapshot of "what can I actually build with, right here" for the design prompt:
+// a compact inventory + nearby-material census so she designs within her means.
+function buildContextText(bot) {
+    const inv = buildsense.inventoryCounts(bot);
+    const invStr = Object.entries(inv).sort((a, b) => b[1] - a[1]).slice(0, 20)
+        .map(([n, c]) => `${n} x${c}`).join(', ') || 'empty';
+    let logs = 0, stone = 0, dirt = 0;
+    try {
+        logs = world.getNearestBlocksWhere(bot, b => b && b.name && /_log$/.test(b.name), 48, 24).length;
+        stone = world.getNearestBlocksWhere(bot, b => b && b.name === 'stone', 48, 24).length;
+        dirt = world.getNearestBlocksWhere(bot, b => b && (b.name === 'dirt' || b.name === 'grass_block'), 48, 24).length;
+    } catch (e) { /* non-fatal */ }
+    return `Inventory: ${invStr}. Nearby within ~48 blocks: ${logs} logs, ${stone} stone, ${dirt} dirt/grass.`;
 }
 
 export const actionsList = [
@@ -700,6 +717,94 @@ export const actionsList = [
             const summary = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([n, c]) => `${n} x${c}`).join(', ');
             skills.log(bot, `Scanned ${x},${y},${z} r${radius} (${total} blocks): ${summary || 'empty/air'}`);
         })
+    },
+    {
+        name: '!designBuild',
+        description: 'Imagine a NEW structure of your OWN design and build it yourself, block by block. Describe what you want ("a cozy cottage with a small fenced garden", "a little stone watchtower"). You choose the shape, materials and size; the world realizes it slowly by hand from whatever you can gather. Optionally give a name to SAVE the design as a reusable schematic for later reuse.',
+        params: {
+            'description': { type: 'string', description: 'What to build, in your own words.' },
+            'name': { type: 'string', description: 'Optional name to save the design under (schematics/<name>.json).', default: null },
+        },
+        perform: runAsAction(async (agent, description, name) => {
+            const bot = agent.bot;
+            if (!description) { skills.log(bot, 'Tell me what you have in mind and I will design it.'); return; }
+
+            const spec = await agent.prompter.promptBuildDesign(description, buildContextText(bot));
+            if (!spec) { skills.log(bot, 'I could not settle on a design for that. Let me describe it differently.'); return; }
+
+            let sch;
+            try { sch = buildsense.parseDesignSpec(bot, spec); }
+            catch (e) { skills.log(bot, `My design had a problem (${e.message}). I will try a simpler one.`); return; }
+
+            const saveName = name || spec.name || 'designed';
+            try { schematic.saveSchematic(saveName, sch); } catch (e) { /* non-fatal */ }
+
+            const origin = schematic.findFreeSpace(bot, sch);
+            const occupied = buildsense.occupiedCells(bot, origin, sch.size);
+            if (occupied > 0) skills.log(bot, `Heads-up: my spot near ${origin.x},${origin.y},${origin.z} overlaps ${occupied} existing blocks — I will build around them.`);
+
+            try {
+                const placed = await schematic.placeSchematic(bot, sch, origin, 0);
+                const v = await schematic.verifySchematic(bot, sch, origin, 0);
+                skills.log(bot, `Designed and built "${saveName}" (${sch.size.x}x${sch.size.y}x${sch.size.z}; placed ${placed}/${sch.blocks.length} blocks, ${v.ok}/${v.checked} verified).`);
+            } catch (e) {
+                skills.log(bot, `I designed "${saveName}" but building hit a snag: ${e.message}`);
+            }
+        }, false, 60)
+    },
+    {
+        name: '!studyBuild',
+        description: 'Look closely at an existing structure (yours or another player\'s) and understand it: its size, what it is made of, whether it is hollow or solid, and roughly what kind of build it is. Give a center point and a radius; optionally name it so you can recall it later.',
+        params: {
+            'x': { type: 'int', description: 'Center X.' },
+            'y': { type: 'int', description: 'Center Y.' },
+            'z': { type: 'int', description: 'Center Z.' },
+            'radius': { type: 'int', description: 'Half-width in blocks.', domain: [2, 12], default: 6 },
+            'name': { type: 'string', description: 'Optional name to remember this build as.', default: null },
+        },
+        perform: runAsAction(async (agent, x, y, z, radius, name) => {
+            const bot = agent.bot;
+            radius = Math.min(Math.max(radius || 6, 2), 12);
+            const p1 = new Vec3(x - radius, Math.max(-64, y - 2), z - radius);
+            const p2 = new Vec3(x + radius, Math.min(319, y + radius), z + radius);
+            const sum = await buildsense.summarizeRegion(bot, p1, p2);
+            buildsense.recordKnownBuild(agent.name, {
+                name: name || `build at ${x},${y},${z}`,
+                type: sum.type, size: sum.size, dominant: sum.dominant,
+                pos: { x, y, z },
+            });
+            const unloadedNote = sum.unloaded ? ` (${sum.unloaded} cells were unloaded — study it from closer for a full read.)` : '';
+            skills.log(bot, sum.summary + unloadedNote);
+        }, false, 15)
+    },
+    {
+        name: '!planBuild',
+        description: 'Before you build, work out what it will cost: for a saved schematic (by name) or a single block type, list every material, how many you have versus need, and whether you can craft it or gather it from where you are right now. Use this to pick a realistic design and not get stuck mid-build.',
+        params: {
+            'target': { type: 'string', description: 'A schematic name (see !listSchematics) or a block name to plan gathering a stack of.' },
+            'count': { type: 'int', description: 'Optional count when planning a single block (default 64).', default: null },
+        },
+        perform: runAsAction(async (agent, target, count) => {
+            const bot = agent.bot;
+            const fp = schematic.schematicPath(target);
+            let sch = null;
+            if (existsSync(fp)) {
+                try { sch = await schematic.loadSchematic(fp); }
+                catch (e) { skills.log(bot, `Could not load "${target}": ${e.message}`); return; }
+                const plan = buildsense.planBuild(bot, sch);
+                skills.log(bot, buildsense.formatPlan(plan, `Cost to build "${target}"`));
+                return;
+            }
+            const blockName = buildsense.canonicalBlockName(bot, target);
+            if (blockName) {
+                const n = Math.max(1, count || 64);
+                const sch2 = { size: { x: 1, y: 1, z: 1 }, blocks: Array.from({ length: n }, () => ({ x: 0, y: 0, z: 0, name: blockName })) };
+                const plan = buildsense.planBuild(bot, sch2);
+                skills.log(bot, buildsense.formatPlan(plan, `Gathering ${n} ${blockName}`));
+                return;
+            }
+            skills.log(bot, `No schematic named "${target}" and that is not a block — try !listSchematics or a block name.`);
+        }, false, 15)
     },
     {
         name: '!mount',
