@@ -294,6 +294,17 @@ export function formatPlan(plan, label) {
 
 // ---- known-builds registry (her builds AND players' builds) ----
 
+// Compact "what is this schematic" summary for use as a design reference:
+// size + dominant materials + any authored description.
+export function referenceSummary(schematic) {
+    const hist = {};
+    for (const b of schematic.blocks || []) hist[b.name] = (hist[b.name] || 0) + 1;
+    const mats = Object.entries(hist).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([n]) => n).join(', ');
+    const s = schematic.size || { x: 0, y: 0, z: 0 };
+    const desc = schematic.description ? ` — ${schematic.description}` : '';
+    return `a ${s.x}x${s.y}x${s.z} structure made of ${mats || 'nothing'}${desc}`;
+}
+
 export function knownBuildsPath(agentName) {
     return `./bots/${agentName}/known_builds.json`;
 }

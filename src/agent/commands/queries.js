@@ -2,6 +2,7 @@ import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import * as schematic from '../library/schematic.js';
 import * as buildsense from '../library/buildsense.js';
+import { researchBuildTopic } from '../../utils/research.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
@@ -324,6 +325,16 @@ export const queryList = [
                 (b.dominant && b.dominant !== 'air' ? `, mostly ${b.dominant}` : '') +
                 (b.pos ? ` @ ${b.pos.x},${b.pos.y},${b.pos.z}` : '')
             ).join('\n- '));
+        }
+    },
+    {
+        name: "!researchBuild",
+        description: "Look up real building references online (Minecraft Wiki and the web) for a topic — page names and short descriptions to INSPIRE your own design, never a fixed blueprint to copy. Use it before !designBuild when you want a grounded idea, or to learn how a structure is typically made.",
+        perform: async function (agent, topic) {
+            if (!topic) return pad('Tell me what kind of build to research (e.g. "lighthouse", "tudor house", "japanese pagoda").');
+            const ref = await researchBuildTopic(topic);
+            if (!ref) return pad(`No web reference found for "${topic}" — you will have to design it from imagination.`);
+            return pad(`RESEARCH: ${topic}\n${ref}`);
         }
     },
     {
