@@ -106,15 +106,18 @@ const modes_list = [
             else if (agent.isIdle() && bot.food < 11) {
                 // eat to restore hunger so she can heal and sprint
                 if (Date.now() - this.last_ate > 6000) {
-                    execute(this, agent, async () => {
-                        const food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
-                        if (food) {
-                            await bot.equip(food, 'hand');
-                            await bot.consume();
-                            await new Promise(r => setTimeout(r, 1500));
-                        }
-                    });
                     this.last_ate = Date.now();
+                    // only interrupt self-prompting to actually eat when she HAS
+                    // food. Hungry-with-no-food previously spun an empty execute()
+                    // every 6s, which stopped the self-prompt loop each time and
+                    // left her too busy "eating nothing" to go gather food.
+                    const food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
+                    if (!food) return;
+                    execute(this, agent, async () => {
+                        await bot.equip(food, 'hand');
+                        await bot.consume();
+                        await new Promise(r => setTimeout(r, 1500));
+                    });
                 }
             }
             else if (agent.isIdle()) {

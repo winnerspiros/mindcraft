@@ -28,6 +28,8 @@ import { RealnessTracker } from './realness.js';
 import { PersonalnessTracker } from './personalness.js';
 import { HeatTracker } from './heat.js';
 import { ReflectiveMemory } from './reflective_memory.js';
+import { Curriculum } from './curriculum.js';
+import { LearnedSkillLibrary } from './learned_skill_library.js';
 import Vec3 from 'vec3';
 
 export class Agent {
@@ -63,6 +65,8 @@ export class Agent {
         this.relationship = new RelationshipManager(this);
         this.profiles = new PlayerProfiles(this);
         this.reflective_memory = new ReflectiveMemory(this);
+        this.curriculum = new Curriculum(this);
+        this.learned_skills = settings.learned_skills_enabled !== false ? new LearnedSkillLibrary(this) : null;
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
@@ -792,6 +796,15 @@ export class Agent {
     }
 
     async _gearUp() {
+        // Idempotent: never stack a fresh kit on top of an existing one. Every
+        // spawn/restart was /give-ing a full duplicate kit, filling her inventory
+        // (3 swords, 3 elytras, 192 arrows...) and starving her of slots to gather.
+        const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
+        const alreadyGeared = armorPieces.some(p => this.bot.inventory.items().some(i => i.name === p));
+        if (alreadyGeared) {
+            this.bot.armorManager.equipAll();
+            return;
+        }
         // OP survival kit: full armor + sword + shield + food so she doesn't die to mobs.
         // She is op (level 4) so /give commands resolve; armor/tools go straight to inventory,
         // then armorManager equips the armor and the best sword is moved to hand.

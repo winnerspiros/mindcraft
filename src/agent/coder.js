@@ -90,6 +90,20 @@ export class Coder {
 
                 const code_output = this.agent.actions.getBotOutputSummary();
                 const summary = "Agent wrote this code: \n```" + this._sanitizeCode(code) + "```\nCode Output:\n" + code_output;
+
+                // Commit the proven code to the growing skill library so she can
+                // reuse it for similar future tasks (Voyager compounding).
+                try {
+                    const task = messages.slice().reverse().find(m =>
+                        m && m.role !== 'system' && typeof m.content === 'string' && m.content.includes('!newAction(')
+                    )?.content?.match(/!newAction\((.*?)\)/)?.[1]?.replace(/["']/g, '').trim();
+                    if (task && this.agent.learned_skills) {
+                        await this.agent.learned_skills.commit(task, this._sanitizeCode(code));
+                    }
+                } catch (e) {
+                    console.warn('learned-skill commit failed (non-fatal):', e.message);
+                }
+
                 return summary;
             } catch (e) {
                 if (this.agent.bot.interrupt_code)

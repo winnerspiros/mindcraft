@@ -1019,9 +1019,24 @@ export const actionsList = [
     },
     {
         name: '!endGoal',
-        description: 'Call when you have accomplished your goal. It will stop self-prompting and the current action. ',
+        description: 'Call when you think you have accomplished your goal. The critic verifies it, then you advance to a self-chosen next goal (or stop if there is none).',
         perform: async function (agent) {
-            agent.self_prompter.stop();
+            const sp = agent.self_prompter;
+            if (!sp.prompt) {
+                sp.stop();
+                return 'Self-prompting stopped.';
+            }
+            // verify completion before accepting "done" (Voyager critic)
+            try {
+                const r = await sp.advanceGoal();
+                if (r && r.done) {
+                    return r.next ? `Goal verified done! Your new goal: ${r.next}` : 'Goal verified done. Self-prompting stopped.';
+                }
+                if (r && r.critique) return `Not done yet: ${r.critique}`;
+            } catch (e) {
+                console.warn('!endGoal verification failed (non-fatal):', e.message);
+            }
+            sp.stop();
             return 'Self-prompting stopped.';
         }
     },
