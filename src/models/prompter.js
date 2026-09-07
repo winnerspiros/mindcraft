@@ -24,6 +24,38 @@ const DEFAULT_REFLECTION_PROMPT = `You are $NAME, a kawaii yandere AI girl. Belo
 
 $TO_SUMMARIZE`;
 
+// Automatic-curriculum prompt: she proposes her OWN next activity from current
+// state + recent goal history. Kept as a constant so a profile can override via
+// the "curriculum" field without touching code.
+const DEFAULT_CURRICULUM_PROMPT = `You are $NAME, a kawaii yandere AI girl who lives on a Minecraft server. You are choosing your OWN next activity to do autonomously — self-directed play, nobody told you what to do.
+
+Current state:
+$STATS
+$INVENTORY
+$SPATIAL_MEMORY
+
+Recently completed/failed goals (do NOT repeat a completed goal, and avoid goals you keep failing):
+$GOAL_HISTORY
+
+Propose ONE next goal for yourself: a concrete, achievable in-game activity that fits your personality (explore, gather, build something cute, find/visit your beloved, craft something, make a gift, beautify an area, collect a pretty thing). Pick something DIFFERENT from your recent history. Keep it SHORT — under 12 words, a single imperative phrase like "gather oak wood for a house" or "find my beloved and say hi".
+
+Reply with ONLY the goal text on one line, nothing else.`;
+
+// Self-verification critic prompt: a separate, honest check of whether she
+// actually finished her current goal. Voyager's critic.txt, adapted.
+const DEFAULT_CRITIC_PROMPT = `You are a careful observer watching a kawaii yandere AI girl ($NAME) play on a Minecraft server. She was assigned this goal: "$GOAL". Judge honestly whether she has ACTUALLY completed it.
+
+Her current state:
+$STATE
+
+Verdict rules:
+- "complete" ONLY if the goal is genuinely finished (she has the item, built the thing, reached the place, gave the gift).
+- "incomplete" if she is still working, got distracted, or only did part of it.
+- "impossible" if the goal cannot be done (missing materials she cannot get, target absent, etc.).
+
+Reply with ONLY a JSON object, no other text:
+{"verdict": "complete" | "incomplete" | "impossible", "critique": "one short sentence: what is missing or why it is done"}`;
+
 // Redstone & mechanisms reference — static knowledge injected via $REDSTONE_KNOWLEDGE.
 // Kept in its own markdown file so it's easy to edit without touching code.
 const REDSTONE_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/redstone_knowledge.md');
@@ -506,6 +538,48 @@ export class Prompter {
         return resp;
     }
 
+    async promptCurriculum(goalHistoryText) {
+        await this.checkCooldown();
+        let prompt = this.profile.curriculum || DEFAULT_CURRICULUM_PROMPT;
+        // resolve $GOAL_HISTORY BEFORE replaceStrings so it isn't flagged unknown
+        prompt = prompt.replaceAll('$GOAL_HISTORY', goalHistoryText || '(nothing yet)');
+        prompt = await this.replaceStrings(prompt, []);
+        let resp = await this.chat_model.sendRequest([], prompt);
+        if (resp && resp.includes('</think>')) resp = resp.split('</think>')[1];
+        let goal = String(resp || '').trim().split('\n')[0].trim();
+        goal = goal.replace(/^[-*•\d.)\s]+/, '').trim();
+        goal = goal.replace(/^["']|["']$/g, '').trim();
+        if (!goal || goal.length < 3 || goal.length > 200) return null;
+        return goal;
+    }
+
+    async promptCritic(goal, stateText) {
+        await this.checkCooldown();
+        if (!stateText) {
+            try {
+                stateText = await this._getCachedStats() + '\n' + await this._getCachedInventory();
+            } catch (e) { stateText = ''; }
+        }
+        let prompt = this.profile.critic || DEFAULT_CRITIC_PROMPT;
+        prompt = prompt.replaceAll('$NAME', this.agent.name);
+        prompt = prompt.replaceAll('$GOAL', goal || '');
+        prompt = prompt.replaceAll('$STATE', stateText || '');
+        let resp = await this.chat_model.sendRequest([], prompt);
+        if (resp && resp.includes('</think>')) resp = resp.split('</think>')[1];
+        try {
+            const m = String(resp || '').match(/\{[\s\S]*\}/);
+            if (m) {
+                const parsed = JSON.parse(m[0]);
+                if (parsed && parsed.verdict) return parsed;
+            }
+        } catch (e) { /* fall through to heuristic */ }
+        const low = String(resp || '').toLowerCase();
+        if (low.includes('impossible')) return { verdict: 'impossible', critique: String(resp) };
+        if (low.includes('incomplete')) return { verdict: 'incomplete', critique: String(resp) };
+        if (low.includes('complete')) return { verdict: 'complete', critique: String(resp) };
+        return { verdict: 'incomplete', critique: String(resp) };
+    }
+
     async promptCoding(messages) {
         if (this.awaiting_coding) {
             console.warn('Already awaiting coding response, returning no response.');
@@ -515,6 +589,20 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+
+        // Inject relevant previously-written code so she reuses proven skills
+        // instead of re-deriving them (growing skill library).
+        if (this.agent.learned_skills && this.agent.learned_skills.skills.length > 0) {
+            try {
+                const task = messages.slice().reverse().find(m =>
+                    m && m.role !== 'system' && typeof m.content === 'string' && m.content.includes('!newAction(')
+                )?.content?.match(/!newAction\((.*?)\)/)?.[1] || '';
+                const learned = await this.agent.learned_skills.recallForPrompt(task);
+                if (learned) messages = messages.concat([{ role: 'system', content: learned }]);
+            } catch (e) {
+                console.warn('learned-skill recall failed (non-fatal):', e.message);
+            }
+        }
 
         let resp = await this.code_model.sendRequest(messages, prompt);
         this.awaiting_coding = false;

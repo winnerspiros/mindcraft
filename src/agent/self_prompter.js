@@ -18,6 +18,13 @@ export class SelfPrompter {
         // this only throttles her UNSOLICITED self-chatter, not her responsiveness.
         // Building autonomy: 3 min keeps her creative without constant construction spam.
         this.cooldown = 180000;
+
+        // Autonomous goal lifecycle (Voyager-style critic + curriculum): counts
+        // self-prompt turns since the current goal was set, and how many times
+        // the critic has judged it unfinished in a row.
+        this.goal_cycles = 0;
+        this.stuck_cycles = 0;
+        this.advancing = false; // reentry guard for the critic+curriculum calls
     }
 
     _otherPlayersOnline() {
@@ -38,6 +45,8 @@ export class SelfPrompter {
         }
         this.state = ACTIVE;
         this.prompt = prompt;
+        this.goal_cycles = 0;
+        this.stuck_cycles = 0;
         this.startLoop();
     }
 
@@ -93,15 +102,34 @@ export class SelfPrompter {
             if (!used_command) {
                 no_command_count++;
                 if (no_command_count >= MAX_NO_COMMAND) {
-                    let out = `Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Stopping auto-prompting.`;
-                    console.warn(out);
-                    this.agent.bot.modes.behavior_log += out + '\n';
-                    this.state = STOPPED;
-                    break;
+                    // Don't permanently kill self-prompting over a few flaky turns —
+                    // the old path set state=STOPPED + broke, which left her silent and
+                    // wound the agent down to cleanKill/exit. Pause longer instead and
+                    // keep state ACTIVE so update() can keep her running.
+                    console.warn(`Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Pausing self-prompting briefly.`);
+                    no_command_count = 0;
+                    await new Promise(r => setTimeout(r, this.cooldown * 2));
+                    continue;
                 }
             }
             else {
                 no_command_count = 0;
+            }
+            // Autonomous goal advancement: periodically verify the current goal
+            // and propose a fresh one (critic + curriculum). Throttled so the
+            // extra LLM calls don't burn API $ on this low-RAM box.
+            if (settings.curriculum_enabled !== false && settings.critic_enabled !== false) {
+                this.goal_cycles++;
+                if (this.goal_cycles >= (settings.goal_check_cycles || 5)) {
+                    this.goal_cycles = 0;
+                    try {
+                        const r = await this.advanceGoal();
+                        if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
+                        else if (r && r.done && !r.next) console.log('[curriculum] goal finished, but no next goal proposed.');
+                    } catch (e) {
+                        console.warn('periodic goal advance failed (non-fatal):', e.message);
+                    }
+                }
             }
             // always pause between self-prompt turns — even a chat-only
             // response must not re-fire instantly (it races the in-flight
@@ -111,6 +139,53 @@ export class SelfPrompter {
         console.log('self prompt loop stopped')
         this.loop_active = false;
         this.interrupt = false;
+    }
+
+    // Verify the current goal with the critic, then advance to the next goal via
+    // the curriculum when it's done/impossible (or stuck too long). Returns an
+    // info object, or null if it couldn't run. Non-fatal: never throws.
+    async advanceGoal() {
+        const agent = this.agent;
+        if (!this.prompt) return null;
+        if (!agent.prompter || !agent.curriculum) return null;
+        if (this.advancing) return null;
+        this.advancing = true;
+        try {
+            const verdict = await agent.prompter.promptCritic(this.prompt);
+            const v = verdict && verdict.verdict ? verdict.verdict : 'incomplete';
+            if (v === 'complete') {
+                agent.curriculum.recordComplete(this.prompt);
+                const next = await agent.curriculum.proposeNextGoal();
+                this.goal_cycles = 0;
+                this.stuck_cycles = 0;
+                if (next) this.prompt = next;
+                return { done: true, next, verdict: v };
+            }
+            if (v === 'impossible') {
+                agent.curriculum.recordFailure(this.prompt, verdict.critique || 'impossible');
+                const next = await agent.curriculum.proposeNextGoal();
+                this.goal_cycles = 0;
+                this.stuck_cycles = 0;
+                if (next) this.prompt = next;
+                return { done: true, next, verdict: v };
+            }
+            // incomplete — keep working, but don't stay stuck forever
+            this.stuck_cycles++;
+            if (this.stuck_cycles >= (settings.goal_stuck_limit || 3)) {
+                agent.curriculum.recordFailure(this.prompt, verdict.critique || 'stuck');
+                const next = await agent.curriculum.proposeNextGoal();
+                this.goal_cycles = 0;
+                this.stuck_cycles = 0;
+                if (next) this.prompt = next;
+                return { done: true, next, verdict: v };
+            }
+            return { done: false, critique: verdict && verdict.critique, verdict: v };
+        } catch (e) {
+            console.warn('advanceGoal failed (non-fatal):', e.message);
+            return null;
+        } finally {
+            this.advancing = false;
+        }
     }
 
     update(delta) {

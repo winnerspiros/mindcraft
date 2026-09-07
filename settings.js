@@ -35,6 +35,11 @@ const settings = {
     "reflection_memory": true,    // RAG long-term memory (reflection -> embed -> recall)
     "reflection_interval": 15,    // conversational turns between reflections
     "reflection_recall_count": 5, // top-k memories injected per prompt
+    "curriculum_enabled": true,   // automatic-curriculum: she proposes her own next goal (Voyager-style)
+    "critic_enabled": true,       // self-verification critic: judges whether a goal is actually done
+    "goal_check_cycles": 5,       // self-prompt turns between critic+curriculum checks (throttles API $)
+    "goal_stuck_limit": 3,        // consecutive "incomplete" verdicts before she abandons + picks a new goal
+    "learned_skills_enabled": true, // growing skill library: reuse proven !newAction code via embedding recall
     "num_examples": 2,
     "max_commands": -1,
     "show_command_syntax": false,
