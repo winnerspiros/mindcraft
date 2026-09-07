@@ -34,7 +34,10 @@ improvises from this toolkit.
 - **Gift** flowers & food, and … *playful-evil* gifts (rotten flesh, spider eye, poisonous
   potato) delivered sweetly when she's feeling a certain way
 - **Build** like a player — full builds, **hollow builds**, **schematics** (capture + place),
-  and even **redstone** layouts
+  and even **redstone** layouts. She **invents her own designs** — when asked to build
+  something she has no blueprint for, she researches real references live (searches GitHub for
+  schematics, looks up materials and construction technique) rather than reaching into a fixed
+  build catalog.
 - **Craft** — multi-step recipes (logs → planks → chest), any wood type, auto crafting-table setup
 - **Fishing** — she'll sit and fish when she's bored
 - Keep her own diamond kit across deaths, manage a full inventory (spawns with a chest,
@@ -89,10 +92,12 @@ Mineflayer to the **Complexity-ML 26.2** fork and ships every missing piece:
 
 - `assets/minecraft-data-26.2/` — the full 26.2 game data (blocks/items/entities/…)
 - `patches/` — patch-package patches for pathfinder, PvP, viewer, protodef
-- `fix-26.2-protocol.py` — idempotent fix for two fork bugs (write-shape drift + a
-  packet-ID table shifted by one, plus the elytra `shared_flags` key-0 fallback). It copies
-  the data, registers `26.2`, and patches the protocol on every `npm install`. Safe to re-run
-  any number of times.
+- `fix-26.2-protocol.py` — idempotent fixer for fork bugs and vanilla gaps (the write-shape
+  drift + a packet-ID table shifted by one, the elytra `shared_flags` key-0 fallback, a
+  container-open look flush so `!activateBlock` recipes survive reach validation, and a
+  collectblock auto-deposit patch so a full inventory discovers a nearby chest instead of
+  erroring `NoChests`). It copies the data, registers `26.2`, and patches the protocol on
+  every `npm install`. Safe to re-run any number of times.
 
 `setup.sh` / `setup.bat` run all of this so you never touch it yourself.
 

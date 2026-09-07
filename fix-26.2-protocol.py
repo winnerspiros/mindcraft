@@ -209,6 +209,30 @@ INV_AT_NEW = """  async function activateEntityAt (entity, position) {
   }
 """
 
+# --- 8a inventory.js: activateBlock() — force the look packet. The 26.2 server's
+# reach/angle validation silently drops container-open (open_window never sent,
+# windowOpen times out) unless the look is flushed BEFORE block_place. force=false
+# defers the look to the next physics tick, racing the block_place write.
+AB_OLD = """    await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), false)"""
+
+AB_NEW = """    await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true)"""
+
+# --- collectblock: auto-deposit discovers nearby chests instead of failing ---
+# The collectBlock plugin only deposits into a pre-configured chestLocations list,
+# which defaults EMPTY — so a full inventory always throws NoChests and the bot
+# goes to craft/place a new chest even when a chest already sits nearby. Discover
+# nearby chest/trapped_chest (32 blocks) so storage use is a natural routine.
+COLINV_OLD = """        if (chestLocations.length === 0) {
+            throw (0, Util_1.error)('NoChests', 'There are no defined chest locations!');
+        }"""
+
+COLINV_NEW = """        if (chestLocations.length === 0) {
+            chestLocations = yield bot.findBlocks({ matching: (block) => block.name === 'chest' || block.name === 'trapped_chest', maxDistance: 32, count: 20 });
+        }
+        if (chestLocations.length === 0) {
+            throw (0, Util_1.error)('NoChests', 'There are no defined chest locations!');
+        }"""
+
 
 def ensure_26_2_data(base):
     """Copy the bundled 26.2 game-data (19 files) into node_modules and register
@@ -322,8 +346,15 @@ def main():
     if os.path.exists(inventory_js):
         patch_js(inventory_js, INV_OLD, INV_NEW, "usingSecondaryAction: false", "activateEntity")
         patch_js(inventory_js, INV_AT_OLD, INV_AT_NEW, "hand: 0,\n      location: { x: position", "activateEntityAt")
+        patch_js(inventory_js, AB_OLD, AB_NEW, "lookAt(block.position.offset(0.5, 0.5, 0.5), true)", "activateBlock lookAt force")
     else:
         print(f"[8a] WARNING: {inventory_js} missing")
+
+    collectblock_inv = os.path.join(BASE, "mineflayer-collectblock", "lib", "Inventory.js")
+    if os.path.exists(collectblock_inv):
+        patch_js(collectblock_inv, COLINV_OLD, COLINV_NEW, "bot.findBlocks({ matching: (block) => block.name === 'chest'", "collectblock auto-deposit discover chests")
+    else:
+        print(f"[8a] WARNING: {collectblock_inv} missing")
 
     print("done.")
 

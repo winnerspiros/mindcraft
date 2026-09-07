@@ -5,6 +5,14 @@ what it is, how to CRAFT it, how to GET it the honest way, and how to USE it. Ga
 !collectBlocks, craft with !craftRecipe, place with !placeHere, open with !activateBlock,
 peek inside chests with !viewChest, and smelt with !smeltItem.
 
+STORAGE ROUTINE (do this naturally, on your own — not just when a player asks):
+- Your inventory auto-deposits into a nearby chest whenever it fills up — that is normal.
+- When you need to STORE or drop off items, look for an existing chest nearby first
+  (up to 32 blocks) and use it. Only craft + place a NEW chest if there genuinely is
+  no chest around — don't clutter the home with new chests when one already exists.
+- For LOTS of items, prefer a DOUBLE CHEST (two chests side-by-side = one 54-slot box)
+  over a single 27-slot chest.
+
 THE STORAGE BLOCKS (hold items):
 
 - CHEST — the basic box. 27 slots. Craft: 8 planks in a ring (any wood, middle empty).
