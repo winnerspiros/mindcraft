@@ -226,7 +226,7 @@ export function planBuild(bot, schematic) {
             }
             const tool = tools && tools.length ? tools[tools.length - 1] : null; // most capable
             const hasTool = tools ? tools.some(t => invNames.has(t)) : true;     // no tool needed => true
-            return { name, need: count, have, short, craftable: !!recipe, craftNow, ingredients, tool, hasTool, tools, source };
+            return { name, need: count, have, short, craftable: !!recipe, craftNow, ingredients, tool, hasTool, tools, source, hint: sourcingHint(name) };
         })
         .sort((a, b) => b.short - a.short || b.need - a.need);
 
@@ -285,11 +285,187 @@ export function formatPlan(plan, label) {
         if (r.status === 'gather') detail += ` (${r.nearby} source blocks within ${GATHER_RADIUS}m)`;
         if (r.status === 'gather-tool') detail += ` — need ${r.tool}`;
         if (r.status === 'unavailable') detail += ` (0 ${r.source} nearby)`;
-        lines.push(`- ${r.name}: ${r.have}/${r.need} — ${detail}`);
+        const how = (r.short > 0 && r.hint) ? ` — get it: ${r.hint}` : '';
+        lines.push(`- ${r.name}: ${r.have}/${r.need} — ${detail}${how}`);
     }
     if (plan.missing === 0) lines.push('All materials already on hand — build freely.');
     else lines.push(`Total to acquire/craft/gather: ${plan.missing} blocks.`);
     return lines.join('\n');
+}
+
+// ---- material sourcing + adaptive substitution ----
+
+// Where/how to find raw materials. Keyed by the SOURCE block or item she must
+// gather. Feeds sourcingHint -> she learns the whole supply chain, not just the
+// final block.
+const FIND_HINTS = {
+    oak_log: 'chop oak trees (forests / plains)',
+    spruce_log: 'chop spruce trees (taiga)',
+    birch_log: 'chop birch trees (birch forest)',
+    jungle_log: 'chop jungle trees (jungle)',
+    acacia_log: 'chop acacia trees (savanna)',
+    dark_oak_log: 'chop dark oak (dark forest / roofed)',
+    mangrove_log: 'chop mangrove (swamp)',
+    cherry_log: 'chop cherry trees (cherry grove)',
+    coal_ore: 'mine coal (common, any depth, caves/stony slopes)',
+    iron_ore: 'mine iron (caves, below the surface)',
+    copper_ore: 'mine copper (caves / dripstone caves)',
+    gold_ore: 'mine gold (deep, y<32, or badlands)',
+    redstone_ore: 'mine redstone (deep, y<16)',
+    diamond_ore: 'mine diamond (very deep, y<16)',
+    lapis_ore: 'mine lapis (deep, y<32)',
+    emerald_ore: 'mine emerald (mountains, rare)',
+    stone: 'mine stone (underground, pickaxe)',
+    cobblestone: 'mine stone (pickaxe)',
+    deepslate: 'mine deepslate (very deep, pickaxe)',
+    sand: 'dig sand (beaches / deserts / rivers)',
+    red_sand: 'dig red sand (badlands)',
+    gravel: 'dig gravel (underwater / mountains)',
+    clay: 'dig clay (shallow water / riverbeds)',
+    dirt: 'dig dirt (surface)',
+    grass_block: 'dig grass (surface, silk touch)',
+    cactus: 'find cactus (deserts)',
+    kelp: 'find kelp (ocean)',
+    sugarcane: 'grow sugarcane (near water)',
+};
+
+// Extra smelt recipes getItemSmeltingIngredient does not cover (also keeps the hint
+// available before mcdata is ready).
+const SMELT_MAP = {
+    stone: 'cobblestone', smooth_stone: 'stone', glass: 'sand', brick: 'clay_ball',
+    charcoal: 'oak_log', terracotta: 'clay',
+    iron_ingot: 'raw_iron', gold_ingot: 'raw_gold', copper_ingot: 'raw_copper',
+};
+
+// Common craft chains, used when mcdata is unavailable (and to make the hint testable).
+const CRAFT_FALLBACK = {
+    stick: 'craft from 2 planks', crafting_table: 'craft from 4 planks',
+    chest: 'craft from 8 planks', furnace: 'craft from 8 cobblestone',
+    torch: 'craft from coal/charcoal + a stick', glass_pane: 'craft from 6 glass',
+    ladder: 'craft from 7 sticks', glowstone: 'mine glowstone (nether) or craft from glowstone_dust',
+};
+const WOOD_FURNITURE = ['slab', 'stairs', 'fence', 'fence_gate', 'door', 'trapdoor', 'sign', 'pressure_plate', 'button', 'boat'];
+
+// A one-line "how and where do I get this" answer for a block/item, composing
+// location hints + smelt/craft chains. The raw-material cases are mcdata-free so
+// the hint keeps working even before the registry is ready.
+export function sourcingHint(name) {
+    const n = String(name || '');
+    if (!n) return 'unknown';
+    // coloured/plain wool -> sheep (roam plains/meadows and shear or kill)
+    if (n.endsWith('_wool')) return 'shear or kill a sheep (sheep roam plains/meadows)';
+    // raw material with a known biome/depth location
+    if (FIND_HINTS[n]) {
+        const tool = safeGet(() => mc.getBlockTool(n), null);
+        return `${FIND_HINTS[n]}${tool ? ` (${tool})` : ''}`;
+    }
+    // animal-sourced (leather, meats)
+    const animal = safeGet(() => mc.getItemAnimalSource(n), null);
+    if (animal) return `get from a ${animal} (breed or kill, near plains/meadows)`;
+    // smelt chain
+    const smeltFrom = safeGet(() => mc.getItemSmeltingIngredient(n), null) || SMELT_MAP[n];
+    if (smeltFrom) return `smelt ${smeltFrom} in a furnace`;
+    // craft chain (mcdata, then wood-furniture + common fallbacks)
+    const recipe = safeGet(() => mc.getItemCraftingRecipes(n), null);
+    if (recipe) {
+        const ing = Object.keys(recipe[0][0]);
+        if (ing.length) return `craft from ${ing.slice(0, 4).join(', ')}`;
+    }
+    if (CRAFT_FALLBACK[n]) return CRAFT_FALLBACK[n];
+    if (n.endsWith('_planks')) { const w = n.slice(0, -7); return `craft from ${w}_log (chop ${w} trees)`; }
+    for (const f of WOOD_FURNITURE) {
+        if (n.endsWith('_' + f)) { const w = n.slice(0, -(f.length + 1)); return `craft from ${w}_planks`; }
+    }
+    // mine a source block
+    const source = (safeGet(() => mc.getItemBlockSources(n), []) || [])[0];
+    if (source) {
+        const tool = safeGet(() => mc.getBlockTool(source), null);
+        const hint = FIND_HINTS[source] || `mine ${source}`;
+        return `${hint}${tool ? ` (${tool})` : ''}`;
+    }
+    return 'not gatherable or craftable (rare / villager trade)';
+}
+
+// One bounded scan: count every non-air block in the loaded area. Used by
+// adaptSchematic to know what is ACTUALLY available nearby (not what a recipe
+// theoretically exists for).
+function nearbyCensus(bot) {
+    const counts = {};
+    try {
+        const positions = bot.findBlocks({ matching: b => b && b.name && b.name !== 'air', maxDistance: 48, count: 3000 });
+        for (const p of positions) {
+            const b = bot.blockAt(p);
+            if (b && b.name) counts[b.name] = (counts[b.name] || 0) + 1;
+        }
+    } catch (e) { /* non-fatal */ }
+    return counts;
+}
+
+// Is a material "fine as-is" (she has it or can gather it without scouting)?
+function isLocallyFine(name, inv, census) {
+    if (inv[name] > 0 || census[name] > 0) return true;
+    // wood: fine only if THIS wood type is actually around (log or the block itself),
+    // otherwise substitute to a wood that is local — the whole point of adaptability.
+    const m = String(name).match(/^(.+)_(log|planks|fence|fence_gate|stairs|slab|sign|door|trapdoor|button|pressure_plate|boat)$/);
+    if (m) {
+        const logName = m[1].replace(/^stripped_/, '') + '_log';
+        return (census[logName] > 0 || census[name] > 0);
+    }
+    // stone/cobble/stone_bricks/sand/dirt/gravel are always obtainable (dig down)
+    if (['stone', 'cobblestone', 'stone_bricks', 'sand', 'dirt', 'gravel'].includes(name)) return true;
+    if (name === 'white_wool') return true; // white sheep are everywhere
+    return false;
+}
+
+// Pick the best substitute: prefer what she already has, then what is nearby.
+function pickSubstitute(name, inv, census) {
+    const subs = safeGet(() => mc.getBlockSubstitutes(name), null);
+    if (!subs || subs.length === 0) return null;
+    // 1. inventory first (largest stack)
+    let best = null, bestScore = -1;
+    for (const s of subs) {
+        const have = inv[s] || 0;
+        if (have > bestScore) { bestScore = have; best = s; }
+    }
+    if (best) return best;
+    // 2. nearby abundance of the raw form
+    for (const s of subs) {
+        const raw = s.replace(/_(planks|fence|stairs|slab|sign|door|trapdoor)$/, '_log');
+        const n = (census[raw] || 0) + (census[s] || 0);
+        if (n > 20) return s; // clearly present nearby
+    }
+    // 3. default fallbacks per family
+    if (name.endsWith('_wool')) return 'white_wool';
+    if (subs.some(s => s === 'oak_planks')) return 'oak_planks';
+    if (subs.some(s => s === 'cobblestone')) return 'cobblestone';
+    return subs[0];
+}
+
+/**
+ * Adapt a schematic to materials she can actually gather. For every block that is
+ * not locally obtainable, swap it for an equivalent she either has or can find
+ * nearby (wood variant -> a wood that is around; coloured wool -> white; exotic
+ * stone -> cobblestone). Returns { schematic, changes:[{from,to}] }.
+ */
+export function adaptSchematic(bot, schematic) {
+    const inv = inventoryCounts(bot);
+    const census = nearbyCensus(bot);
+    const changes = [];
+    const seen = new Set();
+    const blocks = (schematic.blocks || []).map(b => {
+        if (isLocallyFine(b.name, inv, census)) return b;
+        const key = b.name;
+        if (seen.has(key)) return b; // already decided once
+        const sub = pickSubstitute(b.name, inv, census);
+        if (sub) { seen.add(key); changes.push({ from: b.name, to: sub }); return { ...b, name: sub }; }
+        return b;
+    });
+    return { schematic: { ...schematic, blocks }, changes };
+}
+
+export function formatAdaptation(changes) {
+    if (!changes.length) return '';
+    return `Adapted materials to what I can gather: ` + changes.map(c => `${c.from} -> ${c.to}`).join(', ');
 }
 
 // ---- known-builds registry (her builds AND players' builds) ----

@@ -641,6 +641,12 @@ export const actionsList = [
             let sch;
             try { sch = await schematic.loadSchematic(fp); }
             catch (e) { skills.log(bot, `Could not load schematic "${name}": ${e.message}`); return; }
+
+            // Adapt to what is actually gatherable here (wood variants, wool, stone).
+            const adapted = buildsense.adaptSchematic(bot, sch);
+            if (adapted.changes.length) skills.log(bot, buildsense.formatAdaptation(adapted.changes));
+            sch = adapted.schematic;
+
             const origin = (x != null && y != null && z != null)
                 ? { x: Math.floor(x), y: Math.floor(y), z: Math.floor(z) }
                 : schematic.findFreeSpace(bot, sch);
@@ -756,6 +762,11 @@ export const actionsList = [
             let sch;
             try { sch = buildsense.parseDesignSpec(bot, spec); }
             catch (e) { skills.log(bot, `My design had a problem (${e.message}). I will try a simpler one.`); return; }
+
+            // Adapt to what I can actually gather (e.g. swap oak for a nearby spruce).
+            const adapted = buildsense.adaptSchematic(bot, sch);
+            if (adapted.changes.length) skills.log(bot, buildsense.formatAdaptation(adapted.changes));
+            sch = adapted.schematic;
 
             const saveName = name || spec.name || 'designed';
             try { schematic.saveSchematic(saveName, sch); } catch (e) { /* non-fatal */ }

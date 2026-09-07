@@ -433,6 +433,39 @@ export function getBlockHarvestTools(blockName) {
         .filter(Boolean);
 }
 
+// Substitute candidates for a block: the rest of its material family (same shape,
+// different wood/colour/stone). Returns an array of other block names, or null if
+// the block has no obvious family. Lets the bot adapt a schematic to what is
+// actually gatherable nearby (oak_planks -> spruce_planks, red_wool -> white_wool,
+// stone_bricks -> cobblestone).
+const STONE_FAMILY = ['stone', 'cobblestone', 'mossy_cobblestone', 'stone_bricks', 'mossy_stone_bricks',
+    'cracked_stone_bricks', 'smooth_stone', 'andesite', 'diorite', 'granite',
+    'polished_andesite', 'polished_diorite', 'polished_granite', 'tuff',
+    'deepslate', 'cobbled_deepslate', 'polished_deepslate', 'deepslate_bricks'];
+const SAND_FAMILY = ['sand', 'red_sand', 'sandstone', 'red_sandstone', 'smooth_sandstone', 'smooth_red_sandstone'];
+
+export function getBlockSubstitutes(blockName) {
+    const n = String(blockName || '');
+    if (!n) return null;
+
+    // wood: <variant>_<base>
+    for (const base of MATCHING_WOOD_BLOCKS) {
+        if (n.endsWith('_' + base)) {
+            const variant = n.slice(0, -(base.length + 1));
+            if (WOOD_TYPES.includes(variant)) return WOOD_TYPES.filter(w => w !== variant).map(w => `${w}_${base}`);
+            break; // matched the base shape but not a wood prefix (e.g. 'iron_pressure_plate')
+        }
+    }
+    // wool: <colour>_wool
+    if (n.endsWith('_wool')) {
+        const color = n.slice(0, -5);
+        if (WOOL_COLORS.includes(color)) return WOOL_COLORS.filter(c => c !== color).map(c => `${c}_wool`);
+    }
+    if (STONE_FAMILY.includes(n)) return STONE_FAMILY.filter(s => s !== n);
+    if (SAND_FAMILY.includes(n)) return SAND_FAMILY.filter(s => s !== n);
+    return null;
+}
+
 export function makeItem(name, amount=1) {
     return new Item(getItemId(name), amount);
 }
