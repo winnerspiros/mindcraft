@@ -221,6 +221,34 @@ export function listSchematics() {
     return readdirSync(SCHEMATIC_DIR).filter((f) => /\.(json|schem|schematic|nbt)$/i.test(f)).sort();
 }
 
+// Download a schematic file from a direct URL (GitHub raw, or any .schem/.schematic/
+// .json link), save it into schematics/, and hand back { name, ext, bytes }. Load it
+// with loadSchematic afterwards. Only Sponge/MCEdit (.schem/.schematic) and our .json
+// are supported — .litematic is Litematica's own format and is NOT readable.
+export async function downloadSchematic(url, name) {
+    const cleanPath = url.split(/[?#]/)[0];
+    const m = cleanPath.match(/\.(schematic|schem|json)$/i);
+    if (!m) throw new Error('That URL does not end in .schem, .schematic or .json (direct link required).');
+    const ext = '.' + m[1].toLowerCase();
+
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 15000);
+    let buf;
+    try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
+        buf = Buffer.from(await res.arrayBuffer());
+    } finally {
+        clearTimeout(timer);
+    }
+    if (!buf || buf.length === 0) throw new Error('downloaded an empty file.');
+
+    const filename = name ? `${name}${ext}` : (cleanPath.split('/').pop() || 'download') ;
+    mkdirSync(SCHEMATIC_DIR, { recursive: true });
+    writeFileSync(path.join(SCHEMATIC_DIR, filename), buf);
+    return { name: filename, ext, bytes: buf.length };
+}
+
 // Default paste origin: nearest free space with solid ground under it, else the bot's feet.
 export function findFreeSpace(bot, schematic) {
     const footprint = Math.max(schematic.size.x, schematic.size.z) + 1;
