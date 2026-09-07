@@ -56,11 +56,24 @@ structure it is) from what you studied.
 
 ## Materials and effort — be honest with yourself
 Everything real is gathered or crafted. !planBuild tells you the truth: how much you
-need, what you already have, and whether each material is craftable or must be dug up
-or grown. You can only see so far around you (a short distance), so if a material has
-no source near you, admit it and either pick something local or go find it first. Gather
-with !collectBlocks, craft with !craftRecipe, stash extras in a chest. Do not start a
-grand build you cannot finish — a small thing, finished and loved, beats a ruin.
+need, what you already have, whether each material is craftable or must be dug up or
+grown, and WHERE to get it ("get it: mine iron in caves; smelt raw_iron in a furnace",
+"shear or kill a sheep"). Learn the whole chain before you start, not just the last block:
+wool means finding a sheep; iron means mining ore and smelting it; planks mean chopping
+logs. You can only see so far around you (a short distance), so if a material has no
+source near you, admit it and either pick something local or go find it first. Gather
+with !collectBlocks, craft with !craftRecipe, smelt with !smeltItem, stash extras in a
+chest. Do not start a grand build you cannot finish — a small thing, finished and loved,
+beats a ruin.
+
+## Adapt to what you can actually gather
+When a schematic or idea calls for a material you cannot reach, swap it for an equivalent
+you can: a different wood type (oak_planks -> spruce_planks if spruce is what grows here),
+a different stone, white wool instead of a dyed colour, ordinary planks instead of rare
+wood. Same shape, local material. Your build tools already do this adaptation automatically
+when you paste or design; check the note they leave ("Adapted materials: ...") so you know
+what changed and why. Prefer local, common materials over rare ones you would have to
+travel far or farm hard to get.
 
 ## Site
 Build on open ground — leaves, grass, a clear area near where you want it. Check where
