@@ -1836,17 +1836,45 @@ export async function viewChest(bot) {
      * @example
      * await skills.viewChest(bot);
      * **/
-    // 26.3: openContainer path is KICK-PRONE — activateBlock's block_place
-    // plus the container open/close window traffic lands in the same server
-    // tick as movement (walk-death log: block_place -> punch -> look ->
-    // tick_end -> kick). Until the use_item/block_place sequence handshake is
-    // proven against the jar, read the chest via the /data command instead:
-    // zero interaction packets, zero movement interleaving, same info.
+    // 26.3 restore: real openContainer is back, but QUIET-WINDOW gated.
+    // The kick shape was block_place -> punch(swing) -> look -> tick_end all
+    // landing in one server tick next to movement (sequences now increment,
+    // but the burst-in-one-tick is still the danger). Gate: only open while
+    // physics is unfrozen, not pathfinding, and 3s since the last position
+    // send — otherwise fall back to the /data no-touch read (zero packets).
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
         return false;
     }
+    const physicsLive = bot.physics && bot.physics.shouldUsePhysics
+        ? bot.physics.shouldUsePhysics() : true;
+    const moving = bot.pathfinder && bot.pathfinder.isMoving
+        ? bot.pathfinder.isMoving() : !!bot.pathfinder.goal;
+    const sinceMove = (bot.physics && bot.physics.msSinceMove)
+        ? bot.physics.msSinceMove() : 99999;
+    if (physicsLive && !moving && sinceMove > 3000) {
+        try {
+            await goToBlockAdjacent(bot, chest);
+            const chestContainer = await bot.openContainer(chest);
+            let items = chestContainer.containerItems();
+            if (items.length === 0) {
+                log(bot, `The chest is empty.`);
+            }
+            else {
+                log(bot, `The chest contains:`);
+                for (let item of items) {
+                    log(bot, `${item.count} ${item.name}`);
+                }
+            }
+            await new Promise(r => setTimeout(r, 800)); // let window traffic settle before moving
+            await chestContainer.close();
+            return true;
+        } catch (e) {
+            log(bot, `Could not open chest (${e.message}), reading via /data instead.`);
+        }
+    }
+    // Fallback: /data no-touch read — zero interaction packets, same info.
     try {
         const p = chest.position;
         bot.chat(`/data get block ${p.x} ${p.y} ${p.z} Items`);
@@ -1857,8 +1885,8 @@ export async function viewChest(bot) {
         return false;
     }
     /* 26.3-disabled openContainer path (kicks: block_place+punch+look in one
-       server tick -> Invalid move). Restore once the sequence handshake is
-       proven against the jar.
+       server tick -> Invalid move). Restored above behind the quiet-window
+       gate; the raw path is kept here for reference.
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
@@ -2302,10 +2330,12 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     
     const progressInterval = setInterval(checkDigProgress, 1000);
 
-    // 26.3: NO sprint, NO sprint-jump. Pathfinder's allowSprinting emits
-    // sprint+jump fall deltas (d1.0-1.4/tick) that the 26.3 moved-wrongly
+    // 26.3: NO sprint, NO sprint-jump by default. Pathfinder's allowSprinting
+    // emits sprint+jump fall deltas (d1.0-1.4/tick) that the 26.3 moved-wrongly
     // gate reads as impossible -> "Invalid move" kick mid-walk (walk-death
-    // logs proved). Walk speed only — slower, never kicks.
+    // logs proved). Walk speed only — slower, never kicks. Sprint restores one
+    // leg at a time via goal.sprint=true (goToPlayer far-leg) once walk proves
+    // clean; never blanket-on.
     const walkMovements = new pf.Movements(bot);
     walkMovements.allowSprinting = false;
     bot.pathfinder.setMovements(walkMovements);
