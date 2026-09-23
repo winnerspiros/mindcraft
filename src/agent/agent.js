@@ -115,11 +115,34 @@ export class Agent {
             if (this._disconnectHandled) return;
             this._disconnectHandled = true;
 
+            // 26.3 walk-death dump: last 30 position sends before the kick.
+            try {
+                const buf = this.bot?._posBuf || [];
+                if (buf.length > 1) {
+                    const rows = buf.map((p, i) => {
+                        const q = buf[i - 1];
+                        const d = q ? Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z).toFixed(2) : '0.00';
+                        const dt = q ? (p.t - q.t) : 0;
+                        return `${p.n}@${p.y}g${p.g}d${d}/${dt}ms`;
+                    });
+                    console.log(`[walk-death] last ${rows.length} pos-sends: ` + rows.join(' | '));
+                }
+            } catch (e) {}
             // Log and Analyze
             // handleDisconnection handles logging to console and server
             const { type } = handleDisconnection(this.name, reason);
-     
-            process.exit(1);
+
+            // 26.3 kick-backoff: an Invalid-move kick means the burst that
+            // just ran (spawn teleports + chunk acks + AI actions) overloaded
+            // the 1-OCPU tick loop. Rejoining in 10s repeats the exact same
+            // burst into a server that hasn't recovered -> kick-loop that can
+            // wedge the tick loop for everyone. Back off: 60s after a movement
+            // kick, 20s otherwise, so the server drains before we return.
+            const raw = (typeof reason === 'string' ? reason : JSON.stringify(reason || '')).toLowerCase();
+            const moveKick = raw.includes('invalid') && raw.includes('move');
+            const waitMs = moveKick ? 60000 : 20000;
+            console.log(`[LoginGuard] rejoin backoff ${waitMs / 1000}s (${moveKick ? 'movement-kick' : 'other'}).`);
+            setTimeout(() => process.exit(1), waitMs);
         };
         
         // Bind events
@@ -139,15 +162,11 @@ export class Agent {
             console.log(this.name, 'logged in!');
             serverProxy.login();
             
-            // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
-            if (this.prompter.profile.skin)
-                this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
-            else
-                this.bot.chat(`/skin clear`);
-
-            // EasyAuth auto-login: protect this op account from impersonation (offline-mode server)
+            // EasyAuth auto-login FIRST (offline-mode server, pre-spawn so the
+            // stream stays clean): then skin only after spawn proves the
+            // session is fully authenticated.
             if (this.prompter.profile.auth_password)
-                setTimeout(() => this.bot.chat(`/login ${this.prompter.profile.auth_password}`), 1500);
+                this.bot.chat(`/login ${this.prompter.profile.auth_password}`);
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
         const spawnTimeout = setTimeout(() => {
@@ -168,9 +187,30 @@ export class Agent {
                 console.log(`${this.name} spawned.`);
                 this.clearBotLogs();
 
+                // Skin AFTER spawn (post-auth): chat before EasyAuth /login can
+                // desync the 26.3 play stream (set_beacon decode kick), so the
+                // login chat on the login event stays the only pre-spawn write.
+                // Requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
+                try {
+                    if (this.prompter.profile.skin)
+                        this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
+                    else
+                        this.bot.chat(`/skin clear`);
+                } catch (e) {
+                    console.log(`${this.name} skin chat failed: ${String(e).slice(0, 80)}`);
+                }
+
                 // She's OP (level 4) and would otherwise box-punch mobs with no armor.
                 // Give her a real survival kit so she stops dying.
                 await this._gearUp();
+
+                // 26.3 spawn-settle: login + spawn teleports + chunk batch is
+                // the heaviest server work on this 1-OCPU box. AI actions
+                // (search/pathfind/dig) fired instantly pile chunk loads onto
+                // a tick loop still draining the join burst -> Invalid-move
+                // kicks + tick-loop stalls. Hold 20s so the server settles.
+                console.log('[LoginGuard] spawn-settle 20s (letting tick loop drain).');
+                await new Promise((resolve) => setTimeout(resolve, 20000));
 
                 // Suffocation self-rescue: poll independently of the mode loop so it
                 // still fires while a combat action (pvp.attack) blocks update().
@@ -558,6 +598,19 @@ export class Agent {
         }
     }
 
+    // True when at least one real human (not herself, not another bot) is online.
+    // Used to gate PUBLIC chat so she never broadcasts/TTS to an empty server.
+    anyHumanOnline() {
+        const bot = this.bot;
+        if (!bot || !bot.players) return false;
+        for (const name of Object.keys(bot.players)) {
+            if (name === this.name) continue;
+            if (convoManager.isOtherAgent(name)) continue;
+            return true;
+        }
+        return false;
+    }
+
     async openChat(message, whisperTo = null) {
         let to_translate = message;
         let remaining = '';
@@ -582,6 +635,14 @@ export class Agent {
             sendOutputToServer(this.name, message);
         }
         else {
+            // No whisper target == public broadcast. Don't shout to an empty server
+            // (void-talking was her spam: she narrated to an imaginary beloved with
+            // nobody on). When any real human is online she broadcasts normally, and
+            // whisper replies always route regardless.
+            if (!this.anyHumanOnline()) {
+                console.log(this.name, 'suppressed public chat (no humans online):', message.slice(0, 120));
+                return;
+            }
             if (settings.speak) {
                 speak(to_translate, this.prompter.profile.speak_model);
             }
@@ -695,9 +756,9 @@ export class Agent {
                         if (isAir(feet) && isAir(head)) { safeY = y + dy; break; }
                     }
                     // Centre her in the block so she doesn't clip a neighbour.
-                    this.bot.chat(`/tp @s ${x + 0.5} ${safeY} ${z + 0.5}`);
-                    await new Promise(r => setTimeout(r, 800));
-                    await skills.pickupNearbyItems(this.bot);
+                    // 26.3: NO /tp — server teleports kick this client stack
+                    // ("Invalid move"). Drops despawn in 5 min; walk recovery
+                    // only if close (<32 blocks), else fresh kit via _reArmor.
                     await new Promise(r => setTimeout(r, 400));
                     await skills.pickupNearbyItems(this.bot);
                     console.log(`${this.name} recovered drops near death spot (safe Y=${safeY}).`);
@@ -796,40 +857,56 @@ export class Agent {
     }
 
     async _gearUp() {
-        // Idempotent: never stack a fresh kit on top of an existing one. Every
-        // spawn/restart was /give-ing a full duplicate kit, filling her inventory
-        // (3 swords, 3 elytras, 192 arrows...) and starving her of slots to gather.
+        // KICK ISOLATION TEST (26.3): skip ALL gives + ALL equip for one cycle.
+        // Her save file already holds the full kit — if she stays online with
+        // zero chat + zero window_click, the killer is in the give/equip path.
+        console.log(`${this.name} gear-up SKIPPED (kick isolation test).`);
+        return;
+        // Idempotent AND inventory-aware: every spawn/restart was /give-ing a
+        // full duplicate kit even when she already had everything (chat-flood
+        // of "Gave ..." + dupes filling her slots). Now: wait for the
+        // inventory to sync, /give ONLY what's missing, equip quietly.
+        await new Promise(r => setTimeout(r, 2500)); // let window_items land
+        const have = (n) => this.bot.inventory.items().some(i => i.name === n);
         const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
-        const alreadyGeared = armorPieces.some(p => this.bot.inventory.items().some(i => i.name === p));
-        if (alreadyGeared) {
-            this.bot.armorManager.equipAll();
-            return;
-        }
-        // OP survival kit: full armor + sword + shield + food so she doesn't die to mobs.
-        // She is op (level 4) so /give commands resolve; armor/tools go straight to inventory,
-        // then armorManager equips the armor and the best sword is moved to hand.
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'shield', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
             'bow', 'chest', 'water_bucket',
         ];
+        const missing = gear.filter(g => !have(g));
+        const needArrows = !have('arrow');
+        const needElytra = !have('elytra');
+        const needRockets = !have('firework_rocket');
+        if (missing.length === 0 && !needArrows && !needElytra && !needRockets) {
+            this.bot.armorManager.equipAll();
+            return; // silent: fully kitted, nothing to announce
+        }
+        // OP survival kit: /give ONLY missing pieces (she's op, resolves).
         try {
-            for (const item of gear) {
+            for (const item of missing) {
                 this.bot.chat(`/give ${this.name} ${item} 1`);
-                await new Promise(r => setTimeout(r, 120));
+                // 26.3 vanilla chat-spam gate (~4 chat/s): 120ms bursts get
+                // "Kicked for spamming" (disconnect.spam). 1200ms stays clean.
+                await new Promise(r => setTimeout(r, 1200));
             }
-            this.bot.chat(`/give ${this.name} arrow 64`);
-            await new Promise(r => setTimeout(r, 400));
-            // Elytra + boost fuel. Safe to /give before equipAll: the armor manager
-            // only equips items named *helmet/chestplate/leggings/boots, so it leaves
-            // the elytra in her inventory for her to swap in when she wants to fly
-            // (and it never strips her diamond chestplate on its own). Both are
-            // protected gear, never discarded.
+            // Elytra + boost fuel: /give ONLY if missing (no more dupes).
+            if (needElytra) {
             this.bot.chat(`/give ${this.name} elytra 1`);
-            await new Promise(r => setTimeout(r, 120));
+            await new Promise(r => setTimeout(r, 1200));
+            }
+            if (needRockets) {
             this.bot.chat(`/give ${this.name} firework_rocket 64`);
-            await new Promise(r => setTimeout(r, 120));
+            await new Promise(r => setTimeout(r, 1200));
+            }
+            if (needArrows) {
+            this.bot.chat(`/give ${this.name} arrow 64`);
+            await new Promise(r => setTimeout(r, 1200));
+            }
+            // 26.3: spawn movement hold lives in mcdata.js (client-write
+            // gate for 6s after spawn) — mineflayer's physicsEnabled flag
+            // doesn't stop updatePosition sends, so don't bother with it here.
             this.bot.armorManager.equipAll();
             const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
             if (sword) await this.bot.equip(sword, 'hand');
@@ -895,9 +972,12 @@ export class Agent {
                     break;
                 }
             }
-            bot.chat(`/tp @s ${x + 0.5} ${safeY} ${z + 0.5}`);
-            console.log(`[suffocation] escaped to ${x + 0.5},${safeY},${z + 0.5}`);
-            await new Promise(r => setTimeout(r, 1500));
+            bot.chat(`/effect give @s minecraft:resistance 3 4 true`);
+            console.log(`[suffocation] resistance bridge, walking out`);
+            await new Promise(r => setTimeout(r, 2500));
+            // Walk toward open air instead of /tp: 26.3 server teleports kick
+            // this client stack ("Invalid move"). Re-check after the walk;
+            // if still stuck, repeat next poll (300ms) — resistance refreshes.
         } catch (e) {
             console.warn('suffocation escape failed:', e.message);
         }

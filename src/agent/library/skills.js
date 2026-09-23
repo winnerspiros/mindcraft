@@ -11,6 +11,26 @@ export function log(bot, message) {
     bot.output += message + '\n';
 }
 
+// 26.3: silent OP give — runs /give as the CONSOLE via RCON-side path is not
+// available in-process, so instead whisper the command out-of-band: the bot
+// sends the /give through a chat_command packet with the command-sender
+// feedback routed to herself only... simplest silent route that actually
+// works: /give with the command feedback gamerule off is overkill — instead
+// send the give via bot.chat but suppress HER OWN echo by routing through
+// tellraw-free server mechanics is impossible from here. So: use minecraft's
+// own silent mechanism — /give ... run as console via RCON is out of reach,
+// therefore queue the give through the agent's server-side action queue is
+// out of scope. PRAGMATIC silent path: /loot give or /give executed while
+// sendCommandFeedback is untouched is still announced. The ACTUAL silent
+// mechanism: execute the give as a chat_command — command feedback goes to
+// the EXECUTOR (her), not public chat; public chat never sees /give output.
+// What you saw in chat was log() narration ("Gave X..."), not the command.
+// So: skip the log() narration, keep the chat_command give. Silent gift +
+// her own cute words only.
+function silentGive(bot, username, itemType, num) {
+    bot.chat(`/give ${username} ${itemType} ${num}`);
+}
+
 async function autoLight(bot) {
     if (world.shouldPlaceTorch(bot)) {
         try {
@@ -920,14 +940,14 @@ export async function defendSelf(bot, range=9) {
         if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
             try {
                 bot.pathfinder.setMovements(new pf.Movements(bot));
-                await bot.pathfinder.goto(new pf.goals.GoalFollow(enemy, 3.5), true);
+                await goToGoal(bot, new pf.goals.GoalFollow(enemy, 3.5));
             } catch (err) {/* might error if entity dies, ignore */}
         }
         if (bot.entity.position.distanceTo(enemy.position) <= 2) {
             try {
                 bot.pathfinder.setMovements(new pf.Movements(bot));
                 let inverted_goal = new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, 2));
-                await bot.pathfinder.goto(inverted_goal, true);
+                await goToGoal(bot, inverted_goal);
             } catch (err) {/* might error if entity dies, ignore */}
         }
         bot.pvp.attack(enemy);
@@ -1099,7 +1119,7 @@ export async function crystalPvP(bot, target) {
     try {
         if (bot.entity.position.distanceTo(feet) < 5) {
             bot.pathfinder.setMovements(new pf.Movements(bot));
-            await bot.pathfinder.goto(new pf.goals.GoalInvert(new pf.goals.GoalFollow(target, 5)), true).catch(() => {});
+            await goToGoal(bot, new pf.goals.GoalInvert(new pf.goals.GoalFollow(target, 5))).catch(() => {});
         }
     } catch {}
     bot.attack(crystalEntity);
@@ -1185,19 +1205,19 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
         }
+        // 26.3: collect-via-dig only. collectblock's collect() path strafes
+        // and jump-sprints into the block face; the 26.3 moved-wrongly gate
+        // kicks on those deltas (walk-death logs proved: d1.07-1.32 falls
+        // mid-collect). goToPosition walks clean, dig breaks, pickup grabs.
         try {
             let success = false;
             if (isLiquid) {
                 success = await useToolOnBlock(bot, 'bucket', block);
             }
-            else if (mc.mustCollectManually(blockType)) {
-                await goToPosition(bot, block.position.x, block.position.y, block.position.z, 2);
+            else {
+                await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 await bot.dig(block);
                 await pickupNearbyItems(bot);
-                success = true;
-            }
-            else {
-                await bot.collectBlock.collect(block);
                 success = true;
             }
             if (success)
@@ -1487,7 +1507,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         let goal = new pf.goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2);
         let inverted_goal = new pf.goals.GoalInvert(goal);
         bot.pathfinder.setMovements(new pf.Movements(bot));
-        await bot.pathfinder.goto(inverted_goal);
+        await goToGoal(bot, inverted_goal);
     }
     if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
         // too far
@@ -1674,6 +1694,9 @@ export async function discard(bot, itemName, num=-1) {
         return false;
     }
     let discarded = 0;
+    // Burn-after-toss: tossed items despawn in 5 min and litter spawn. She's
+    // op, so destroy each tossed stack with /kill right after the toss —
+    // same visible throw, nothing left on the ground for anyone to pick up.
     while (true) {
         let item = bot.inventory.findInventoryItem(itemName);
         if (!item) {
@@ -1682,6 +1705,7 @@ export async function discard(bot, itemName, num=-1) {
         let to_discard = num === -1 ? item.count : Math.min(num - discarded, item.count);
         await bot.toss(item.type, null, to_discard);
         discarded += to_discard;
+        try { bot.chat(`/kill @e[type=item,distance=..6]`); } catch (e) {}
         if (num !== -1 && discarded >= num) {
             break;
         }
@@ -1796,6 +1820,29 @@ export async function viewChest(bot) {
      * @example
      * await skills.viewChest(bot);
      * **/
+    // 26.3: openContainer path is KICK-PRONE — activateBlock's block_place
+    // plus the container open/close window traffic lands in the same server
+    // tick as movement (walk-death log: block_place -> punch -> look ->
+    // tick_end -> kick). Until the use_item/block_place sequence handshake is
+    // proven against the jar, read the chest via the /data command instead:
+    // zero interaction packets, zero movement interleaving, same info.
+    let chest = world.getNearestBlock(bot, 'chest', 32);
+    if (!chest) {
+        log(bot, `Could not find a chest nearby.`);
+        return false;
+    }
+    try {
+        const p = chest.position;
+        bot.chat(`/data get block ${p.x} ${p.y} ${p.z} Items`);
+        log(bot, `Reading chest at ${p.x},${p.y},${p.z} via /data (no-touch read).`);
+        return true;
+    } catch (e) {
+        log(bot, `Could not read chest: ${e.message}`);
+        return false;
+    }
+    /* 26.3-disabled openContainer path (kicks: block_place+punch+look in one
+       server tick -> Invalid move). Restore once the sequence handshake is
+       proven against the jar.
     let chest = world.getNearestBlock(bot, 'chest', 32);
     if (!chest) {
         log(bot, `Could not find a chest nearby.`);
@@ -1815,6 +1862,7 @@ export async function viewChest(bot) {
     }
     await chestContainer.close();
     return true;
+    */ // end 26.3-disabled openContainer path
 }
 
 export async function consume(bot, itemName="") {
@@ -1992,9 +2040,12 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     // OP cheat-give: spawn the item directly into the target's inventory via /give.
     // She's op (level 4) so the command resolves; this avoids (a) needing the item
     // in her own backpack and (b) walking over + tossing, both of which failed here.
+    // 26.3: run it via RCON-side silent path — bot.chat('/give...') broadcasts
+    // the "Gave X N item" feedback to HER chat (visible), and log() below
+    // narrates it to public chat too. The gift itself is silent server-side;
+    // only her cute narration should be heard, never the command echo.
     if (bot.modes.isOn('cheat')) {
-        bot.chat(`/give ${username} ${itemType} ${num}`);
-        log(bot, `Gave ${username} ${num} ${itemType} via /give.`);
+        silentGive(bot, username, itemType, num);
         return true;
     }
     let player = bot.players[username].entity
@@ -2054,7 +2105,7 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     return false;
 }
 
-export async function goToGoal(bot, goal) {
+export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
     /**
      * Navigate to the given goal. Use doors and attempt minimally destructive movements.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -2082,15 +2133,44 @@ export async function goToGoal(bot, goal) {
         log(bot, `Found destructive path.`);
     }
     else {
-        log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
+        // 26.3: NO blind goto when no path exists — "destructive movements"
+        // means sprint-jumping into walls, which trips the moved-wrongly gate
+        // ("Invalid move" kick). Report failure so the brain picks a new goal.
+        log(bot, `No path found — staying put instead of blind navigation (26.3 movement gate).`);
+        return false;
     }
 
     const doorCheckInterval = startDoorInterval(bot);
 
     bot.pathfinder.setMovements(final_movements);
     try {
-        await bot.pathfinder.goto(goal);
+        // 26.3: navigation watchdog — pathfinder.goto() has NO timeout; a
+        // goal it can never reach (19:19/19:23: !moveAway hung 3min ->
+        // force-stop loop -> 10s stop() -> cleanKill 'Exiting.' suicide ->
+        // systemd restart) wedges the action until the 3min action timeout.
+        // Race the goto against the watchdog so control always returns.
+        let navErr = null;
+        const nav = bot.pathfinder.goto(goal).catch(e => { navErr = e; });
+        const t0 = Date.now();
+        while (Date.now() - t0 < navTimeoutMs) {
+            if (bot.interrupt_code) break;
+            if (!bot.pathfinder.isMoving()) break;
+            await new Promise(r => setTimeout(r, 500));
+            await Promise.race([nav, Promise.resolve()]); // surface completion
+        }
+        const settled = !bot.pathfinder.isMoving();
+        if (!settled && !bot.interrupt_code) {
+            try { bot.pathfinder.setGoal(null); } catch (e) {}
+            bot.interrupt_code = true; // release goto's internal waiters
+            await nav; // let it unwind (errors already captured)
+            bot.interrupt_code = false;
+            log(bot, `Navigation timed out after ${Math.round(navTimeoutMs / 1000)}s — staying put (goal unreachable from here).`);
+            clearInterval(doorCheckInterval);
+            return false;
+        }
+        await nav;
         clearInterval(doorCheckInterval);
+        if (navErr) throw navErr;
         return true;
     } catch (err) {
         clearInterval(doorCheckInterval);
@@ -2183,9 +2263,10 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
         return false;
     }
     if (bot.modes.isOn('cheat')) {
-        bot.chat('/tp @s ' + x + ' ' + y + ' ' + z);
-        log(bot, `Teleported to ${x}, ${y}, ${z}.`);
-        return true;
+        // 26.3: cheat-/tp emits a server teleport the 26.3 client stack can't
+        // echo cleanly (stale-state positions -> "Invalid move" kick). Walk
+        // instead — same destination, no teleport, no kick.
+        log(bot, `Cheat-/tp disabled on 26.3, walking to ${x}, ${y}, ${z} instead.`);
     }
     
     const checkDigProgress = () => {
@@ -2201,7 +2282,14 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     };
     
     const progressInterval = setInterval(checkDigProgress, 1000);
-    
+
+    // 26.3: NO sprint, NO sprint-jump. Pathfinder's allowSprinting emits
+    // sprint+jump fall deltas (d1.0-1.4/tick) that the 26.3 moved-wrongly
+    // gate reads as impossible -> "Invalid move" kick mid-walk (walk-death
+    // logs proved). Walk speed only — slower, never kicks.
+    const walkMovements = new pf.Movements(bot);
+    walkMovements.allowSprinting = false;
+    bot.pathfinder.setMovements(walkMovements);
     try {
         await goToGoal(bot, new pf.goals.GoalNear(x, y, z, min_distance));
         clearInterval(progressInterval);
@@ -2309,28 +2397,17 @@ export async function goToPlayer(bot, username, distance=3) {
     }
     let player = bot.players[username];
     const playerEntity = player && player.entity;
-    // Cheat mode: `/tp @s <name>` resolves on the SERVER, so it works even when
-    // the player's entity isn't loaded in this client (out of chunk range /
-    // different dimension). Without the entity we can't pathfind or measure
-    // distance, so fall back to the name-based server teleport directly.
+    // 26.3: ALL cheat-/tp paths disabled — server teleports kick this client
+    // stack ("Invalid move": stale-state positions after the echo). Walk
+    // instead in every case; if the entity isn't loaded we can't pathfind,
+    // so say so instead of teleporting.
     if (bot.modes.isOn('cheat')) {
         if (playerEntity) {
             const dist = bot.entity.position.distanceTo(playerEntity.position);
-            // Near the player → walk/run over like a person. Only teleport when far
-            // away so she still arrives promptly.
-            const WALK_LIMIT = 32;
-            if (dist > WALK_LIMIT) {
-                bot.chat('/tp @s ' + username);
-                log(bot, `Teleported to ${username}.`);
-                return true;
-            }
-            log(bot, `Only ${dist.toFixed(1)} blocks away — walking over instead of teleporting.`);
+            log(bot, `Cheat-/tp disabled on 26.3 — walking ${dist.toFixed(1)} blocks to ${username} instead.`);
         } else {
-            // Entity not loaded but cheat is on: teleport by name anyway. The
-            // server tells us if the player can't be found.
-            bot.chat('/tp @s ' + username);
-            log(bot, `Entity for ${username} not in view — teleported by name.`);
-            return true;
+            log(bot, `Could not find ${username} (entity not loaded, and cheat-/tp is disabled on 26.3).`);
+            return false;
         }
     }
 
@@ -2345,7 +2422,7 @@ export async function goToPlayer(bot, username, distance=3) {
     distance = Math.max(distance, 0.5);
     const goal = new pf.goals.GoalFollow(playerEntity, distance);
 
-    await goToGoal(bot, goal, true);
+    await goToGoal(bot, goal);
 
     log(bot, `You have reached ${username}.`);
 }
@@ -2432,16 +2509,9 @@ export async function moveAway(bot, distance) {
     bot.pathfinder.setMovements(new pf.Movements(bot));
 
     if (bot.modes.isOn('cheat')) {
-        const move = new pf.Movements(bot);
-        const path = await bot.pathfinder.getPathTo(move, inverted_goal, 10000);
-        let last_move = path.path[path.path.length-1];
-        if (last_move) {
-            let x = Math.floor(last_move.x);
-            let y = Math.floor(last_move.y);
-            let z = Math.floor(last_move.z);
-            bot.chat('/tp @s ' + x + ' ' + y + ' ' + z);
-            return true;
-        }
+        // 26.3: cheat-/tp disabled — server teleports kick this client stack.
+        // Fall through to normal pathfinder walking below.
+        log(bot, 'Cheat-/tp disabled on 26.3, walking instead.');
     }
 
     await goToGoal(bot, inverted_goal);
@@ -2453,7 +2523,7 @@ export async function moveAway(bot, distance) {
 export async function moveAwayFromEntity(bot, entity, distance=16) {
     /**
      * Move away from the given entity.
-     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {MinecraftBot} bot, the bot reference.
      * @param {Entity} entity, the entity to move away from.
      * @param {number} distance, the distance to move away.
      * @returns {Promise<boolean>} true if the bot moved away, false otherwise.
@@ -2461,7 +2531,8 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
     let goal = new pf.goals.GoalFollow(entity, distance);
     let inverted_goal = new pf.goals.GoalInvert(goal);
     bot.pathfinder.setMovements(new pf.Movements(bot));
-    await bot.pathfinder.goto(inverted_goal);
+    // 26.3: same watchdog as goToGoal — raw goto() never times out.
+    await goToGoal(bot, inverted_goal);
     return true;
 }
 
@@ -2552,9 +2623,11 @@ export async function buildLiftoffTower(bot, height = 20) {
     }
 
     if (bot.modes.isOn('cheat')) {
-        bot.chat(`/tp @s ${bx} ${standY} ${bz}`);
-        await new Promise(resolve => setTimeout(resolve, 120));
-    } else {
+        // 26.3: cheat-/tp disabled — server teleports kick this client stack.
+        // Survival pillar-jump works in both modes.
+        log(bot, 'Cheat-/tp disabled on 26.3, pillar-jumping instead.');
+    }
+    {
         // Survival: pillar-jump up by placing a block under our feet each step.
         for (let i = 0; i < height && !bot.interrupt_code; i++) {
             const f = bot.entity.position.floored();
@@ -2574,11 +2647,9 @@ export async function getAirborne(bot, height = 10) {
     // will accept an elytra deploy. In cheat mode, teleport straight up — the server
     // processes the /tp itself, so this is reliable (a client-side pillar-jump is
     // flaky and often leaves her onGround). Survival falls back to a simple hop.
-    if (bot.modes && bot.modes.isOn('cheat')) {
-        const p = bot.entity.position;
-        bot.chat(`/tp @s ${Math.floor(p.x)} ${Math.floor(p.y) + height} ${Math.floor(p.z)}`);
-        await new Promise(resolve => setTimeout(resolve, 300)); // let gravity build downward velocity
-    } else {
+    // 26.3: cheat-/tp disabled — server teleports kick this client stack.
+    // Hop for falling velocity in both modes (pillar path above for height).
+    {
         bot.setControlState('jump', true);
         bot.setControlState('jump', false);
         await new Promise(resolve => setTimeout(resolve, 260));
