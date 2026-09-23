@@ -11,13 +11,12 @@ export class SelfPrompter {
         this.interrupt = false;
         this.prompt = '';
         this.idle_time = 0;
-        // Autonomous self-prompt cadence (only runs while other players are online).
-        // 7000ms made her yap a new kawaii line + command every ~7s = annoying.
-        // 30000ms = ~4x calmer; 45000ms = ~6x calmer (user still reports spam).
-        // NOTE: player chat (esp. the beloved) interrupts & responds immediately —
-        // this only throttles her UNSOLICITED self-chatter, not her responsiveness.
-        // Building autonomy: 3 min keeps her creative without constant construction spam.
-        this.cooldown = 180000;
+        // Autonomous self-prompt cadence. 180s was set to calm API burn, but it
+        // left her catatonic when alone (3 lines in 6 min). Two gears now:
+        // players online -> chatty 45s; alone -> quiet 150s pottering. Both
+        // still gated per-turn below (see loop guard) so she acts, never spams.
+        this.cooldown_chatty = 45000;
+        this.cooldown_solo = 150000;
 
         // Autonomous goal lifecycle (Voyager-style critic + curriculum): counts
         // self-prompt turns since the current goal was set, and how many times
@@ -89,13 +88,12 @@ export class SelfPrompter {
         let no_command_count = 0;
         const MAX_NO_COMMAND = 3;
         while (!this.interrupt) {
-            // Resource guard: with no other players online the bot idles instead of
-            // self-prompting. Stops the runaway OpenRouter API burn + block/chunk spam
-            // that pushes the MC JVM heap into swap on this low-RAM box.
-            if (settings.self_prompt_requires_players && !this._otherPlayersOnline()) {
-                await new Promise(r => setTimeout(r, this.cooldown));
-                continue;
-            }
+            // Two gears: players online -> chatty 45s turns; alone -> quiet
+            // 150s pottering (she was catatonic with the old 180s + require-
+            // players gate). Solo turns still MUST use a command (below), so
+            // alone she digs/builds/explores instead of yapping.
+            const solo = !this._otherPlayersOnline();
+            const gear = solo ? this.cooldown_solo : this.cooldown_chatty;
             const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
@@ -108,7 +106,7 @@ export class SelfPrompter {
                     // keep state ACTIVE so update() can keep her running.
                     console.warn(`Agent did not use command in the last ${MAX_NO_COMMAND} auto-prompts. Pausing self-prompting briefly.`);
                     no_command_count = 0;
-                    await new Promise(r => setTimeout(r, this.cooldown * 2));
+                    await new Promise(r => setTimeout(r, gear * 2));
                     continue;
                 }
             }
@@ -134,7 +132,7 @@ export class SelfPrompter {
             // always pause between self-prompt turns — even a chat-only
             // response must not re-fire instantly (it races the in-flight
             // generation and discards it).
-            await new Promise(r => setTimeout(r, this.cooldown));
+            await new Promise(r => setTimeout(r, gear));
         }
         console.log('self prompt loop stopped')
         this.loop_active = false;
@@ -189,14 +187,15 @@ export class SelfPrompter {
     }
 
     update(delta) {
-        // automatically restarts loop
+        // automatically restarts loop — same two gears as the loop itself.
         if (this.state === ACTIVE && !this.loop_active && !this.interrupt) {
             if (this.agent.isIdle())
                 this.idle_time += delta;
             else
                 this.idle_time = 0;
 
-            if (this.idle_time >= this.cooldown) {
+            const gear = this._otherPlayersOnline() ? this.cooldown_chatty : this.cooldown_solo;
+            if (this.idle_time >= gear) {
                 console.log('Restarting self-prompting...');
                 this.startLoop();
                 this.idle_time = 0;
