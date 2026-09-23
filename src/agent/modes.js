@@ -471,19 +471,22 @@ const modes_list = [
         on: true,
         active: false,
         hop_until: 0,
-        next_hop: Date.now() + 99999999, // 26.3: idle hopping disabled — jump+dash
-        // races the server's movement gate ("Invalid move" kicks on join when
-        // a player is nearby). Re-enable once the 26.3 client stack is proven.
+        next_hop: Date.now() + 8000, // 26.3 restore: hops back, gated — jump
+        // is a local physics input (no teleport), proven clean in walk-death
+        // windows. First hop no earlier than 8s idle so spawn-settle drains.
         spam_until: 0,
         next_spam: Date.now() + 4000,
         next_toggle: 0,
         sneaking: false,
         dash_until: 0,
-        next_dash: Date.now() + 99999999, // 26.3: see above — sprint-dash disabled
+        next_dash: Date.now() + 99999999, // 26.3: sprint-dash STAYS off —
+        // sprint+forward at walk-gate speeds is the d1.0-1.4 shape; re-test
+        // only after walk + hop prove a full cycle clean.
         twirl_until: 0,
         twirl_next_snap: 0,
         twirl_base_yaw: 0,
-        next_twirl: Date.now() + 99999999, // 26.3: see above — twirl disabled
+        next_twirl: Date.now() + 15000, // 26.3 restore: twirl back — pure
+        // look packets, already gated by physics.js look-hold + shouldSendLook.
         update: function (agent) {
             const bot = agent.bot;
             const recently_hurt = Date.now() - bot.lastDamageTime < 4000;

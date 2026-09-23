@@ -857,10 +857,20 @@ export class Agent {
     }
 
     async _gearUp() {
-        // KICK ISOLATION TEST (26.3): skip ALL gives + ALL equip for one cycle.
-        // Her save file already holds the full kit — if she stays online with
-        // zero chat + zero window_click, the killer is in the give/equip path.
-        console.log(`${this.name} gear-up SKIPPED (kick isolation test).`);
+        // STAGED gear-up (26.3 restore step 1): the kick-isolation skip is
+        // over — dig/punch packets are proven clean, window_click was never
+        // in a walk-death fatal window. Stage 1 = equip what's in her save
+        // file ONLY (zero packets beyond normal equip, quietest possible).
+        // Stage 2 (missing-only chat-/give) arms on the NEXT restart after
+        // stage 1 proves a full cycle with zero kicks.
+        try {
+            this.bot.armorManager.equipAll();
+            const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
+            if (sword) await this.bot.equip(sword, 'hand');
+            console.log(`${this.name} gear-up stage 1: equipped save-file kit (no /give this cycle).`);
+        } catch (e) {
+            console.warn('gear-up stage 1 failed (non-fatal):', e.message);
+        }
         return;
         // Idempotent AND inventory-aware: every spawn/restart was /give-ing a
         // full duplicate kit even when she already had everything (chat-flood
