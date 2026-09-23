@@ -2208,9 +2208,12 @@ export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
         const settled = !bot.pathfinder.isMoving();
         if (!settled && !bot.interrupt_code) {
             try { bot.pathfinder.setGoal(null); } catch (e) {}
-            bot.interrupt_code = true; // release goto's internal waiters
-            await nav; // let it unwind (errors already captured)
-            bot.interrupt_code = false;
+            try { bot.pathfinder.stop(); } catch (e) {}
+            // 26.3: do NOT toggle interrupt_code to release goto — the OLD code
+            // set it true then false, which corrupted stop()/resume state and
+            // wedged the NEXT action (20:32: wedged goto -> 10s stop -> suicide).
+            // setGoal(null)+stop() releases goto's waiters on its own; the
+            // watchdog just stops waiting and reports.
             log(bot, `Navigation timed out after ${Math.round(navTimeoutMs / 1000)}s — staying put (goal unreachable from here).`);
             clearInterval(doorCheckInterval);
             return false;
