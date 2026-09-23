@@ -1272,7 +1272,7 @@ export async function pickupNearbyItems(bot) {
 }
 
 
-export async function breakBlockAt(bot, x, y, z) {
+export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 45000) {
     /**
      * Break the block at the given position. Will use the bot's equipped item.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -1285,6 +1285,7 @@ export async function breakBlockAt(bot, x, y, z) {
      * await skills.breakBlockAt(bot, position.x, position.y - 1, position.x);
      **/
     if (x == null || y == null || z == null) throw new Error('Invalid position to break block at.');
+    if (bot.interrupt_code) return false; // 26.3: never start work while stopping
     let block = bot.blockAt(Vec3(x, y, z));
     if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
         if (bot.entity.position.distanceTo(block.position) > 4.5) {
@@ -1293,7 +1294,7 @@ export async function breakBlockAt(bot, x, y, z) {
             movements.canPlaceOn = false;
             movements.allow1by1towers = false;
             bot.pathfinder.setMovements(movements);
-            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4), navTimeoutMs);
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
@@ -1303,7 +1304,22 @@ export async function breakBlockAt(bot, x, y, z) {
                 return false;
             }
         }
-        await bot.dig(block, true);
+        // 26.3: dig-timeout race — bot.dig() awaits a server ack that may never
+        // come; without a cap this wedges the action into the 3min timeout.
+        // On timeout stop digging and report failure so the brain moves on.
+        try {
+            await Promise.race([
+                bot.dig(block, true),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), 25000)),
+            ]);
+        } catch (e) {
+            try { bot.stopDigging(); } catch (_) {}
+            if (String((e && e.message) || e).includes('dig-timeout')) {
+                log(bot, `Dig timed out on ${block.name}, moving on.`);
+                return false;
+            }
+            throw e;
+        }
         await pickupNearbyItems(bot);
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
@@ -2149,14 +2165,17 @@ export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
         // force-stop loop -> 10s stop() -> cleanKill 'Exiting.' suicide ->
         // systemd restart) wedges the action until the 3min action timeout.
         // Race the goto against the watchdog so control always returns.
+        // 20:00/20:05 !digDown(10)/(5) hung the same way: digDown's loop calls
+        // breakBlockAt per block, each re-pathing through goToGoal — every
+        // leg burns pathfind+nav budget and the action never returns.
         let navErr = null;
         const nav = bot.pathfinder.goto(goal).catch(e => { navErr = e; });
         const t0 = Date.now();
         while (Date.now() - t0 < navTimeoutMs) {
             if (bot.interrupt_code) break;
             if (!bot.pathfinder.isMoving()) break;
-            await new Promise(r => setTimeout(r, 500));
-            await Promise.race([nav, Promise.resolve()]); // surface completion
+            await new Promise(r => setTimeout(r, 200));
+            if (Date.now() - t0 >= navTimeoutMs) break;
         }
         const settled = !bot.pathfinder.isMoving();
         if (!settled && !bot.interrupt_code) {
@@ -3410,8 +3429,16 @@ export async function digDown(bot, distance = 10) {
      * await skills.digDown(bot, 10);
      **/
 
+    // 26.3: per-call block cap + interrupt checks. digDown(10) with a 45s nav
+    // leg per block wedged past the 3min action timeout (20:00/20:05 suicides).
+    // 6 blocks max per call — the brain re-issues to continue deeper.
+    const capped = Math.min(Math.max(distance, 1), 6);
     let start_block_pos = bot.blockAt(bot.entity.position).position;
-    for (let i = 1; i <= distance; i++) {
+    for (let i = 1; i <= capped; i++) {
+        if (bot.interrupt_code) {
+            log(bot, `Dig interrupted after ${i-1} blocks.`);
+            return false;
+        }
         const targetBlock = bot.blockAt(start_block_pos.offset(0, -i, 0));
         let belowBlock = bot.blockAt(start_block_pos.offset(0, -i-1, 0));
 
@@ -3447,13 +3474,16 @@ export async function digDown(bot, distance = 10) {
             continue;
         }
 
-        let dug = await breakBlockAt(bot, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z);
+        let dug = await breakBlockAt(bot, targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 12000);
         if (!dug) {
             log(bot, 'Failed to dig block at position:' + targetBlock.position);
             return false;
         }
     }
-    log(bot, `Dug down ${distance} blocks.`);
+    if (capped < distance)
+        log(bot, `Dug down ${capped} blocks (capped per call — re-issue to go deeper).`);
+    else
+        log(bot, `Dug down ${capped} blocks.`);
     return true;
 }
 

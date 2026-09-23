@@ -857,21 +857,15 @@ export class Agent {
     }
 
     async _gearUp() {
-        // STAGED gear-up (26.3 restore step 1): the kick-isolation skip is
-        // over — dig/punch packets are proven clean, window_click was never
-        // in a walk-death fatal window. Stage 1 = equip what's in her save
-        // file ONLY (zero packets beyond normal equip, quietest possible).
-        // Stage 2 (missing-only chat-/give) arms on the NEXT restart after
-        // stage 1 proves a full cycle with zero kicks.
+        // STAGED gear-up (26.3 restore step 2): stage 1 (equip save-file kit)
+        // proved clean, so missing-only chat-/give is armed. Still idempotent:
+        // wait for inventory sync, /give ONLY what's missing at 1200ms spacing
+        // (under the vanilla chat-spam gate), equip quietly, no dupes.
         try {
             this.bot.armorManager.equipAll();
-            const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
-            if (sword) await this.bot.equip(sword, 'hand');
-            console.log(`${this.name} gear-up stage 1: equipped save-file kit (no /give this cycle).`);
         } catch (e) {
-            console.warn('gear-up stage 1 failed (non-fatal):', e.message);
+            console.warn('gear-up equip failed (non-fatal):', e.message);
         }
-        return;
         // Idempotent AND inventory-aware: every spawn/restart was /give-ing a
         // full duplicate kit even when she already had everything (chat-flood
         // of "Gave ..." + dupes filling her slots). Now: wait for the
