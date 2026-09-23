@@ -143,6 +143,18 @@ const modes_list = [
                 this.stuck_time = 0;
                 return; // don't get stuck when idle
             }
+            // 26.3: never fire while following — a stationary follow target
+            // looks identical to stuck (19:12:30 self-kill: unstuck interrupted
+            // !followPlayer, moveAway made no progress, 20s crashTimeout ran
+            // cleanKill 'Exiting.' -> exit 1 -> systemd restart loop).
+            try {
+                const label = agent.actions && agent.actions.currentActionLabel;
+                if (label && label.includes('followPlayer')) {
+                    this.prev_location = null;
+                    this.stuck_time = 0;
+                    return;
+                }
+            } catch (e) {}
             const bot = agent.bot;
             const cur_dig_block = bot.targetDigBlock;
             if (cur_dig_block && !this.prev_dig_block) {
@@ -161,7 +173,11 @@ const modes_list = [
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
                 execute(this, agent, async () => {
-                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 20000);
+                    // 26.3: NO self-kill while freeing. The old
+                    // crashTimeout->cleanKill('Exiting.') suicide turned a
+                    // still-stuck moment into a hard restart loop (19:12:30).
+                    // If she's still stuck after the sequence, just say so —
+                    // the brain/operator decides, the bot never kills itself.
                     const start = bot.entity.position.clone();
                     await skills.moveAway(bot, 5);
                     await new Promise(r => setTimeout(r, 600));
@@ -181,7 +197,6 @@ const modes_list = [
                         bot.setControlState('jump', false);
                         await skills.moveAway(bot, 5);
                     }
-                    clearTimeout(crashTimeout);
                     say(agent, 'I\'m free.');
                 });
             }
@@ -402,7 +417,19 @@ const modes_list = [
             }
 
             if (target && this.staring) {
-                if (isPlayer) {
+                // 26.3: stare via throttled lookAt (max 1 head-turn per 600ms
+                // in physics.js) so the look never races updatePosition's own
+                // send inside the same tick window. Full stare behavior kept.
+                // 26.3: HOLD stare while spawn-frozen or within the 10s
+                // look-hold after a server teleport (walk-death 17:49:57:
+                // stare looks every 44-51ms for 36s straight, zero positions
+                // -> Invalid move). Angles are cheap to skip; the entity yaw
+                // hasn't settled anyway. Stare resumes automatically after.
+                if (bot.physics && bot.physics.shouldSendLook
+                    ? !bot.physics.shouldSendLook()
+                    : false) {
+                    // gated: skip this tick's head-turn
+                } else if (isPlayer) {
                     // aim at eye height (~1.62), not the top of the head
                     bot.lookAt(target.position.offset(0, 1.62, 0));
                 } else {
@@ -419,6 +446,8 @@ const modes_list = [
                 // keep staring far more often when it's a person
                 this.staring = Math.random() < (isPlayer ? 0.8 : 0.3);
                 if (!this.staring) {
+                    // 26.3: glance-away goes through the same throttled lookAt
+                    // path (see physics.js) — safe with players near.
                     const yaw = Math.random() * Math.PI * 2;
                     const pitch = (Math.random() * Math.PI / 2) - Math.PI / 4;
                     bot.look(yaw, pitch, false);
@@ -442,17 +471,19 @@ const modes_list = [
         on: true,
         active: false,
         hop_until: 0,
-        next_hop: Date.now(),
+        next_hop: Date.now() + 99999999, // 26.3: idle hopping disabled — jump+dash
+        // races the server's movement gate ("Invalid move" kicks on join when
+        // a player is nearby). Re-enable once the 26.3 client stack is proven.
         spam_until: 0,
         next_spam: Date.now() + 4000,
         next_toggle: 0,
         sneaking: false,
         dash_until: 0,
-        next_dash: Date.now() + 8000,
+        next_dash: Date.now() + 99999999, // 26.3: see above — sprint-dash disabled
         twirl_until: 0,
         twirl_next_snap: 0,
         twirl_base_yaw: 0,
-        next_twirl: Date.now() + 6000,
+        next_twirl: Date.now() + 99999999, // 26.3: see above — twirl disabled
         update: function (agent) {
             const bot = agent.bot;
             const recently_hurt = Date.now() - bot.lastDamageTime < 4000;
@@ -467,7 +498,9 @@ const modes_list = [
             }
             const now = Date.now();
 
-            // 1) crouch-spam: rapid sneak toggles during a short burst, then rest
+            // 1) crouch-spam: FIXED on 26.3 — sneak now sends full input state
+            // (see physics.js setControlState), so toggles no longer desync
+            // the server's shift tracking. Spam freely, cutely, kick-free.
             if (now < this.spam_until) {
                 if (now > this.next_toggle) {
                     this.sneaking = !this.sneaking;

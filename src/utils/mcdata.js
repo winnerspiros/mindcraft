@@ -78,34 +78,52 @@ export function initBot(username) {
     // stays silent and doesn't wedge process exit.
     bot.setMaxListeners(0);
 
-    // Throttle position packets to avoid kicks on Paper/Spigot servers
-    // Paper enforces stricter packet rate limits than vanilla, causing ECONNRESET
-    // when mineflayer sends position updates faster than 50ms apart
-    let lastPositionUpdate = 0;
-    let pendingPositionPacket = null;
-    const POSITION_THROTTLE_MS = 50;
-    const originalWrite = bot._client.write.bind(bot._client);
-    bot._client.write = function(name, data) {
-        if (name === 'position' || name === 'position_look' || name === 'look') {
-            const now = Date.now();
-            if (now - lastPositionUpdate < POSITION_THROTTLE_MS) {
-                // Queue this packet so the last position update is never lost
-                if (!pendingPositionPacket) {
-                    pendingPositionPacket = setTimeout(() => {
-                        pendingPositionPacket = null;
-                        lastPositionUpdate = Date.now();
-                        originalWrite(name, data);
-                    }, POSITION_THROTTLE_MS - (now - lastPositionUpdate));
-                }
-                return;
+    // 26.3: NO position throttle. ServerboundClientTickEnd (0xd) pairs with
+    // each position/look send per-tick (receivedPositionThisTick); delaying
+    // position 50ms while tick_end goes out immediately desyncs the gate and
+    // the server kicks "Invalid move player packet received" ~2s after spawn.
+    // physics.js sendTickEnd() already paces sends correctly.
+    // Spawn hold: block ALL movement writes for 6s after every spawn so the
+    // client never streams falling positions before the server acks spawn.
+    // (mineflayer's physicsEnabled flag doesn't stop updatePosition sends.)
+    // 26.3: teleport_confirm is NOT movement — the server REQUIRES it to
+    // finish spawn/teleport placement (awaitingTeleport). Blocking it leaves
+    // the spawn teleport unacked; the server keeps her at the stale pre-join
+    // spot while the client simulates ahead -> moved-wrongly kick on join.
+    const MOVE_PKTS = new Set(['position', 'position_look', 'look', 'flying', 'tick_end']);
+    const _write = bot._client.write.bind(bot._client);
+    let spawnHoldUntil = 0;
+    let spawnedOnce = false;
+    // 26.3: the spawn-hold MUST cover EasyAuth /login (chat_command goes out
+    // ~280ms after config-finish) plus the post-login placement burst.
+    // Re-arming on every 'spawn' event is wrong: mineflayer fires 'spawn' at
+    // login, but the server's placement burst (2 teleports + chunk storm)
+    // runs AFTER — and worse, the hold was BLIND to physics.js's own
+    // burst-quiet/look-hold clocks, so the three gates disagreed and the
+    // first look always leaked at the worst moment (18:30:52: 2 looks 36ms
+    // apart after an 8s hold -> kick). Single 25s hold from the FIRST spawn
+    // covers login + burst + settle; physics.js gates handle the rest.
+    bot.on('spawn', () => { if (!spawnedOnce) { spawnedOnce = true; spawnHoldUntil = Date.now() + 25000; } });
+    // 26.3 walk-death logger: ring-buffer of last 40 sends of ANY kind.
+    // Position-only logging exonerated movement (kicks with d0.00 stand-still);
+    // the killer is a non-position packet in the fatal window — log all names
+    // so the dump shows block_dig/punch/use_item/click interleaving.
+    const POSBUF = [];
+    bot._posBuf = POSBUF;
+    bot._client.write = function (name, data) {
+        if (MOVE_PKTS.has(name) && Date.now() < spawnHoldUntil) return;
+        try {
+            let extra = '';
+            if (data) {
+                if (data.status !== undefined) extra = ' st=' + data.status;
+                else if (data.slot !== undefined) extra = ' slot=' + data.slot;
+                else if (data.hand !== undefined) extra = ' hand=' + data.hand;
             }
-            lastPositionUpdate = now;
-            if (pendingPositionPacket) {
-                clearTimeout(pendingPositionPacket);
-                pendingPositionPacket = null;
-            }
-        }
-        return originalWrite(name, data);
+            const isPos = (name === 'position' || name === 'position_look');
+            POSBUF.push({ t: Date.now(), n: name + extra, x: isPos ? +data.x.toFixed(2) : 0, y: isPos ? +data.y.toFixed(2) : 0, z: isPos ? +data.z.toFixed(2) : 0, g: data && data.onGround ? 1 : 0 });
+            if (POSBUF.length > 40) POSBUF.shift();
+        } catch (e) {}
+        return _write(name, data);
     };
 
     // Suppress PartialReadError for non-critical packets
