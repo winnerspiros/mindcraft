@@ -36,6 +36,19 @@ export class ReliabilityTracker {
         // on next boot correctly signals a hard crash. unlinkSync is synchronous,
         // which is required inside an 'exit' handler.
         process.on('exit', () => this.clearInFlight());
+        // 26.3: systemd stop/restart sends SIGTERM, which does NOT fire 'exit'.
+        // Every manual restart while an action ran orphaned the marker, and the
+        // next boot falsely attributed a crash (+1 crash to a random action —
+        // this is how !collectBlocks/!searchForBlock/!goToCoordinates hit
+        // CRASH_RETIRE=2 with 98%+ success rates). Clear on signals too; only a
+        // true SIGKILL/OOM orphans the marker now, which is the real hard-crash
+        // signal this system was built for.
+        for (const sig of ['SIGTERM', 'SIGINT']) {
+            process.on(sig, () => {
+                try { this.clearInFlight(); } catch (e) {}
+                process.exit(0);
+            });
+        }
         this._recoverCrash();
     }
 

@@ -172,7 +172,14 @@ const modes_list = [
             if (this.stuck_time > max_stuck_time) {
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
-                execute(this, agent, async () => {
+                // 26.3: run the freeing sequence WITHOUT the mode execute()
+                // wrapper. execute() calls actions.stop() which INTERRUPTS the
+                // stuck action and then waits for it — when the stuck action
+                // is itself wedged (pathfinder.goto with no timeout, 20:13:
+                // unstuck interrupting !breakBlock -> both wedged -> 10s
+                // stop() -> cleanKill suicide), the wrapper IS the killer.
+                // Fire-and-forget instead: it only moves/digs, never kills.
+                (async () => {
                     // 26.3: NO self-kill while freeing. The old
                     // crashTimeout->cleanKill('Exiting.') suicide turned a
                     // still-stuck moment into a hard restart loop (19:12:30).
@@ -198,7 +205,7 @@ const modes_list = [
                         await skills.moveAway(bot, 5);
                     }
                     say(agent, 'I\'m free.');
-                });
+                })().catch(e => console.warn('unstuck free-sequence failed (non-fatal):', e.message));
             }
             this.last_time = Date.now();
         },
