@@ -191,6 +191,12 @@ export class RelationshipManager {
         if (trustHit > 0) { d.trust = Math.min(5, 2 + trustHit); d.respect = Math.min(4, 1 + trustHit); }
         if (fearHit > 0) { d.fear = Math.min(5, 2 + fearHit); d.hate = Math.min(4, fearHit); d.annoyance = Math.min(6, 2 + fearHit); }
         if (politeHit > 0 && hateHit === 0 && fearHit === 0) { d.respect = Math.min(4, 1 + politeHit); d.attention = 4; }
+        // Base warmth: any message that reaches her (addressed/nearby — the
+        // caller gates relevance) and isn't mean earns a little love. Without
+        // this only LOVE_WORDS messages paid out, so hundreds of normal chats
+        // summed to love 0 while decay ate the rest (322 interactions, still
+        // stranger). +1/message is slow courtship, not a handout.
+        if (hateHit === 0 && fearHit === 0) { d.love = (d.love || 0) + 1; }
 
         // madness: toying, insincere "it was an accident" and junk gifts raise it.
         // jealousy: being addressed = not ignored, so it drains fast; smooth talk soothes both.
