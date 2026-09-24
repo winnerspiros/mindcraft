@@ -38,6 +38,7 @@ const modes_list = [
         last_dying_shout: 0,
         last_ate: 0,
         last_clutch: 0,
+        last_flee: 0, // 26.3: flee-throttle — moveAway every tick (phantom chip damage refreshes lastDamageTime) stops the self-prompt loop each time and starves brain + idle modes; min 15s between flees
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
@@ -99,6 +100,12 @@ const modes_list = [
                     say(agent, 'I\'m dying!');
                     this.last_dying_shout = Date.now();
                 }
+                // 26.3 flee-throttle: phantom chip hits refresh lastDamageTime
+                // every tick, so an unthrottled execute() stops the self-prompt
+                // loop ~1/s and starves brain + all idle modes (stare/hop/twirl
+                // never fire, she stands still). One flee per 15s is plenty.
+                if (Date.now() - this.last_flee < 15000) return;
+                this.last_flee = Date.now();
                 execute(this, agent, async () => {
                     await skills.moveAway(bot, 20);
                 });

@@ -2662,7 +2662,9 @@ export async function moveAway(bot, distance) {
     const pos = bot.entity.position;
     let goal = new pf.goals.GoalNear(pos.x, pos.y, pos.z, distance);
     let inverted_goal = new pf.goals.GoalInvert(goal);
-    bot.pathfinder.setMovements(new pf.Movements(bot));
+    const mv = new pf.Movements(bot);
+    mv.allowSprinting = false; mv.allowParkour = false; // 26.3 WALK-ONLY — raw Movements defaults sprint+jump into moved-wrongly
+    bot.pathfinder.setMovements(mv);
 
     if (bot.modes.isOn('cheat')) {
         // 26.3: cheat-/tp disabled — server teleports kick this client stack.
@@ -2686,7 +2688,9 @@ export async function moveAwayFromEntity(bot, entity, distance=16) {
      **/
     let goal = new pf.goals.GoalFollow(entity, distance);
     let inverted_goal = new pf.goals.GoalInvert(goal);
-    bot.pathfinder.setMovements(new pf.Movements(bot));
+    const mvFE = new pf.Movements(bot);
+    mvFE.allowSprinting = false; mvFE.allowParkour = false; // 26.3 WALK-ONLY
+    bot.pathfinder.setMovements(mvFE);
     // 26.3: same watchdog as goToGoal — raw goto() never times out.
     await goToGoal(bot, inverted_goal);
     return true;
@@ -3011,7 +3015,9 @@ export async function avoidEnemies(bot, distance=16) {
     while (enemy) {
         const follow = new pf.goals.GoalFollow(enemy, distance+1); // move a little further away
         const inverted_goal = new pf.goals.GoalInvert(follow);
-        bot.pathfinder.setMovements(new pf.Movements(bot));
+        const mvAE = new pf.Movements(bot);
+        mvAE.allowSprinting = false; mvAE.allowParkour = false; // 26.3 WALK-ONLY
+        bot.pathfinder.setMovements(mvAE);
         bot.pathfinder.setGoal(inverted_goal, true);
         await new Promise(resolve => setTimeout(resolve, 500));
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
