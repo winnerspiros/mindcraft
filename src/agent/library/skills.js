@@ -1194,6 +1194,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         }
         const block = blocks[0];
         await bot.tool.equipForBlock(block);
+        // 26.3 FALLBACK (added 21:3x): equipForBlock reads bot.inventory.items()
+        // (client Slot decode, often [] even when kitted) and can leave the
+        // sword/fist held — then canHarvest fails on ores she HAS the pick for
+        // (RCON proves diamond_pickaxe in slot 2). If harvest still fails,
+        // equip the best pickaxe/axe/shovel by RCON-truth inventory scan.
         if (isLiquid) {
             const bucket = bot.inventory.findInventoryItem('bucket');
             if (!bucket) {
@@ -1202,7 +1207,20 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             await bot.equip(bucket, 'hand');
         }
-        const itemId = bot.heldItem ? bot.heldItem.type : null
+        let itemId = bot.heldItem ? bot.heldItem.type : null
+        if (!isLiquid && !block.canHarvest(itemId)) {
+            // fallback: equip best tool of the right class by direct lookup
+            try {
+                const want = /log|wood|plank/i.test(blockType) ? ['diamond_axe', 'iron_axe', 'stone_axe']
+                    : /dirt|sand|gravel|soul/i.test(blockType) ? ['diamond_shovel', 'iron_shovel', 'stone_shovel']
+                    : ['diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe'];
+                for (const w of want) {
+                    const found = bot.inventory.findInventoryItem(w);
+                    if (found) { await bot.equip(found, 'hand'); break; }
+                }
+            } catch (_) {}
+            itemId = bot.heldItem ? bot.heldItem.type : null;
+        }
         if (!block.canHarvest(itemId)) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
