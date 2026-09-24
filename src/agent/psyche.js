@@ -188,8 +188,15 @@ export class Psyche {
             const d = e.position.distanceTo(pos);
             if (d < mobDist) { mobDist = d; mob = e; }
         }
+        // 2) a hostile mob nearby. TUNED 20:2x: was +0.12/sample (~+3.6/min
+        // with boldness 0.5 halving) vs decay ~0.3/min — one spider 10 blocks
+        // away pinned fear at 0.98, which parked her above FEAR_FLEE_THRESHOLD
+        // permanently: cowardice fled everything, self_defense never fired, so
+        // she NEVER fought or protected anyone. Now +0.02 (~+0.6/min, offset
+        // by decay unless the threat is real/close) and scales UP when close.
         if (mob) {
-            fearDelta += 0.12;
+            const closeScale = mobDist <= 5 ? 2.0 : mobDist <= 10 ? 1.0 : 0.5;
+            fearDelta += 0.02 * closeScale;
             sources.push(`a ${mob.name.replace(/_/g, ' ')} is ${Math.round(mobDist)} blocks away`);
         }
 
