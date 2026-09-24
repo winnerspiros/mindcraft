@@ -2534,14 +2534,22 @@ export async function goToPlayer(bot, username, distance=3) {
     // stack ("Invalid move": stale-state positions after the echo). Walk
     // instead in every case; if the entity isn't loaded we can't pathfind,
     // so say so instead of teleporting.
-    if (bot.modes.isOn('cheat')) {
-        if (playerEntity) {
-            const dist = bot.entity.position.distanceTo(playerEntity.position);
-            log(bot, `Cheat-/tp disabled on 26.3 — walking ${dist.toFixed(1)} blocks to ${username} instead.`);
-        } else {
+    // NOTE: this early-return ALSO fires when the mode is on but the entity
+    // is missing — the RCON-position fallback below must run INSTEAD, so this
+    // branch only returns when RCON also has no position (offline/gone).
+    if (bot.modes.isOn('cheat') && !playerEntity) {
+        const rpos_cheat = await rconPlayerPos(username).catch(() => null);
+        if (!rpos_cheat) {
             log(bot, `Could not find ${username} (entity not loaded, and cheat-/tp is disabled on 26.3).`);
             return false;
         }
+        // else: fall through to the RCON-position walker below (rpos re-read
+        // there; this probe was only to decide whether they're truly gone).
+        log(bot, `Cheat-/tp disabled on 26.3 — walking to ${username} by server position instead.`);
+    } else if (playerEntity) {
+        const dist = bot.entity.position.distanceTo(playerEntity.position);
+        if (bot.modes.isOn('cheat'))
+            log(bot, `Cheat-/tp disabled on 26.3 — walking ${dist.toFixed(1)} blocks to ${username} instead.`);
     }
 
     if (!playerEntity) {
