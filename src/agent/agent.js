@@ -852,7 +852,33 @@ export class Agent {
         this.realness.update(delta);
         this.personal.update(delta);
         this.heat.update(delta);
+        // WALL-CLOCK critic, loop-independent (added 20:2x): the self-prompt
+        // loop churns ~1 stop/start per minute (mode fires, chats, seeks), so
+        // neither the per-turn counter nor the in-loop wall clock ever gets a
+        // turn to run the critic (zero [curriculum] lines in 3h). update()
+        // ticks every 300ms no matter what — judge the goal here on a 10min
+        // wall clock, reentrancy-guarded, fully async (never block the tick).
+        this._maybeCritic();
         await this.checkTaskDone();
+    }
+
+    _maybeCritic() {
+        try {
+            const sp = this.self_prompter;
+            if (!sp || !sp.prompt || sp.advancing) return;
+            const now = Date.now();
+            if (!this._lastCriticTick) this._lastCriticTick = 0;
+            if (now - this._lastCriticTick < 10 * 60 * 1000) return;
+            this._lastCriticTick = now;
+            // fire and forget — advanceGoal guards reentry via sp.advancing
+            sp.advanceGoal().then((r) => {
+                if (r && r.done && r.next) {
+                    console.log(`[curriculum] advanced to new goal: "${r.next}"`);
+                    try { sp._lastCriticRun = Date.now(); } catch (_) {}
+                }
+                else if (r && r.done && !r.next) console.log('[curriculum] goal finished, but no next goal proposed.');
+            }).catch((e) => console.warn('tick goal advance failed (non-fatal):', e.message));
+        } catch (_) {}
     }
 
     isIdle() {
