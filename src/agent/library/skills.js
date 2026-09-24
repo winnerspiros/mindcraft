@@ -2209,7 +2209,12 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     // 26.3: WALK everywhere. Default Movements has allowSprinting=true +
     // allowParkour=true, and any destructive-fallback leg inherits them —
     // sprint-jump fall deltas (d1.0-1.4) trip moved-wrongly (walk-death).
-    nonDestructiveMovements.allowSprinting = false;
+    // SPRINT-TRIAL (armed 19:3x, pathfinder index.js:642: sprint only fires on
+    // straight lines / sprint-jump gaps; parkour=false kills the jump half):
+    // allowSprinting flips on ONLY for far legs (dist > 12, goal param), so a
+    // kick lands on one watched leg and reverts with one flag flip.
+    const _sprintLeg = goal && goal._sprintTrial === true;
+    nonDestructiveMovements.allowSprinting = _sprintLeg;
     nonDestructiveMovements.allowParkour = false;
     const dontBreakBlocks = ['glass', 'glass_pane'];
     for (let block of dontBreakBlocks) {
@@ -2570,7 +2575,24 @@ export async function goToPlayer(bot, username, distance=3) {
             for (let leg = 0; leg < 4; leg++) {
                 const fresh = await rconPlayerPos(username).catch(() => null);
                 const t = fresh || rpos;
-                const ok = await goToPosition(bot, Math.floor(t.x), Math.floor(t.y), Math.floor(t.z), Math.max(distance, 2));
+                // SPRINT-TRIAL: far legs (>12 blocks) sprint flat-out
+                // (parkour still off — no sprint-jumps, no fall deltas).
+                let sprintGoal = null;
+                try {
+                    const dx = t.x - bot.entity.position.x, dz = t.z - bot.entity.position.z;
+                    if (Math.hypot(dx, dz) > 12) {
+                        sprintGoal = new pf.goals.GoalNear(Math.floor(t.x), Math.floor(t.y), Math.floor(t.z), Math.max(distance, 2));
+                        sprintGoal._sprintTrial = true;
+                        log(bot, `Sprinting this leg (far, flat).`);
+                    }
+                } catch (_) {}
+                let ok;
+                if (sprintGoal) {
+                    try { ok = await goToGoal(bot, sprintGoal); }
+                    catch (e) { ok = false; log(bot, `Sprint leg stopped: ${e.message}.`); }
+                } else {
+                    ok = await goToPosition(bot, Math.floor(t.x), Math.floor(t.y), Math.floor(t.z), Math.max(distance, 2));
+                }
                 if (!ok) break;
                 // entity rendered mid-walk? switch to live follow
                 const ent = bot.players[username] && bot.players[username].entity;
