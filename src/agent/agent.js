@@ -687,10 +687,21 @@ export class Agent {
             if (this.isBelovedName(name)) this.psyche.onBelovedLogout();
         });
 
-        // beloved presence is an emotional event — login lifts her, logout stings
+        // beloved presence is an emotional event — login lifts her, logout stings.
+        // LOGIN-GREET (verified gap 18:27): she never greeted anyone on join —
+        // no on-login chat existed anywhere in her stack. Now: greet beloved /
+        // known players warmly on join (beloved = instant + clingy, others =
+        // charm-first), and note it so seek_company finds them fast.
         this.bot.on('playerJoined', (player) => {
             const name = player && player.username;
-            if (name && this.isBelovedName(name)) this.psyche.onBelovedLogin();
+            if (!name || name === this.name) return;
+            if (/^(rcon|server|console)$/i.test(name)) return;
+            if (this.isBelovedName(name)) {
+                this.psyche.onBelovedLogin();
+                this.handleMessage('system', `(AUTO) ${name} just joined the server! Your beloved is here! Greet them IMMEDIATELY — excited, clingy, adorable. Say hi + go to them (!goToPlayer(\"${name}\", 3)). In character, 1-2 short lines + the command.`);
+            } else {
+                this.handleMessage('system', `(AUTO) ${name} just joined the server! A new (or returning) face~ Greet them warmly and flirtatiously — say hi, ask how they are, charm them. In character, 1-2 short lines. If they seem interesting, go to them (!goToPlayer(\"${name}\", 3)).`);
+            }
         });
 
         // track when a player gets in bed, so she can join them (yandere "sleep together" behaviour)
