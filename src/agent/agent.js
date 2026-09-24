@@ -871,7 +871,10 @@ export class Agent {
         try {
             const res = await rconEnsureKit(this.name);
             if (res.ok) {
-                console.log(`${this.name} gear-up (RCON): ${res.detail}.`);
+                let clientSeen = '?';
+                try { const items = this.bot.inventory.items(); clientSeen = `${items.length} [${items.map(i => i.name).join(',')}]`; }
+                catch (_) { clientSeen = 'unreadable'; }
+                console.log(`${this.name} gear-up (RCON): ${res.detail}. client-side items(): ${clientSeen}.`);
                 try { this.bot.armorManager.equipAll(); } catch (_) {}
                 return;
             }
