@@ -1,4 +1,5 @@
 import { History } from './history.js';
+import { rconEnsureKit } from '../utils/rcon.js';
 import { Coder } from './coder.js';
 import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
@@ -857,47 +858,33 @@ export class Agent {
     }
 
     async _gearUp() {
-        // STAGED gear-up (26.3 restore step 2): stage 1 (equip save-file kit)
-        // proved clean, so missing-only chat-/give is armed. Still idempotent:
-        // wait for inventory sync, /give ONLY what's missing at 1200ms spacing
-        // (under the vanilla chat-spam gate), equip quietly, no dupes.
+        // 26.3 RCON-arbiter gear-up: client-side Slot/SlotComponent decode is
+        // broken (dozens of identical packet_set_slot -> Slot -> SlotComponent
+        // PartialReadErrors every boot), so bot.inventory.items() reads empty
+        // FOREVER while the server holds a real kit. The 20s stability poll
+        // can never pass — remove it. RCON `data get entity` is the arbiter
+        // (silent, zero chat, zero LLM turns); missing pieces via RCON
+        // `give`/`item replace` (proven live ~15:25: 17 silent gives, zero
+        // chat lines, zero LLM turns). Legacy chat-/give kept as fallback if
+        // RCON itself is unreachable. Still idempotent (missing-only), silent
+        // except one line. keep_inventory OFF: naked after death = RCON kit.
+        try {
+            const res = await rconEnsureKit(this.name);
+            if (res.ok) {
+                console.log(`${this.name} gear-up (RCON): ${res.detail}.`);
+                try { this.bot.armorManager.equipAll(); } catch (_) {}
+                return;
+            }
+            console.warn(`gear-up RCON unavailable (${res.detail}) — legacy chat fallback.`);
+        } catch (e) {
+            console.warn('gear-up RCON threw (non-fatal), legacy chat fallback:', e.message);
+        }
         try {
             this.bot.armorManager.equipAll();
         } catch (e) {
             console.warn('gear-up equip failed (non-fatal):', e.message);
         }
-        // Idempotent AND inventory-aware: every spawn/restart was /give-ing a
-        // full duplicate kit even when she already had everything (chat-flood
-        // of "Gave ..." + dupes filling her slots). Now: wait for the
-        // inventory to sync, /give ONLY what's missing, equip quietly.
-        // 26.3: window_items lands SLOW on 1 OCPU (2.5s wasn't enough — the
-        // post-restart check saw an empty inventory and re-gave the full kit
-        // as dupes). Poll until the inventory is non-empty AND stable across
-        // two consecutive 1s polls (up to 20s) before deciding what's missing.
-        let lastCount = -1, stableRounds = 0;
-        for (let i = 0; i < 20; i++) {
-            await new Promise(r => setTimeout(r, 1000));
-            let n = 0;
-            try { n = this.bot.inventory.items().length; } catch (_) { n = 0; }
-            if (n > 0 && n === lastCount) { stableRounds++; if (stableRounds >= 2) break; }
-            else if (n > 0) { stableRounds = 0; }
-            lastCount = n;
-        }
-        // 26.3: NEVER /give on an empty-read inventory. Empty at this point
-        // means window_items hasn't landed (still syncing), NOT that she's
-        // naked — and /give-on-empty is exactly what stacked the dupe kits
-        // (34 slots, 3x boots/elytra/shields). Skip gives this boot; equip
-        // what's there, next restart sees the real inventory and fills truly
-        // missing pieces. Safe default: under-give, never over-give.
-        let invCount = 0;
-        try { invCount = this.bot.inventory.items().length; } catch (_) { invCount = 0; }
-        if (invCount === 0) {
-            console.log(`${this.name} gear-up: inventory not synced yet — equip-only this boot, no /give (avoids dupe kits).`);
-            try { this.bot.armorManager.equipAll(); } catch (_) {}
-            return;
-        }
-        const have = (n) => this.bot.inventory.items().some(i => i.name === n);
-        const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
+        const have = (n) => { try { return this.bot.inventory.items().some(i => i.name === n); } catch (_) { return false; } };
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'shield', 'cooked_beef',
@@ -909,18 +896,16 @@ export class Agent {
         const needElytra = !have('elytra');
         const needRockets = !have('firework_rocket');
         if (missing.length === 0 && !needArrows && !needElytra && !needRockets) {
-            this.bot.armorManager.equipAll();
+            try { this.bot.armorManager.equipAll(); } catch (_) {}
             return; // silent: fully kitted, nothing to announce
         }
-        // OP survival kit: /give ONLY missing pieces (she's op, resolves).
+        // Legacy path only (RCON down): /give ONLY missing pieces at 1200ms
+        // spacing (under the ~4 chat/s vanilla spam gate).
         try {
             for (const item of missing) {
                 this.bot.chat(`/give ${this.name} ${item} 1`);
-                // 26.3 vanilla chat-spam gate (~4 chat/s): 120ms bursts get
-                // "Kicked for spamming" (disconnect.spam). 1200ms stays clean.
                 await new Promise(r => setTimeout(r, 1200));
             }
-            // Elytra + boost fuel: /give ONLY if missing (no more dupes).
             if (needElytra) {
             this.bot.chat(`/give ${this.name} elytra 1`);
             await new Promise(r => setTimeout(r, 1200));
@@ -933,15 +918,12 @@ export class Agent {
             this.bot.chat(`/give ${this.name} arrow 64`);
             await new Promise(r => setTimeout(r, 1200));
             }
-            // 26.3: spawn movement hold lives in mcdata.js (client-write
-            // gate for 6s after spawn) — mineflayer's physicsEnabled flag
-            // doesn't stop updatePosition sends, so don't bother with it here.
-            this.bot.armorManager.equipAll();
+            try { this.bot.armorManager.equipAll(); } catch (_) {}
             const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
             if (sword) await this.bot.equip(sword, 'hand');
             const shield = this.bot.inventory.items().find(i => i.name === 'shield');
             if (shield) await this.bot.equip(shield, 'off-hand');
-            console.log(`${this.name} geared up: armor equipped, sword in hand.`);
+            console.log(`${this.name} geared up (legacy chat): armor equipped, sword in hand.`);
         } catch (e) {
             console.warn('gear-up failed (non-fatal):', e.message);
         }
