@@ -109,6 +109,27 @@ export class SelfPrompter {
         this.loop_active = true;
         let no_command_count = 0;
         const MAX_NO_COMMAND = 3;
+        // WALL-CLOCK critic (added 20:0x): the old per-turn counter never
+        // reached goal_check_cycles because mode fires / chats / seeks stop +
+        // restart the loop constantly (zero [curriculum] lines in 2h). Time
+        // since the last critic verdict is restart-proof and interruption-
+        // proof — rotation happens on schedule no matter how choppy the loop.
+        const CRITIC_MIN_MS = 8 * 60 * 1000; // judge at most every 8 min
+        if (!this._lastCriticRun) this._lastCriticRun = 0;
+        const maybeCritic = async () => {
+            if (settings.curriculum_enabled === false || settings.critic_enabled === false) return;
+            if (this.advancing) return;
+            const now = Date.now();
+            if (now - this._lastCriticRun < CRITIC_MIN_MS) return;
+            this._lastCriticRun = now;
+            try {
+                const r = await this.advanceGoal();
+                if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
+                else if (r && r.done && !r.next) console.log('[curriculum] goal finished, but no next goal proposed.');
+            } catch (e) {
+                console.warn('wall-clock goal advance failed (non-fatal):', e.message);
+            }
+        };
         while (!this.interrupt) {
             // Two gears: players online -> chatty 45s turns; alone -> quiet
             // 150s pottering (she was catatonic with the old 180s + require-
@@ -135,13 +156,13 @@ export class SelfPrompter {
             else {
                 no_command_count = 0;
             }
-            // Autonomous goal advancement: periodically verify the current goal
-            // and propose a fresh one (critic + curriculum). Throttled so the
-            // extra LLM calls don't burn API $ on this low-RAM box.
+            // Wall-clock critic (see above): per-turn counter kept as a
+            // backstop, but rotation no longer depends on it.
             if (settings.curriculum_enabled !== false && settings.critic_enabled !== false) {
                 this.goal_cycles++;
                 if (this.goal_cycles >= (settings.goal_check_cycles || 5)) {
                     this.goal_cycles = 0;
+                    this._lastCriticRun = Date.now(); // per-turn path ran it — reset the wall clock too
                     try {
                         const r = await this.advanceGoal();
                         if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
@@ -149,6 +170,8 @@ export class SelfPrompter {
                     } catch (e) {
                         console.warn('periodic goal advance failed (non-fatal):', e.message);
                     }
+                } else {
+                    await maybeCritic();
                 }
             }
             // always pause between self-prompt turns — even a chat-only
