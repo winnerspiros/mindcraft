@@ -198,8 +198,14 @@ const modes_list = [
         update: async function (agent) {
             // Flee only when afraid; below the threshold self_defense handles it.
             if ((agent.psyche?.mood?.fear ?? 0) < FEAR_FLEE_THRESHOLD) return;
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 16);
-            if (enemy && await world.isClearPath(agent.bot, enemy)) {
+            const enemy = world.getNearestEntityWhere(agent.bot,
+                entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 16);
+            if (!enemy) return;
+            // 26.3: close-range bypass — the isClearPath no-dig check vetoes
+            // fights it could walk (indoor/forest paths need a step or two).
+            // Within 5 blocks just engage; pathfinder + pvp handle the rest.
+            const close = enemy.position.distanceTo(agent.bot.entity.position) <= 5;
+            if ((close || await world.isClearPath(agent.bot, enemy))) {
                 say(agent, `Aaa! A ${enemy.name.replace("_", " ")}!`);
                 execute(this, agent, async () => {
                     await skills.avoidEnemies(agent.bot, 24);
@@ -216,8 +222,13 @@ const modes_list = [
         update: async function (agent) {
             // Fight only when calm/brave; at/above the threshold cowardice flees.
             if ((agent.psyche?.mood?.fear ?? 0) >= FEAR_FLEE_THRESHOLD) return;
-            const enemy = world.getNearestEntityWhere(agent.bot, entity => mc.isHostile(entity), 14);
-            if (enemy && await world.isClearPath(agent.bot, enemy)) {
+            const enemy = world.getNearestEntityWhere(agent.bot,
+                entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 14);
+            if (!enemy) return;
+            // 26.3: close-range bypass (see cowardice) — within 5 blocks just
+            // fight; the strict no-dig path check sat out real attacks.
+            const close = enemy.position.distanceTo(agent.bot.entity.position) <= 5;
+            if ((close || await world.isClearPath(agent.bot, enemy))) {
                 say(agent, `Fighting ${enemy.name}!`);
                 execute(this, agent, async () => {
                     await skills.defendSelf(agent.bot, 14);
@@ -288,8 +299,11 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
-            const huntable = world.getNearestEntityWhere(agent.bot, entity => mc.isHuntable(entity), 8);
-            if (huntable && await world.isClearPath(agent.bot, huntable)) {
+            const huntable = world.getNearestEntityWhere(agent.bot,
+                entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHuntable(entity), 8);
+            if (!huntable) return;
+            const close = huntable.position.distanceTo(agent.bot.entity.position) <= 5;
+            if ((close || await world.isClearPath(agent.bot, huntable))) {
                 execute(this, agent, async () => {
                     say(agent, `Hunting ${huntable.name}!`);
                     await skills.attackEntity(agent.bot, huntable);
@@ -308,9 +322,20 @@ const modes_list = [
         prev_item: null,
         noticed_at: -1,
         update: async function (agent) {
-            let item = world.getNearestEntityWhere(agent.bot, entity => entity.name === 'item', 8);
+            let item = world.getNearestEntityWhere(agent.bot,
+                entity => entity?.name === 'item' && entity?.position && Number.isFinite(entity.position.x), 8);
             let empty_inv_slots = agent.bot.inventory.emptySlotCount();
-            if (item && item !== this.prev_item && await world.isClearPath(agent.bot, item) && empty_inv_slots > 1) {
+            if (!item || item === this.prev_item || empty_inv_slots <= 1) {
+                this.noticed_at = -1;
+                return;
+            }
+            // 26.3: close-range bypass (see cowardice) — drops at her feet
+            // need no path check; the strict no-dig gate sat out pickups.
+            const close = item.position.distanceTo(agent.bot.entity.position) <= 4;
+            if (!(close || await world.isClearPath(agent.bot, item))) {
+                this.noticed_at = -1;
+                return;
+            }
                 if (this.noticed_at === -1) {
                     this.noticed_at = Date.now();
                 }
@@ -322,10 +347,6 @@ const modes_list = [
                     });
                     this.noticed_at = -1;
                 }
-            }
-            else {
-                this.noticed_at = -1;
-            }
         }
     },
     {
