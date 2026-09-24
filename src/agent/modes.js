@@ -172,40 +172,14 @@ const modes_list = [
             if (this.stuck_time > max_stuck_time) {
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
-                // 26.3: run the freeing sequence WITHOUT the mode execute()
-                // wrapper. execute() calls actions.stop() which INTERRUPTS the
-                // stuck action and then waits for it — when the stuck action
-                // is itself wedged (pathfinder.goto with no timeout, 20:13:
-                // unstuck interrupting !breakBlock -> both wedged -> 10s
-                // stop() -> cleanKill suicide), the wrapper IS the killer.
-                // Fire-and-forget instead: it only moves/digs, never kills.
-                (async () => {
-                    // 26.3: NO self-kill while freeing. The old
-                    // crashTimeout->cleanKill('Exiting.') suicide turned a
-                    // still-stuck moment into a hard restart loop (19:12:30).
-                    // If she's still stuck after the sequence, just say so —
-                    // the brain/operator decides, the bot never kills itself.
-                    const start = bot.entity.position.clone();
-                    await skills.moveAway(bot, 5);
-                    await new Promise(r => setTimeout(r, 600));
-                    if (bot.entity.position.distanceTo(start) < 1.5) {
-                        // still stuck — clear the blocks trapping her, then jump free
-                        const feet = bot.entity.position.floored();
-                        const around = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,2,0],[1,1,0],[-1,1,0],[0,1,1],[0,1,-1]];
-                        for (const [dx,dy,dz] of around) {
-                            const p = feet.offset(dx, dy, dz);
-                            const b = bot.blockAt(p);
-                            if (b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'water' && b.name !== 'lava' && b.name !== 'bedrock') {
-                                await skills.breakBlockAt(bot, p.x, p.y, p.z);
-                            }
-                        }
-                        bot.setControlState('jump', true);
-                        await new Promise(r => setTimeout(r, 800));
-                        bot.setControlState('jump', false);
-                        await skills.moveAway(bot, 5);
-                    }
-                    say(agent, 'I\'m free.');
-                })().catch(e => console.warn('unstuck free-sequence failed (non-fatal):', e.message));
+                // 26.3: OBSERVE-ONLY. The old fire-and-forget free-sequence
+                // drove pathfinder+dig CONCURRENTLY with the running action —
+                // every 20s it hijacked the goal and aborted the action's dig
+                // (log proof 06:0x: 'free-sequence failed: Digging aborted' on
+                // exact 20s cadence, every collect ending 'Failed to collect:
+                // Digging aborted'). Recovery belongs INSIDE the action (nav
+                // watchdog, dig race, inline progress checks) — never in a
+                // concurrent driver. Two drivers, one steering wheel.
             }
             this.last_time = Date.now();
         },
