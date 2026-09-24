@@ -1157,6 +1157,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     let collected = 0;
 
     const movements = new pf.Movements(bot);
+    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
     movements.dontMineUnderFallingBlock = false;
     movements.dontCreateFlow = true;
 
@@ -1285,6 +1286,7 @@ export async function pickupNearbyItems(bot) {
     let pickedUp = 0;
     while (nearestItem) {
         let movements = new pf.Movements(bot);
+    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
         movements.canDig = false;
         bot.pathfinder.setMovements(movements);
         await goToGoal(bot, new pf.goals.GoalFollow(nearestItem, 1));
@@ -1320,6 +1322,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         if (bot.entity.position.distanceTo(block.position) > 4.5) {
             let pos = block.position;
             let movements = new pf.Movements(bot);
+    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
             movements.canPlaceOn = false;
             movements.allow1by1towers = false;
             bot.pathfinder.setMovements(movements);
@@ -1558,6 +1561,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         // too far
         let pos = targetBlock.position;
         let movements = new pf.Movements(bot);
+    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
         bot.pathfinder.setMovements(movements);
         await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
     }
@@ -2186,6 +2190,11 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
      **/
 
     const nonDestructiveMovements = new pf.Movements(bot);
+    // 26.3: WALK everywhere. Default Movements has allowSprinting=true +
+    // allowParkour=true, and any destructive-fallback leg inherits them —
+    // sprint-jump fall deltas (d1.0-1.4) trip moved-wrongly (walk-death).
+    nonDestructiveMovements.allowSprinting = false;
+    nonDestructiveMovements.allowParkour = false;
     const dontBreakBlocks = ['glass', 'glass_pane'];
     for (let block of dontBreakBlocks) {
         nonDestructiveMovements.blocksCantBreak.add(mc.getBlockId(block));
@@ -2194,6 +2203,8 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     nonDestructiveMovements.digCost = 10;
 
     const destructiveMovements = new pf.Movements(bot);
+    destructiveMovements.allowSprinting = false;
+    destructiveMovements.allowParkour = false;
 
     let final_movements = destructiveMovements;
 
@@ -2398,7 +2409,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     // leg at a time via goal.sprint=true (goToPlayer far-leg) once walk proves
     // clean; never blanket-on.
     const walkMovements = new pf.Movements(bot);
-    walkMovements.allowSprinting = false;
+    walkMovements.allowSprinting = false; walkMovements.allowParkour = false; // sprint-jumps off too
     bot.pathfinder.setMovements(walkMovements);
     try {
         await goToGoal(bot, new pf.goals.GoalNear(x, y, z, min_distance));
@@ -2557,7 +2568,14 @@ export async function followPlayer(bot, username, distance=4) {
     // of the stuck follow wedged stop() into the 10s cleanKill suicide
     // (05:37: new !followPlayer interrupting old !followPlayer -> 10s of
     // "waiting for code" -> exit 1 -> restart, right in front of you).
+    // 26.3: WALK, never sprint. Pathfinder's default allowSprinting emits
+    // sprint+jump fall deltas (d1.0-1.4/tick) that the moved-wrongly gate
+    // reads as impossible (walk-death proved). Follow legs are long, so this
+    // is exactly where a kick would land. Sprint restores only as a proven
+    // per-leg opt-in, never blanket-on.
     const move = new pf.Movements(bot);
+    move.allowSprinting = false;
+    move.allowParkour = false; // sprint-jumps off: same fall-delta shape
     move.digCost = 10;
     bot.pathfinder.setMovements(move);
     let doorCheckInterval = startDoorInterval(bot);
