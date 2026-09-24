@@ -78,6 +78,26 @@ const KIT_GIVE = [ // [item, count]
     ['chest', 1], ['water_bucket', 1], ['elytra', 1], ['firework_rocket', 64],
 ];
 
+// RCON position read: where IS a player, even when the 26.3 server withholds
+// their entity from bot.entities (verified 18:24: YandereDev 11 blocks away,
+// invisible). Returns {x,y,z} floats or null. Cached 5s per name so a walk leg
+// doesn't spam RCON (broadcasts if the flag is on; silent once fixed).
+const _posCache = {};
+export async function rconPlayerPos(name) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safe) return null;
+    const now = Date.now();
+    if (_posCache[safe] && now - _posCache[safe].t < 5000) return _posCache[safe].pos;
+    let out;
+    try { out = await rconCommand(`data get entity ${safe} Pos`); }
+    catch (e) { return null; }
+    const m = String(out).match(/\[(-?[\d.]+)d,\s*(-?[\d.]+)d,\s*(-?[\d.]+)d\]/);
+    if (!m) return null;
+    const pos = { x: parseFloat(m[1]), y: parseFloat(m[2]), z: parseFloat(m[3]) };
+    _posCache[safe] = { t: now, pos };
+    return pos;
+}
+
 function parseIds(text) {
     const have = new Set();
     const re = /minecraft:([a-z_]+)"/g;
