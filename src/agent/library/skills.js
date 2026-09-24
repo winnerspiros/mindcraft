@@ -2505,21 +2505,38 @@ export async function followPlayer(bot, username, distance=4) {
      * @example
      * await skills.followPlayer(bot, "player");
      **/
-    let player = bot.players[username].entity
+    let player = bot.players[username] && bot.players[username].entity;
     if (!player)
         return false;
 
+    // 26.3: re-resolve the entity every tick. The old code captured ONE entity
+    // object at follow start — when the player relogs/respawns/teleports the
+    // handle goes stale, GoalFollow chases a ghost forever, and any interrupt
+    // of the stuck follow wedged stop() into the 10s cleanKill suicide
+    // (05:37: new !followPlayer interrupting old !followPlayer -> 10s of
+    // "waiting for code" -> exit 1 -> restart, right in front of you).
     const move = new pf.Movements(bot);
     move.digCost = 10;
     bot.pathfinder.setMovements(move);
     let doorCheckInterval = startDoorInterval(bot);
 
-    bot.pathfinder.setGoal(new pf.goals.GoalFollow(player, distance), true);
     log(bot, `You are now actively following player ${username}.`);
 
-
+    let lastGoalReset = 0;
     while (!bot.interrupt_code) {
         await new Promise(resolve => setTimeout(resolve, 500));
+        // refresh the handle; player gone = follow over, return cleanly.
+        const fresh = bot.players[username] && bot.players[username].entity;
+        if (!fresh) {
+            log(bot, `${username} is gone — stopped following.`);
+            break;
+        }
+        player = fresh;
+        // re-issue the goal every 5s so it never chases a stale snapshot.
+        if (Date.now() - lastGoalReset > 5000) {
+            try { bot.pathfinder.setGoal(new pf.goals.GoalFollow(player, distance), true); } catch (e) {}
+            lastGoalReset = Date.now();
+        }
         // in cheat mode, if the distance is too far, teleport to the player
         const distance_from_player = bot.entity.position.distanceTo(player.position);
 

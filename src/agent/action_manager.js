@@ -25,6 +25,14 @@ export class ActionManager {
 
     async stop() {
         if (!this.executing) return;
+        // 26.3: request the interrupt FIRST and give the action one beat to see
+        // it — the old code armed the 10s suicide timer before the action ever
+        // saw interrupt_code, so a follow loop sleeping in setTimeout(500) ate
+        // the whole 10s and died (05:37 suicide in front of the user). Now the
+        // timer only starts after the action had a chance to notice.
+        this.agent.requestInterrupt();
+        await new Promise(resolve => setTimeout(resolve, 700));
+        if (!this.executing) return;
         const timeout = setTimeout(() => {
             this.agent.cleanKill('Code execution refused stop after 10 seconds. Killing process.');
         }, 10000);
