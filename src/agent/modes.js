@@ -661,7 +661,16 @@ const modes_list = [
             // someone already close — nothing to do (stare/chat take it)
             const near = world.getNearbyPlayers(bot, 16).find((e) => e.username !== agent.name && e.username !== bot.username);
             if (near) return;
-            // nearest player entity anywhere visible (up to 64) — walk to them
+            // nearest player entity anywhere visible (up to 64) — walk to them.
+            // DECAY-TRUTH (verified 18:24): bot does NOT see YandereDev's entity
+            // at 11 blocks on 26.3 — entities arrive only when the server sends
+            // them (render-distance/antixray/batch timing), so idle+camera-only
+            // stretches are normal. But the BRAIN knows the tablist ($STATS
+            // lists server players even when entities aren't rendered), so fall
+            // back to TABLIST proximity when no entity is visible: if a real
+            // player is on the server and not close, ask the brain to go find
+            // them (brain has goToPlayer + memory of last positions) instead of
+            // waiting on an entity that may never render.
             let best = null, bestD = 64;
             try {
                 for (const ent of Object.values(bot.entities || {})) {
@@ -671,11 +680,35 @@ const modes_list = [
                     if (d < bestD) { bestD = d; best = ent; }
                 }
             } catch (e) {}
-            if (!best || bestD < 16) return;
+            if (best && bestD >= 16) {
+                this.last_seek = now;
+                const target = best;
+                execute(this, agent, async () => {
+                    await skills.followPlayer(bot, target.username, 4);
+                });
+                return;
+            }
+            if (best && bestD < 16) return; // someone close — stare/chat take it
+            // No visible entity: check the server tablist for a real player.
+            // (bot.players includes stale entries, so only names that have a
+            // uuid / actually logged in count — never Rcon/Server/console.)
+            let tablisted = null;
+            try {
+                for (const [pname, p] of Object.entries(bot.players || {})) {
+                    if (!pname || pname === agent.name || pname === bot.username) continue;
+                    if (/^(rcon|server|console)$/i.test(pname)) continue;
+                    if (!p || (!p.uuid && !p.entity)) continue;
+                    tablisted = pname;
+                    break;
+                }
+            } catch (e) {}
+            if (!tablisted) return;
             this.last_seek = now;
-            const target = best;
+            const who = tablisted;
             execute(this, agent, async () => {
-                await skills.followPlayer(bot, target.username, 4);
+                // Brain-side: tablist says they're on, entity isn't rendered —
+                // go find them via memory/known positions, then hang around.
+                agent.handleMessage('system', `(AUTO) You feel clingy. ${who} is on the server but you can't see them right now — go find them (!goToPlayer(\"${who}\", 4) or head to where you last saw them) and stay near them. Sweet, possessive, in character.`);
             });
         }
     },
