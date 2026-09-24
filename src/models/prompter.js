@@ -177,6 +177,22 @@ Rules:
 
 Output ONLY valid JSON, no backticks, no commentary.`;
 
+// World knowledge (every block/item/functionality, 26.3) — static reference
+// injected via $WORLD_KNOWLEDGE. Generated from minecraft-data 26.3 (1286
+// blocks, 1658 items, 1010 recipes); re-generate on version bumps.
+const WORLD_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/world_knowledge.md');
+let _worldKnowledge = null;
+function getWorldKnowledge() {
+    if (_worldKnowledge != null) return _worldKnowledge;
+    try {
+        _worldKnowledge = readFileSync(WORLD_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load world knowledge:', e.message);
+        _worldKnowledge = '';
+    }
+    return _worldKnowledge;
+}
+
 // Storage & containers reference — static knowledge injected via $STORAGE_KNOWLEDGE.
 // Chests, furnaces, hoppers, dispensers, shulker boxes, bundles, etc. — what they are,
 // how to craft, how to get, and how to use them. Kept in its own markdown file.
@@ -404,6 +420,8 @@ export class Prompter {
             prompt = prompt.replaceAll('$STORAGE_KNOWLEDGE', getStorageKnowledge());
         if (prompt.includes('$BUILDING_KNOWLEDGE'))
             prompt = prompt.replaceAll('$BUILDING_KNOWLEDGE', getBuildingKnowledge());
+        if (prompt.includes('$WORLD_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$WORLD_KNOWLEDGE', getWorldKnowledge());
         if (prompt.includes('$PERSONAL'))
             prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
         if (prompt.includes('$HEAT'))
