@@ -1,5 +1,6 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from "./world.js";
+import { rconPlayerPos } from "../../utils/rcon.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
@@ -2544,6 +2545,34 @@ export async function goToPlayer(bot, username, distance=3) {
     }
 
     if (!playerEntity) {
+        // 26.3 RCON-position fallback (verified 18:24: entities withheld even
+        // at 11 blocks): ask the server where they ARE and walk to those
+        // coords with normal WALK legs (same kick-safe path as goToPosition).
+        // Static goal (not GoalFollow — no entity to track); re-read every
+        // leg so she homes in as the cache refreshes.
+        const rpos = await rconPlayerPos(username).catch(() => null);
+        if (rpos) {
+            bot.modes.pause('self_defense');
+            bot.modes.pause('cowardice');
+            log(bot, `${username} is nearby but out of sight — walking to where they are.`);
+            for (let leg = 0; leg < 4; leg++) {
+                const fresh = await rconPlayerPos(username).catch(() => null);
+                const t = fresh || rpos;
+                const ok = await goToPosition(bot, Math.floor(t.x), Math.floor(t.y), Math.floor(t.z), Math.max(distance, 2));
+                if (!ok) break;
+                // entity rendered mid-walk? switch to live follow
+                const ent = bot.players[username] && bot.players[username].entity;
+                if (ent) {
+                    const goal = new pf.goals.GoalFollow(ent, Math.max(distance, 0.5));
+                    await goToGoal(bot, goal);
+                    break;
+                }
+                const d = bot.entity.position.distanceTo(new Vec3(t.x, t.y, t.z));
+                if (d <= Math.max(distance, 2) + 1) break;
+            }
+            log(bot, `You have reached ${username}.`);
+            return true;
+        }
         log(bot, `Could not find ${username}.`);
         return false;
     }
