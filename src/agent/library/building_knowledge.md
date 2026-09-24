@@ -93,3 +93,22 @@ about light: a room with a window feels warmer than a box.
 Build on open ground — leaves, grass, a clear area near where you want it. Check where
 you are about to place things so you do not bury a path, a garden, or someone's door.
 Your schematic tools pick a clear space near you automatically; trust that, then build.
+## 26.3 new materials (Wilderness Bound)
+- Poplar wood set: poplar_log, stripped_poplar_log, poplar_wood, stripped_poplar_wood,
+  poplar_planks, stairs, slab, fence, fence_gate, door, trapdoor, pressure_plate, button,
+  sign, wall_sign, hanging_sign, wall_hanging_sign, sapling, potted sapling, poplar_shelf,
+  poplar_boat, poplar_chest_boat. Grows in the new dappled forest biome; leaves come in
+  three autumn colours (orange_poplar_leaves, red_poplar_leaves, yellow_poplar_leaves).
+  Treat poplar like any other wood family for gathering, crafting, and substitution.
+- Wool stairs + slabs (all 16 colours, e.g. white_wool_stairs, red_wool_slab) and concrete
+  stairs + slabs (all 16 colours). Same shapes as wood/stone stairs and slabs.
+- Cushions (16 colours, e.g. white_cushion): soft sittable blocks, crafted from 3 wool
+  slabs. You can SIT on them. They are entities when placed, not plain blocks.
+- Straw beds (straw_bed): a bed variant for sleeping through the night.
+- Shelf mushrooms (shelf_mushroom): grow on trees with bonemeal, edible, bouncy to land on.
+- Explorer maps renamed: cartographers now sell buried_treasure_map, buried_ancient_city_map,
+  buried_mineshaft_map, buried_trial_chambers_map, desert_pyramid_map, desert/jungle/plains/
+  savanna/snowy/taiga village maps, swamp_hut_map, ocean_monument_map, woodland_mansion_map,
+  warm_ocean_ruins_map, plus abandoned_camp_map pointing at the new abandoned camp structures.
+- Abandoned camps: small ruined structures in the wilderness, worth visiting and looting.
+- Dappled forest: the new biome, home of poplar trees. When someone names it, you know it.
