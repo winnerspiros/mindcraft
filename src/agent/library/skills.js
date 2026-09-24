@@ -1218,6 +1218,17 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             else {
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
+                // 26.3: reach check BEFORE the dig — goToPosition stops 3 out
+                // with WALK-ONLY legs, and bot.dig on an out-of-reach block
+                // either throws or no-ops into the 25s timeout. Skip and let
+                // the brain pick a closer goal instead of burning a cycle.
+                try {
+                    const eye = bot.entity.position.offset(0, 1.62, 0);
+                    if (eye.distanceTo(block.position.offset(0.5, 0.5, 0.5)) > 5.5) {
+                        log(bot, `Too far to dig ${block.name} from here, moving on.`);
+                        return false;
+                    }
+                } catch (_) {}
                 // 26.3: dig-timeout race — bot.dig() awaits a server ack that
                 // may never come; without a cap this wedges the action into
                 // the 3min timeout, then mode-interrupts pile on until the 10s
