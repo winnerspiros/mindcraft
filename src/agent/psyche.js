@@ -119,9 +119,16 @@ export class Psyche {
         const t = String(text).toLowerCase();
         const loveHit = ['love', 'adore', 'cutie', 'pretty', 'beautiful', 'cute', 'miss you', '<3', '♥', '❤', 'uwu', 'nya', 'ily', 'i love'].some(w => t.includes(w));
         const hateHit = ['hate', 'stupid', 'dumb', 'ugly', 'idiot', 'shut up', 'go away', 'die', 'fuck you', 'annoying', 'loser', 'moron', 'cringe'].some(w => t.includes(w));
+        // COMFORT (added 20:3x): fear was pinned 0.98 all day — every chat
+        // counted contact but moved nothing, so NOTHING ever brought fear
+        // down (decay ~0.3/min can't beat +0.18 per hit + env samples while
+        // Null farmed her). Sweet words from a liked player now actively calm
+        // her; scolding/cold words edge fear back up. Being talked TO is safe.
+        const comfortHit = ['good girl', 'well done', 'thank', 'thanks', 'proud', 'brave', 'safe', 'calm', 'easy', 'gentle', 'soft'].some(w => t.includes(w));
+        const sootheHit = loveHit || comfortHit;
 
-        if (loveHit) {
-            this._nudgeMood({ love: 0.12, joy: 0.08, excitement: 0.06 });
+        if (sootheHit) {
+            this._nudgeMood({ love: 0.12, joy: 0.08, excitement: 0.06, fear: -0.10, anger: -0.04 });
             this._nudgeTraits({ warmth: 0.02 });
         }
         if (hateHit) {
