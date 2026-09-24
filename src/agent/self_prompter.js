@@ -27,11 +27,21 @@ export class SelfPrompter {
     }
 
     _otherPlayersOnline() {
+        // 26.3: bot.players includes HERSELF — the old check (any key != her
+        // name) was true even when alone, because the tablist carries stale
+        // entries (Rcon, past visitors). That pinned the CHATTY 45s gear
+        // forever, so she burned a turn every ~45s digging the same hole
+        // instead of idling (no stare/hop/twirl window, no follow, no chat).
+        // Real check: someone else VISIBLE — an entity within 32 blocks.
         const bot = this.agent.bot;
-        if (!bot || !bot.players) return false;
-        for (const name of Object.keys(bot.players)) {
-            if (name !== this.agent.name) return true;
-        }
+        if (!bot || !bot.players || !bot.entities) return false;
+        try {
+            for (const ent of Object.values(bot.entities)) {
+                if (ent?.type === 'player' && ent.username && ent.username !== this.agent.name
+                    && ent.position && bot.entity?.position
+                    && ent.position.distanceTo(bot.entity.position) < 32) return true;
+            }
+        } catch (e) {}
         return false;
     }
 
