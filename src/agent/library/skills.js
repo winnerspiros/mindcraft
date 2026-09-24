@@ -1207,10 +1207,14 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
         }
-        // 26.3: collect-via-dig only. collectblock's collect() path strafes
-        // and jump-sprints into the block face; the 26.3 moved-wrongly gate
-        // kicks on those deltas (walk-death logs proved: d1.07-1.32 falls
-        // mid-collect). goToPosition walks clean, dig breaks, pickup grabs.
+        // 26.3: collect-via-dig only. collectblock's collect() path overwrites
+        // the bot's pathfinder Movements with its own DEFAULTS (see
+        // CollectBlock constructor: `new Movements(bot)` — allowSprinting +
+        // allowParkour TRUE) and drives sprint-jump strafe legs at the block
+        // face; the 26.3 moved-wrongly gate kicks on those deltas (walk-death
+        // logs proved: d1.07-1.32 falls mid-collect). goToPosition walks
+        // clean, dig breaks, pickup grabs. Restore ONLY when collectblock
+        // accepts injected WALK-ONLY movements — until then, dig path stays.
         try {
             let success = false;
             if (isLiquid) {
