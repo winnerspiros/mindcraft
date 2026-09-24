@@ -1301,7 +1301,7 @@ export async function pickupNearbyItems(bot) {
 }
 
 
-export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 45000) {
+export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
     /**
      * Break the block at the given position. Will use the bot's equipped item.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
@@ -2178,7 +2178,7 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     return false;
 }
 
-export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
+export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     /**
      * Navigate to the given goal. Use doors and attempt minimally destructive movements.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
