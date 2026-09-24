@@ -883,6 +883,19 @@ export class Agent {
             else if (n > 0) { stableRounds = 0; }
             lastCount = n;
         }
+        // 26.3: NEVER /give on an empty-read inventory. Empty at this point
+        // means window_items hasn't landed (still syncing), NOT that she's
+        // naked — and /give-on-empty is exactly what stacked the dupe kits
+        // (34 slots, 3x boots/elytra/shields). Skip gives this boot; equip
+        // what's there, next restart sees the real inventory and fills truly
+        // missing pieces. Safe default: under-give, never over-give.
+        let invCount = 0;
+        try { invCount = this.bot.inventory.items().length; } catch (_) { invCount = 0; }
+        if (invCount === 0) {
+            console.log(`${this.name} gear-up: inventory not synced yet — equip-only this boot, no /give (avoids dupe kits).`);
+            try { this.bot.armorManager.equipAll(); } catch (_) {}
+            return;
+        }
         const have = (n) => this.bot.inventory.items().some(i => i.name === n);
         const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
         const gear = [
