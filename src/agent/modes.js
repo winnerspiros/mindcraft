@@ -617,7 +617,7 @@ const modes_list = [
         last_try: 0,
         update: async function (agent) {
             const bot = agent.bot;
-            if (!bot.time || bot.time.timeOfDay < 12541) return; // not night yet
+            if (!bot.time || bot.time.timeOfDay < 12541 || bot.time.timeOfDay > 23458) return; // night only — the old check (< 12541 return) treated DAWN+DAY as night, so every solo morning fired the bed hunt at 60s cadence, interrupting real actions
             for (const name of Object.keys(bot.players || {}))
                 if (name !== agent.name) return; // someone online — don't skip their night
             if (bot.isSleeping) return;
