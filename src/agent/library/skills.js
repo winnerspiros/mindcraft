@@ -2206,9 +2206,22 @@ export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
         let navDone = false;
         nav.then(() => { navDone = true; }, () => { navDone = true; });
         const t0 = Date.now();
+        // 26.3 GRACE: monitorMovement only populates path[] on the next
+        // physicsTick AFTER setGoal — checking isMoving() immediately sees
+        // an empty path and "times out" instantly, and the timeout's
+        // setGoal(null)+stop() then CANCELS the walk that was about to
+        // start. Every leg aborted pre-birth: pathfinder plans, feet never
+        // move, RCON frozen for hours while logs claim progress (06:1x).
+        // So: up to 3s grace for the first path to appear before the
+        // watchdog is allowed to judge.
+        const graceUntil = t0 + 3000;
+        while (Date.now() < graceUntil) {
+            if (bot.interrupt_code || navDone) break;
+            if (bot.pathfinder.isMoving()) break;
+            await new Promise(r => setTimeout(r, 200));
+        }
         while (Date.now() - t0 < navTimeoutMs) {
             if (bot.interrupt_code || navDone) break;
-            if (!bot.pathfinder.isMoving()) break;
             await new Promise(r => setTimeout(r, 200));
             if (Date.now() - t0 >= navTimeoutMs) break;
         }
