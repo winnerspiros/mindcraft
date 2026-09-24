@@ -32,14 +32,18 @@ export class SelfPrompter {
         // entries (Rcon, past visitors). That pinned the CHATTY 45s gear
         // forever, so she burned a turn every ~45s digging the same hole
         // instead of idling (no stare/hop/twirl window, no follow, no chat).
-        // Real check: someone else VISIBLE — an entity within 32 blocks.
+        // Real check: someone else VISIBLE — an entity within 16 blocks
+        // (matches stare/conversation range, so CHATTY means she can actually
+        // see you). Beyond that she's effectively alone: SOLO gear, long
+        // idle windows between turns for hop/twirl/stare instead of burning
+        // a turn every 45s at someone 27 blocks away she can't even see.
         const bot = this.agent.bot;
         if (!bot || !bot.players || !bot.entities) return false;
         try {
             for (const ent of Object.values(bot.entities)) {
                 if (ent?.type === 'player' && ent.username && ent.username !== this.agent.name
                     && ent.position && bot.entity?.position
-                    && ent.position.distanceTo(bot.entity.position) < 32) return true;
+                    && ent.position.distanceTo(bot.entity.position) < 16) return true;
             }
         } catch (e) {}
         return false;
