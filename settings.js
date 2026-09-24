@@ -1,5 +1,5 @@
 const settings = {
-    "minecraft_version": "26.2", // native 26.2 via Complexity-ML fork stack (mineflayer+minecraft-data+minecraft-protocol)
+    "minecraft_version": "26.3", // native 26.3 via Complexity-ML fork stack + generated 26.3 data + fix-26.3-protocol.py
     "host": "127.0.0.1", // or "localhost", "your.ip.address.here"
     "port": 25565, // your Minecraft server port
     "auth": "offline", // server has online-mode=false

@@ -489,9 +489,15 @@ export class Prompter {
                 return '';
             }
 
-            if (generation?.includes('</think>')) {
-                const [_, afterThink] = generation.split('</think>')
-                generation = afterThink
+            // Strip chain-of-thought: only remove a "response"-style tag when it
+            // sits at a sentence boundary / start, never mid-message. The old
+            // `.split(' response')` kept only the text AFTER the first " response"
+            // anywhere, so any reply containing those words (e.g. "...our response
+            // together...") had its whole leading sentence chopped off and hit chat as a
+            // mid-word fragment.
+            const thinkTag = generation?.match(/(^|[.!?]\s+)\s*response\s*[:.:]?\s+/i);
+            if (thinkTag) {
+                generation = generation.slice(thinkTag.index + thinkTag[0].length).trimStart();
             }
 
             return generation;

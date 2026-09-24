@@ -2198,27 +2198,43 @@ export async function goToGoal(bot, goal, navTimeoutMs = 45000) {
         // leg burns pathfind+nav budget and the action never returns.
         let navErr = null;
         const nav = bot.pathfinder.goto(goal).catch(e => { navErr = e; });
+        // 26.3: NEVER await the raw goto promise indefinitely — if its goal
+        // entity despawns/goal vanishes mid-goto, goto never settles and the
+        // old `await nav` hung the action forever (22:49: wedged
+        // !mode:item_collecting -> isIdle false forever -> ALL modes + the
+        // self-prompt loop dead -> 6h catatonia on a live connection).
+        let navDone = false;
+        nav.then(() => { navDone = true; }, () => { navDone = true; });
         const t0 = Date.now();
         while (Date.now() - t0 < navTimeoutMs) {
-            if (bot.interrupt_code) break;
+            if (bot.interrupt_code || navDone) break;
             if (!bot.pathfinder.isMoving()) break;
             await new Promise(r => setTimeout(r, 200));
             if (Date.now() - t0 >= navTimeoutMs) break;
         }
         const settled = !bot.pathfinder.isMoving();
-        if (!settled && !bot.interrupt_code) {
+        if ((!settled || !navDone) && !bot.interrupt_code) {
             try { bot.pathfinder.setGoal(null); } catch (e) {}
             try { bot.pathfinder.stop(); } catch (e) {}
             // 26.3: do NOT toggle interrupt_code to release goto — the OLD code
             // set it true then false, which corrupted stop()/resume state and
             // wedged the NEXT action (20:32: wedged goto -> 10s stop -> suicide).
-            // setGoal(null)+stop() releases goto's waiters on its own; the
-            // watchdog just stops waiting and reports.
+            // setGoal(null)+stop() releases goto's waiters on its own. Detach
+            // the raw promise (never await it) and report.
+            nav.catch(() => {});
             log(bot, `Navigation timed out after ${Math.round(navTimeoutMs / 1000)}s — staying put (goal unreachable from here).`);
             clearInterval(doorCheckInterval);
             return false;
         }
-        await nav;
+        if (bot.interrupt_code) {
+            // interrupted mid-nav: detach, clean up, get out fast.
+            nav.catch(() => {});
+            clearInterval(doorCheckInterval);
+            return false;
+        }
+        // Settled within budget: give the raw promise a short grace to unwind,
+        // but never hang on it.
+        await Promise.race([nav, new Promise(r => setTimeout(r, 5000))]);
         clearInterval(doorCheckInterval);
         if (navErr) throw navErr;
         return true;

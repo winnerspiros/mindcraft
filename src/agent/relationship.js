@@ -27,13 +27,19 @@ const MAX = 100;
 
 // Per-tick decay toward neutral (0) for each dynamic stat, applied to players who
 // haven't interacted with her in a while. Fast-cooling vs sticky stats.
+// 26.3 rebalance: love/hate/trust/respect are STICKY (she used to forget
+// everyone — 319 interactions with YandereDev and still stranger, because
+// love bled 1/min while a sweet message only gives +2..3). Attention,
+// annoyance, jealousy stay fast (moment-to-moment feelings); madness medium.
 const DECAY_PER_TICK = {
     attention: 5, annoyance: 15, jealousy: 5, fear: 3,
-    hate: 2, trust: 2, respect: 2, love: 1, madness: 4,
+    hate: 0.5, trust: 0.5, respect: 0.5, love: 0.2, madness: 4,
 };
 
 function clamp(v, lo = 0, hi = MAX) {
-    return Math.max(lo, Math.min(hi, Math.round(v)));
+    // one decimal — Math.round() quantized sub-1 decays to zero, which made
+    // slow sticky decay a no-op (10 - 0.2 rounded back to 10 forever).
+    return Math.max(lo, Math.min(hi, Math.round(v * 10) / 10));
 }
 
 function defaultEntry() {
