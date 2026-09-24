@@ -212,11 +212,36 @@ export class SelfPrompter {
                 if (next) this.prompt = next;
                 return { done: true, next, verdict: v };
             }
-            // incomplete — keep working, but don't stay stuck forever
+            // incomplete — keep working, but don't stay stuck forever.
+            // SIMILARITY GUARD (added 21:2x): the curriculum kept proposing
+            // near-identical goals ("...treasures!" vs "...treasures again!"),
+            // which the history check treats as novel — infinite forest loop.
+            // Reject proposals too similar to the current goal and force a
+            // DIFFERENT activity (wood/build/gift/visit) instead.
+            const _sim = (a, b) => {
+                const wa = new Set(String(a).toLowerCase().split(/[^a-z]+/).filter(w => w.length > 3));
+                const wb = new Set(String(b).toLowerCase().split(/[^a-z]+/).filter(w => w.length > 3));
+                if (!wa.size || !wb.size) return 0;
+                let inter = 0;
+                for (const w of wa) if (wb.has(w)) inter++;
+                return inter / Math.max(wa.size, wb.size);
+            };
+            const _freshGoal = async (oldPrompt) => {
+                for (let tries = 0; tries < 2; tries++) {
+                    const next = await agent.curriculum.proposeNextGoal();
+                    if (next && _sim(next, oldPrompt) < 0.6) return next;
+                    console.log(`[curriculum] rejected too-similar goal: "${next}" — retrying`);
+                }
+                // fallback: force a concrete different activity, no LLM needed
+                const fallbacks = ['gather oak logs for building', 'collect flowers as a gift for YandereDev', 'find YandereDev and stay close', 'craft planks and build a small shelter'];
+                const hist = (agent.curriculum.recentHistoryText() || '').toLowerCase();
+                return fallbacks.find(f => !hist.includes(f.split(' ')[1])) || fallbacks[0];
+            };
             this.stuck_cycles++;
             if (this.stuck_cycles >= (settings.goal_stuck_limit || 3)) {
                 agent.curriculum.recordFailure(this.prompt, verdict.critique || 'stuck');
-                const next = await agent.curriculum.proposeNextGoal();
+                const old = this.prompt;
+                const next = await _freshGoal(old);
                 this.goal_cycles = 0;
                 this.stuck_cycles = 0;
                 if (next) this.prompt = next;
