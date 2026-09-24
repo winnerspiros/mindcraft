@@ -1216,7 +1216,36 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             else {
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
-                await bot.dig(block);
+                if (bot.interrupt_code) return false; // stopped mid-walk: out fast
+                // 26.3: dig-timeout race — bot.dig() awaits a server ack that
+                // may never come; without a cap this wedges the action into
+                // the 3min timeout, then mode-interrupts pile on until the 10s
+                // stop() -> cleanKill suicide (07:2x: self_preservation
+                // interrupting collectBlocks -> 'waiting for code' x13 ->
+                // exit 1). Bail the instant interrupt_code fires so stop()
+                // always wins fast. On timeout stop digging and report
+                // failure so the brain moves on.
+                try {
+                    await Promise.race([
+                        bot.dig(block, true),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), 25000)),
+                        new Promise((_, rej) => {
+                            const t = setInterval(() => {
+                                if (bot.interrupt_code) { clearInterval(t); rej(new Error('interrupted')); }
+                            }, 200);
+                            setTimeout(() => { clearInterval(t); }, 26000);
+                        }),
+                    ]);
+                } catch (e) {
+                    try { bot.stopDigging(); } catch (_) {}
+                    if (bot.interrupt_code) return false; // stopped: out fast, no chatter
+                    if (String((e && e.message) || e).includes('dig-timeout')) {
+                        log(bot, `Dig timed out on ${block.name}, moving on.`);
+                        return false;
+                    }
+                    throw e;
+                }
+                if (bot.interrupt_code) return false;
                 await pickupNearbyItems(bot);
                 success = true;
             }
