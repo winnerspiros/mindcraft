@@ -13,7 +13,7 @@ const RCON_PW_FILE = '/home/ubuntu/kenoi-fabric/rcon.password';
 
 function encode(id, type, payload) {
     const body = Buffer.from(payload, 'utf8');
-    const buf = Buffer.alloc(4 + 4 + body.length + 2);
+    const buf = Buffer.alloc(12 + body.length + 2); // 4 len + 4 id + 4 type + body + 2 nulls
     buf.writeInt32LE(4 + 4 + body.length + 2, 0);
     buf.writeInt32LE(id, 4);
     buf.writeInt32LE(type, 8);
@@ -32,7 +32,9 @@ export function rconCommand(cmd, timeoutMs = 5000) {
         const timer = setTimeout(() => { try { sock.destroy(); } catch (_) {} reject(new Error('rcon timeout: ' + cmd.slice(0, 40))); }, timeoutMs);
         let stage = 'auth';
         let chunks = [];
-        let want = -1;
+        let parts = [];
+        let drained = false;
+        const finish = () => { if (drained) return; drained = true; clearTimeout(timer); try { sock.destroy(); } catch (_) {} resolve(parts.join('')); };
         sock.on('data', (d) => {
             chunks.push(d);
             let buf = Buffer.concat(chunks);
@@ -42,23 +44,28 @@ export function rconCommand(cmd, timeoutMs = 5000) {
                 if (buf.length < 4 + len) break;
                 const id = buf.readInt32LE(4);
                 const type = buf.readInt32LE(8);
+                // Empty auth-echo packets (id 1 / type 2, zero body) carry no
+                // data — the rcon.py arbiter ignores them and drains on
+                // timeout. Mirror that: only keep real response bodies.
                 const body = buf.slice(12, 4 + len - 2).toString('utf8', 'replace');
                 out.push({ id, type, body });
                 buf = buf.slice(4 + len);
             }
             chunks = [buf];
+            let gotResponse = false;
             for (const p of out) {
                 if (stage === 'auth') {
-                    if (p.id === -1 || p.type === -1) { clearTimeout(timer); sock.destroy(); reject(new Error('rcon auth failed')); return; }
+                    if (p.id === -1 || p.type === -1) { clearTimeout(timer); try { sock.destroy(); } catch (_) {} reject(new Error('rcon auth failed')); return; }
                     stage = 'cmd';
                     sock.write(encode(2, 2, cmd));
-                    // short drain window for multi-packet replies
-                    setTimeout(() => { clearTimeout(timer); sock.destroy(); resolve(parts.join('')); }, 400);
-                    var parts = [];
-                } else {
+                    // safety net only: the real finish fires on type-0 packet
+                    setTimeout(finish, 1500);
+                } else if (p.type === 0) {
                     parts.push(p.body);
+                    gotResponse = true;
                 }
             }
+            if (gotResponse) finish();
         });
         sock.on('error', (e) => { clearTimeout(timer); reject(e); });
     });
