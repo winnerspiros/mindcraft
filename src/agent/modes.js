@@ -646,21 +646,56 @@ const modes_list = [
         }
     },
     {
+        name: 'seek_company',
+        description: 'When idle with no company in sight, walk to the nearest visible player and hang around them — courtship needs contact.',
+        interrupts: [],
+        on: true,
+        active: false,
+        last_seek: 0,
+        cooldown: 120000, // min 2 min between seeks
+        update: async function (agent) {
+            const bot = agent.bot;
+            if (!agent.isIdle() || bot.pathfinder.goal) return;
+            const now = Date.now();
+            if (now - this.last_seek < this.cooldown) return;
+            // someone already close — nothing to do (stare/chat take it)
+            const near = world.getNearbyPlayers(bot, 16).find((e) => e.username !== agent.name && e.username !== bot.username);
+            if (near) return;
+            // nearest player entity anywhere visible (up to 64) — walk to them
+            let best = null, bestD = 64;
+            try {
+                for (const ent of Object.values(bot.entities || {})) {
+                    if (ent?.type !== 'player' || !ent.username || ent.username === agent.name) continue;
+                    if (!ent.position || !bot.entity?.position) continue;
+                    const d = ent.position.distanceTo(bot.entity.position);
+                    if (d < bestD) { bestD = d; best = ent; }
+                }
+            } catch (e) {}
+            if (!best || bestD < 16) return;
+            this.last_seek = now;
+            const target = best;
+            execute(this, agent, async () => {
+                await skills.followPlayer(bot, target.username, 4);
+            });
+        }
+    },
+    {
         name: 'conversation_starter',
         description: 'Occasionally start a conversation with a nearby player and ask personal/getting-to-know-you questions, in character.',
         interrupts: ['all'],
         on: true,
         active: false,
         last_start: 0,
-        cooldown_min: 180000,  // 3 min
-        cooldown_max: 480000,  // up to 8 min
+        cooldown_min: 90000,  // 90s — she was silent for hours with players 20 blocks away; talk first, courtship needs contact
+        cooldown_max: 240000,  // up to 4 min
         next_start: 0,
         update: async function (agent) {
             const bot = agent.bot;
             const now = Date.now();
             if (now < this.next_start) return; // schedule-based: only fire after a random wait
-            // need someone nearby to talk to
-            const players = world.getNearbyPlayers(bot, 12);
+            // need someone near-ish to talk to — 16 blocks (stare/conversation
+            // range), NOT 12: at 12 she stays mute to anyone across a room
+            const players = world.getNearbyPlayers(bot, 16);
             const player = players.find((e) => e.username !== agent.name && e.username !== bot.username);
             if (!player) { this.next_start = now + 60000; return; } // nobody near, check again in a bit
             this.next_start = now + this.cooldown_min + Math.random() * (this.cooldown_max - this.cooldown_min);
