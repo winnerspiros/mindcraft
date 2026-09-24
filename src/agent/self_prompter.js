@@ -56,10 +56,18 @@ export class SelfPrompter {
                 return 'No prompt specified. Ignoring request.';
             prompt = this.prompt;
         }
+        // NEW GOAL: reset the rotation counters. SAME goal (loop restart
+        // after a mode fire / chat / seek): KEEP counting — the critic must
+        // judge it on schedule, not get its fuse reset every interruption
+        // (that bug held one stuck goal all day: restarts zeroed goal_cycles
+        // before it ever reached goal_check_cycles).
+        const sameGoal = prompt === this.prompt && this.goal_cycles > 0;
         this.state = ACTIVE;
         this.prompt = prompt;
-        this.goal_cycles = 0;
-        this.stuck_cycles = 0;
+        if (!sameGoal) {
+            this.goal_cycles = 0;
+            this.stuck_cycles = 0;
+        }
         this.startLoop();
     }
 
