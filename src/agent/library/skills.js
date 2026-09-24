@@ -2214,7 +2214,11 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     // allowSprinting flips on ONLY for far legs (dist > 12, goal param), so a
     // kick lands on one watched leg and reverts with one flag flip.
     const _sprintLeg = goal && goal._sprintTrial === true;
-    nonDestructiveMovements.allowSprinting = _sprintLeg;
+    // SPRINT-TRIAL OFFLINE 20:2x: first far-leg sprint produced "moved
+    // wrongly" (no kick — server only warned, she stayed on — but the shape
+    // is confirmed unsafe on this 26.3 stack). Back to WALK-ONLY until the
+    // look/position path is proven clean; flag stays as the one-switch arm.
+    nonDestructiveMovements.allowSprinting = false; // _sprintLeg when re-armed
     nonDestructiveMovements.allowParkour = false;
     const dontBreakBlocks = ['glass', 'glass_pane'];
     for (let block of dontBreakBlocks) {
