@@ -870,7 +870,19 @@ export class Agent {
         // full duplicate kit even when she already had everything (chat-flood
         // of "Gave ..." + dupes filling her slots). Now: wait for the
         // inventory to sync, /give ONLY what's missing, equip quietly.
-        await new Promise(r => setTimeout(r, 2500)); // let window_items land
+        // 26.3: window_items lands SLOW on 1 OCPU (2.5s wasn't enough — the
+        // post-restart check saw an empty inventory and re-gave the full kit
+        // as dupes). Poll until the inventory is non-empty AND stable across
+        // two consecutive 1s polls (up to 20s) before deciding what's missing.
+        let lastCount = -1, stableRounds = 0;
+        for (let i = 0; i < 20; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            let n = 0;
+            try { n = this.bot.inventory.items().length; } catch (_) { n = 0; }
+            if (n > 0 && n === lastCount) { stableRounds++; if (stableRounds >= 2) break; }
+            else if (n > 0) { stableRounds = 0; }
+            lastCount = n;
+        }
         const have = (n) => this.bot.inventory.items().some(i => i.name === n);
         const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
         const gear = [
