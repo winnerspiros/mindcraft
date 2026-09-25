@@ -170,6 +170,7 @@ How "layers" works (READ CAREFULLY — this is the whole skill):
 
 Rules:
 - "palette" maps single characters to real Minecraft block names (lowercase snake_case, e.g. oak_planks, stone_bricks, white_wool, glass). "." is reserved for air (you do not put it in palette).
+- FORBIDDEN palette entries (not placeable blocks — the build fails if you use them): grass (use grass_block or short_grass), dirt_path, water, lava, bedrock, air, light, barrier, command_block, structure_block, spawner, dragon_egg, petrified_oak_slab. When in doubt use oak_planks, cobblestone, glass, white_wool — always valid.
 - Every string within a slice is the same length; every slice has the same number of strings. Rectangular, never ragged.
 - Keep the bottom slice solid (a base). Give houses walls and a roof and a hollow interior; give towers many slices; a single slice is a floor or wall, not a full building.
 - Make the footprint at least 4 wide and 4 deep so it reads as a real 3D structure, not a line.
