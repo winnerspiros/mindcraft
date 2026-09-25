@@ -218,7 +218,25 @@ export class SelfPrompter {
             // which the history check treats as novel — infinite forest loop.
             // Reject proposals too similar to the current goal and force a
             // DIFFERENT activity (wood/build/gift/visit) instead.
+            // FAMILY DEDUP (added 05:5x): bouquet -> flower crown passed the
+            // word check (different words, same activity). Families catch what
+            // word overlap can't: same activity family = same goal.
+            const _family = (s) => {
+                const t = String(s).toLowerCase();
+                if (/flower|bouquet|crown|daisy|tulip|poppy|peony|blossom|petal/.test(t)) return 'flowers';
+                if (/log|wood|plank|stick|tree|oak|birch|spruce/.test(t)) return 'wood';
+                if (/build|shelter|house|tower|wall|foundation|room/.test(t)) return 'build';
+                if (/chicken|feather|cow|pig|sheep|hunt|meat|leather|egg/.test(t)) return 'hunt';
+                if (/mine|ore|diamond|iron|gold|stone|cobble|dig/.test(t)) return 'mine';
+                if (/gift|present|give|trader|present/.test(t)) return 'gift';
+                if (/beloved|yanderedev|visit|find .*player|stay close|follow/.test(t)) return 'visit';
+                if (/treasure|explore|forest|adventure|wander/.test(t)) return 'explore';
+                if (/farm|wheat|carrot|potato|berry|crop|harvest/.test(t)) return 'farm';
+                if (/craft|furnace|smelt|arrow|bow|tool/.test(t)) return 'craft';
+                return 'other';
+            };
             const _sim = (a, b) => {
+                if (_family(a) !== 'other' && _family(a) === _family(b)) return 1;
                 const wa = new Set(String(a).toLowerCase().split(/[^a-z]+/).filter(w => w.length > 3));
                 const wb = new Set(String(b).toLowerCase().split(/[^a-z]+/).filter(w => w.length > 3));
                 if (!wa.size || !wb.size) return 0;
@@ -232,10 +250,12 @@ export class SelfPrompter {
                     if (next && _sim(next, oldPrompt) < 0.6) return next;
                     console.log(`[curriculum] rejected too-similar goal: "${next}" — retrying`);
                 }
-                // fallback: force a concrete different activity, no LLM needed
-                const fallbacks = ['gather oak logs for building', 'collect flowers as a gift for YandereDev', 'find YandereDev and stay close', 'craft planks and build a small shelter'];
+                // fallback: force a concrete different activity, no LLM needed.
+                // Family-aware: skip families already in recent history.
+                const fallbacks = ['gather oak logs for building', 'collect flowers as a gift for YandereDev', 'find YandereDev and stay close', 'craft planks and build a small shelter', 'mine cobblestone for tools', 'hunt chickens for feathers and food'];
                 const hist = (agent.curriculum.recentHistoryText() || '').toLowerCase();
-                return fallbacks.find(f => !hist.includes(f.split(' ')[1])) || fallbacks[0];
+                const oldFam = _family(oldPrompt);
+                return fallbacks.find(f => _family(f) !== oldFam && !hist.includes(f.split(' ')[1])) || fallbacks.find(f => _family(f) !== oldFam) || fallbacks[0];
             };
             this.stuck_cycles++;
             if (this.stuck_cycles >= (settings.goal_stuck_limit || 3)) {
