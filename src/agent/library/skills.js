@@ -1181,9 +1181,22 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // collect only source blocks
                 return block.metadata === 0;
             }
-            
+            // WOOD-SMART (added 05:0x): prefer the LOWEST reachable trunk block
+            // (nearest to her feet level) over a high canopy block — the old
+            // nearest-first pick targeted leaves-buried canopy (28,76,-26),
+            // unwalkable, so every attempt ended "too far". Trunk bases have
+            // clear ground paths; felling from the bottom drops the rest.
+            // (Ranking applied below via sort, not filter — all stay eligible.)
             return movements.safeToBreak(block) || unsafeBlocks.includes(block.name);
-        }, 64, 1);
+        }, 64, 8);
+        // wood-smart ranking: lowest Y first, then nearest (canopy last)
+        const _isWood = /log|wood/i.test(blockType);
+        if (_isWood && blocks.length > 1) {
+            const bp = bot.entity.position;
+            blocks = [...blocks].sort((a, b) =>
+                (a.position.y - b.position.y) ||
+                (a.position.distanceTo(bp) - b.position.distanceTo(bp)));
+        }
 
         if (blocks.length === 0) {
             if (collected === 0)
