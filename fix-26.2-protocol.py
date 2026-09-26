@@ -486,6 +486,79 @@ def ensure_anvil_26_3(base):
             print("[anvil] WARNING: 1.18 normalizer missing and no backup found")
     else:
         print(f"[anvil] WARNING: {cj118} missing")
+    # LIVE-CHUNK light guard (verified 17:16: 26.3 backfill decodes
+    # update_light i64 masks as SignedBigInt-Arrays; fromLongArray indexes
+    # [0]/[1] -> undefined -> Buffer.from throws ERR_INVALID_ARG_TYPE, which
+    # mineflayer blocks.js re-emits as a FATAL error -> disconnect. Without
+    # this, every update_light near her kills the connection.)
+    # node_modules is git-ignored, so the canonical copy lives at
+    # /home/ubuntu/chunkcolumn-118.stock.js + the guard is re-applied here.
+    cc = os.path.join(base, "prismarine-chunk", "src", "pc", "1.18", "ChunkColumn.js")
+    if os.path.exists(cc):
+        c = open(cc).read()
+        if "26.3 light-shape guard" in c:
+            print("[chunk] 1.18 loadParsedLight guard present -> no-op")
+        else:
+            old = """    loadParsedLight (skyLight, blockLight, skyLightMask, blockLightMask, emptySkyLightMask, emptyBlockLightMask) {
+      function readSection (sections, data, lightMask, pLightMask, emptyMask, pEmptyMask) {
+        let currentSectionIndex = 0
+        const incomingLightMask = BitArray.fromLongArray(pLightMask, 1)
+        const incomingEmptyMask = BitArray.fromLongArray(pEmptyMask, 1)"""
+            new = """    loadParsedLight (skyLight, blockLight, skyLightMask, blockLightMask, emptySkyLightMask, emptyBlockLightMask) {
+      // 26.3 light-shape guard (verified live 17:16): the 26.3 backfill decodes
+      // update_light's i64 masks as SignedBigInt-Arrays and light arrays as
+      // plain nested arrays. fromLongArray indexes [0]/[1] (undefined on
+      // BigInt) and Buffer.from(array) throws ERR_INVALID_ARG_TYPE, which
+      // mineflayer's blocks.js re-emits as a fatal bot error -> disconnect.
+      // Normalize: BigInt/signed-array mask entries -> [hi,lo] number pairs;
+      // array light sections -> Buffer. Missing/short light data = stale
+      // column, skip it (fail-open) instead of killing the connection.
+      function normMask (m) {
+        if (!Array.isArray(m)) return []
+        return m.map(e => {
+          if (Array.isArray(e)) return [Number(e[0]) | 0, Number(e[1]) | 0]
+          if (typeof e === 'bigint') {
+            const v = e < 0n ? (1n << 64n) + e : e
+            return [Number((v >> 32n) & 0xffffffffn) | 0, Number(v & 0xffffffffn) | 0]
+          }
+          const n = Number(e)
+          if (Number.isFinite(n)) return [0, n | 0]
+          return [0, 0]
+        })
+      }
+      function normLight (arr) {
+        if (!Array.isArray(arr)) return []
+        return arr.map(s => {
+          if (Buffer.isBuffer(s)) return s
+          if (Array.isArray(s)) { try { return Buffer.from(s) } catch (_) { return null } }
+          return null
+        })
+      }
+      skyLight = normLight(skyLight); blockLight = normLight(blockLight)
+      skyLightMask = normMask(skyLightMask); blockLightMask = normMask(blockLightMask)
+      emptySkyLightMask = normMask(emptySkyLightMask); emptyBlockLightMask = normMask(emptyBlockLightMask)
+      function readSection (sections, data, lightMask, pLightMask, emptyMask, pEmptyMask) {
+        let currentSectionIndex = 0
+        const incomingLightMask = BitArray.fromLongArray(pLightMask, 1)
+        const incomingEmptyMask = BitArray.fromLongArray(pEmptyMask, 1)"""
+            old2 = """          if (!isEmpty) {
+            const sectionReader = Buffer.from(data[currentSectionIndex++])
+            bitArray.readBuffer(SmartBuffer.fromBuffer(sectionReader))
+          }"""
+            new2 = """          if (!isEmpty) {
+            const raw = data[currentSectionIndex++]
+            if (raw == null) continue // short light array: stale column, fail open
+            const sectionReader = Buffer.isBuffer(raw) ? raw : Buffer.from(raw)
+            bitArray.readBuffer(SmartBuffer.fromBuffer(sectionReader))
+          }"""
+            if old in c and old2 in c:
+                c = c.replace(old, new, 1).replace(old2, new2, 1)
+                open(cc, "w").write(c)
+                print("[chunk] 1.18 loadParsedLight 26.3 guard installed")
+            else:
+                print("[chunk] WARNING: loadParsedLight anchors not found")
+    else:
+        print(f"[chunk] WARNING: {cc} missing")
 
 
 def ensure_physics_fallback(base):
