@@ -13,6 +13,7 @@ const require = createRequire(import.meta.url);
 // into RAM even though a profile only ever uses one. This lazy-loads just the SDK
 // the profile references via a synchronous require() (Node >=20.19 supports require(esm)).
 const PREFIX_FILE = {
+    andy: 'andy.js',
     azure: 'azure.js',
     cerebras: 'cerebras.js',
     anthropic: 'claude.js',
