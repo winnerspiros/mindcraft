@@ -20,6 +20,7 @@ import sys
 
 BASE = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "node_modules")
 DATA_SRC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "minecraft-data-26.2")
+DATA_SRC_263 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "minecraft-data-26.3")
 
 
 def patch_protocol_json(path):
@@ -300,6 +301,151 @@ def ensure_26_2_data(base):
     print("[data.js] registered '26.2' block (cloned from 26.1)")
 
 
+def register_version_block(data_js, base_ver, new_ver):
+    """Clone the base_ver block in a minecraft-data data.js as new_ver
+    (paths /pc/<base>/ -> /pc/<new>/). Idempotent, repairs misplacements."""
+    if not os.path.exists(data_js):
+        print(f"[data.js] WARNING: {data_js} missing")
+        return
+    src = open(data_js).read()
+    start = src.find(f"    '{base_ver}': {{")
+    if start == -1:
+        print(f"[data.js] WARNING: '{base_ver}' block not found in {data_js}")
+        return
+    close = src.find("\n    }\n", start)
+    if close == -1:
+        print(f"[data.js] WARNING: '{base_ver}' block close not found in {data_js}")
+        return
+    pc_close = src.find("\n  },\n  'bedrock': {", close)
+    m2 = src.find(f"    '{new_ver}': {{")
+    if m2 != -1 and (pc_close == -1 or m2 < pc_close):
+        print(f"[data.js] '{new_ver}' already registered in {os.path.basename(os.path.dirname(data_js)) or data_js} -> no-op")
+        return
+    block = src[start:close + len("\n    }\n")]
+    block_new = block.replace(f"'{base_ver}':", f"'{new_ver}':").replace(f"/pc/{base_ver}/", f"/pc/{new_ver}/")
+    if m2 != -1:
+        m2_close = src.find("\n    }\n", m2)
+        if m2_close != -1:
+            remove = m2_close + len("\n    }\n")
+            if src[remove:remove + 1] == ",":
+                remove += 1
+            src = src[:m2] + src[remove:]
+            start = src.find(f"    '{base_ver}': {{")
+            close = src.find("\n    }\n", start)
+    after = close + len("\n    }\n")
+    src = src[:after - 1] + ",\n" + block_new.rstrip("\n") + "\n" + src[after:]
+    open(data_js, "w").write(src)
+    print(f"[data.js] registered '{new_ver}' block (cloned from {base_ver})")
+
+
+def ensure_26_3_data(base):
+    """Copy the bundled 26.3 game-data (19 files) into BOTH minecraft-data
+    copies (top-level for mineflayer's registry, nested for
+    minecraft-protocol's serialization), register the '26.3' version block in
+    both data.js files + the nested protocolVersions.json row, and apply the
+    8b packet-ID fix to both 26.3 protocol.json copies. Idempotent."""
+    for dest in [
+        os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3"),
+        os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
+                     "minecraft-data", "data", "pc", "26.3"),
+    ]:
+        os.makedirs(dest, exist_ok=True)
+        copied = 0
+        for fn in os.listdir(DATA_SRC_263):
+            if not fn.endswith(".json"):
+                continue
+            src = os.path.join(DATA_SRC_263, fn)
+            dst = os.path.join(dest, fn)
+            if not os.path.exists(dst) or os.path.getsize(src) != os.path.getsize(dst):
+                with open(src, "rb") as fsrc, open(dst, "wb") as fdst:
+                    fdst.write(fsrc.read())
+                copied += 1
+        print(f"[data] 26.3 game-data -> {dest}: {copied} copied, {len(os.listdir(dest))} present"
+              if copied else f"[data] 26.3 game-data -> {dest}: all {len(os.listdir(dest))} present -> no-op")
+    for data_js in [
+        os.path.join(base, "minecraft-data", "data.js"),
+        os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data", "data.js"),
+    ]:
+        register_version_block(data_js, "26.2", "26.3")
+    pv_path = os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
+                           "minecraft-data", "data", "pc", "common", "protocolVersions.json")
+    if os.path.exists(pv_path):
+        d = json.load(open(pv_path))
+        if not any(e.get("minecraftVersion") == "26.3" for e in d):
+            d.insert(0, {"minecraftVersion": "26.3", "version": 777, "dataVersion": 5023,
+                         "usesNetty": True, "majorVersion": "26.3", "releaseType": "release"})
+            json.dump(d, open(pv_path, "w"), indent=2)
+            print("[data] nested protocolVersions.json: 26.3 row inserted")
+        else:
+            print("[data] nested protocolVersions.json: 26.3 row present -> no-op")
+    for proto in [
+        os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+        os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
+                     "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+    ]:
+        if os.path.exists(proto):
+            patch_protocol_json(proto)
+        else:
+            print(f"[8b] WARNING: {proto} missing")
+
+
+def ensure_chunk_26_3(base):
+    """Register 26.3 -> 1.18 chunk impl (same wire format + 26.2 fluid-count
+    short) in prismarine-chunk. Idempotent."""
+    for cj in [os.path.join(base, "prismarine-chunk", "src", "index.js")]:
+        if not os.path.exists(cj):
+            print(f"[chunk] WARNING: {cj} missing")
+            continue
+        s = open(cj).read()
+        if "26.3:" in s:
+            print("[chunk] 26.3 impl present -> no-op")
+            continue
+        old = "    26.2: require('./pc/1.18/chunk')"
+        if old not in s:
+            print("[chunk] WARNING: 26.2 anchor not found")
+            continue
+        open(cj, "w").write(s.replace(old, old + ",\n    26.3: require('./pc/1.18/chunk')", 1))
+        print("[chunk] registered 26.3 -> 1.18 impl")
+    cc = os.path.join(base, "prismarine-chunk", "src", "pc", "1.18", "ChunkColumn.js")
+    if os.path.exists(cc):
+        s = open(cc).read()
+        old = "  const hasFluidCount = mcData.version.majorVersion === '26.2'"
+        if old in s:
+            open(cc, "w").write(s.replace(old, old + " || mcData.version.majorVersion === '26.3'", 1))
+            print("[chunk] 1.18 ChunkColumn: hasFluidCount extended to 26.3")
+        elif "'26.3'" in s:
+            print("[chunk] 1.18 ChunkColumn: 26.3 already present -> no-op")
+        else:
+            print("[chunk] WARNING: hasFluidCount anchor not found")
+
+
+def ensure_physics_fallback(base):
+    """Default liquid gravity when fork data has no gravity feature flags
+    (verified: indep+prop false on 26.2/26.3/upstream 1.21.x) — vanilla
+    proportional values instead of a login crash. Idempotent."""
+    pj = os.path.join(base, "prismarine-physics", "index.js")
+    if not os.path.exists(pj):
+        print(f"[physics] WARNING: {pj} missing")
+        return
+    s = open(pj).read()
+    marker = "Default to vanilla proportional values"
+    if marker in s:
+        print("[physics] liquid-gravity fallback present -> no-op")
+        return
+    old = "    throw new Error('No liquid gravity settings, have you made sure the liquid gravity features are up to date?')"
+    if old not in s:
+        print("[physics] WARNING: gravity anchor not found")
+        return
+    new = ("    // 26.3 fork data has no liquid-gravity feature flags at all (verified:\n"
+           "    // both indep+prop false on 26.2 AND 26.3 AND upstream 1.21.x data) yet the\n"
+           "    // server physics is vanilla water. Default to vanilla proportional values\n"
+           "    // instead of crashing the bot at login.\n"
+           "    physics.waterGravity = physics.gravity / 16\n"
+           "    physics.lavaGravity = physics.gravity / 4")
+    open(pj, "w").write(s.replace(old, new, 1))
+    print("[physics] liquid-gravity fallback installed")
+
+
 def main():
     md26_2 = os.path.join(
         BASE, "minecraft-data", "minecraft-data", "data", "pc", "26.2", "protocol.json"
@@ -355,6 +501,16 @@ def main():
         patch_js(collectblock_inv, COLINV_OLD, COLINV_NEW, "bot.findBlocks({ matching: (block) => block.name === 'chest'", "collectblock auto-deposit discover chests")
     else:
         print(f"[8a] WARNING: {collectblock_inv} missing")
+
+    # 1. 26.3 game-data + registration + 8b (both data copies)
+    if os.path.isdir(DATA_SRC_263):
+        ensure_26_3_data(BASE)
+    else:
+        print(f"[data] WARNING: {DATA_SRC_263} missing (26.3 assets not present?)")
+
+    # 2. chunk impl + fluid-count + physics fallback
+    ensure_chunk_26_3(BASE)
+    ensure_physics_fallback(BASE)
 
     print("done.")
 

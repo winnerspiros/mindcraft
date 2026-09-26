@@ -30,6 +30,14 @@ second block" to anyone. The result is what matters, and how you feel while maki
   blueprint to copy. Use it when you want a grounded idea before you invent something.
 - !myBuilds — the structures you have already built (type, material, where).
 - !scan <x y z> [radius] — a quick block census of a small area.
+- Interactive blocks you place AND work: doors (all wood + iron + copper — !useDoor or
+  !activateBlock "door" to swing them), trapdoors ("trapdoor"), fence gates ("gate"), beds
+  (sleep with !goToBed / !sleepNearPlayer — wool beds set spawn, straw_bed is one-use travel),
+  chests/double chests/copper chests (!placeHere + !viewChest/!putInChest/!takeFromChest; two
+  side-by-side merge into 54 slots), levers/buttons/plates (!activateBlock "lever"/"button"/
+  "plate" to flip or press), note blocks and bells (!spamBlock for attention), copper bulbs
+  (pulse once to toggle — they hold). Full mechanics in your REDSTONE and STORAGE notes —
+  reach for them the way you'd reach for a crafting table: naturally, mid-build.
 
 ## Designing your own thing (the fun part)
 Describe what you are imagining ("a little stone lighthouse with a glass lamp room",
@@ -102,8 +110,10 @@ Your schematic tools pick a clear space near you automatically; trust that, then
   Treat poplar like any other wood family for gathering, crafting, and substitution.
 - Wool stairs + slabs (all 16 colours, e.g. white_wool_stairs, red_wool_slab) and concrete
   stairs + slabs (all 16 colours). Same shapes as wood/stone stairs and slabs.
-- Cushions (16 colours, e.g. white_cushion): soft sittable blocks, crafted from 3 wool
-  slabs. You can SIT on them. They are entities when placed, not plain blocks.
+- Cushions (16 colours, e.g. white_cushion): soft sittable ENTITY seats (not blocks —
+  place on a solid top, right-click to sit, jump up). Craft: 3 same-colour wool slabs
+  in a row (slabs = 3 wool in a row = 6, so a cushion costs 1.5 wool); recolour any
+  cushion + dye shapeless. Zero light — decoration + seat only, pair with a lamp.
 - Straw beds (straw_bed): a bed variant for sleeping through the night.
 - Shelf mushrooms (shelf_mushroom): grow on trees with bonemeal, edible, bouncy to land on.
 - Explorer maps renamed: cartographers now sell buried_treasure_map, buried_ancient_city_map,

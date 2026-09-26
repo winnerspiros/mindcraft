@@ -6,9 +6,13 @@ import { pathfinder } from 'mineflayer-pathfinder';
 import { plugin as pvp } from 'mineflayer-pvp';
 import { plugin as collectblock } from 'mineflayer-collectblock';
 import { plugin as autoEat } from 'mineflayer-auto-eat';
+import { plugin as tool } from 'mineflayer-tool';
 import plugin from 'mineflayer-armor-manager';
 const armorManager = plugin;
-let mc_version = settings.minecraft_version;
+let mc_version = null; // resolved lazily — settings are injected via setSettings() AFTER module imports, so reading settings here always yields undefined
+function resolvedVersion() {
+    return settings.minecraft_version || mc_version || '26.3';
+}
 let mcdata = null;
 let Item = null;
 
@@ -58,14 +62,14 @@ export function initBot(username) {
         host: settings.host,
         port: settings.port,
         auth: settings.auth,
-        version: mc_version,
+        version: resolvedVersion(),
         checkTimeoutInterval: 60000,  // 60s keep-alive check (default 30s) — reduces disconnects on slow servers
         viewDistance: 'short',        // bot loads a small area; default 'far' spikes server heap on join
         clientSettings: {
             viewDistance: 4,          // tell server to send only a 9x9 chunk area around the bot
         },
     }
-    if (!mc_version || mc_version === "auto") {
+    if (!options.version || options.version === "auto") {
         delete options.version;
     }
 
@@ -147,6 +151,7 @@ export function initBot(username) {
     bot.loadPlugin(pvp);
     bot.loadPlugin(collectblock);
     bot.loadPlugin(autoEat);
+    try { bot.loadPlugin(tool); } catch (_) {} // explicit: collectblock pulls it anyway, but direct calls need it registered first
     bot.loadPlugin(armorManager); // auto equip armor
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
@@ -358,6 +363,42 @@ export function getItemCraftingRecipes(itemName) {
     return recipes;
 }
 
+// True when a recipe fits the 2x2 player inventory grid (no crafting table
+// needed). Shaped recipes fit iff the bounding box of filled cells is <=2x2;
+// shapeless recipes fit iff they use <=4 ingredients total. Reads the RAW
+// recipe rows (shape data getItemCraftingRecipes deliberately drops), so this
+// is the only function that answers the table question — call it before
+// telling her (or a player) where to craft.
+export function recipeNeedsTable(itemName) {
+    // Returns true (needs table) | false (2x2 works) | null (no recipe / unknown).
+    // Shape rule: fits iff SOME recipe row has a filled-cell bbox <=2x2
+    // (shaped) or <=4 total units (shapeless) — EXCEPT the crafting table
+    // itself, which bootstraps from 2x2 planks by hand (4 planks -> table is a
+    // 2x2 recipe; the table is what UNLOCKS 3x3, so calling it table-gated is
+    // a lie that strands her). Same exemption logic covers nothing else: every
+    // other 2x2-fitter genuinely crafts in the inventory grid.
+    let itemId = null;
+    try { itemId = getItemId(itemName); } catch (_) { return null; }
+    if (itemId == null || !mcdata.recipes[itemId]) return null;
+    if (String(itemName).toLowerCase().replace(/^minecraft:/, '') === 'crafting_table') return false;
+    for (let r of mcdata.recipes[itemId]) {
+        if (r.ingredients) {
+            // shapeless: count total ingredient units
+            let total = 0;
+            for (let ing of r.ingredients) if (ing != null) total++;
+            if (total <= 4) return false;
+        } else if (r.inShape) {
+            let minR = 9, maxR = -1, minC = 9, maxC = -1;
+            r.inShape.forEach((row, ri) => row.forEach((c, ci) => {
+                if (c != null) { minR = Math.min(minR, ri); maxR = Math.max(maxR, ri); minC = Math.min(minC, ci); maxC = Math.max(maxC, ci); }
+            }));
+            if (maxR >= 0 && (maxR - minR) < 2 && (maxC - minC) < 2) return false;
+        }
+        // else: unknown shape kind — keep looking at other rows
+    }
+    return true; // no 2x2 row found on any recipe
+}
+
 export function isSmeltable(itemName) {
     const misc_smeltables = ['beef', 'chicken', 'cod', 'mutton', 'porkchop', 'rabbit', 'salmon', 'tropical_fish', 'potato', 'kelp', 'sand', 'cobblestone', 'clay_ball'];
     return itemName.includes('raw') || itemName.includes('log') || misc_smeltables.includes(itemName);
@@ -417,7 +458,7 @@ export function getItemBlockSources(itemName) {
 }
 
 export function getItemAnimalSource(itemName) {
-    return {    
+    return {
         raw_beef: 'cow',
         raw_chicken: 'chicken',
         raw_cod: 'cod',
@@ -429,6 +470,78 @@ export function getItemAnimalSource(itemName) {
         wool: 'sheep'
     }[itemName];
 }
+
+// Villager profession trades (emerald price = typical range). Static curated
+// table — minecraft-data has no trade offers, so this is hand-maintained.
+// Returns { profession, price } or null when no villager sells it.
+const VILLAGER_TRADES = {
+    // librarian (enchanted books: emeralds + book)
+    mending: { profession: 'librarian', price: '~10-38 emeralds + book' },
+    // cleric
+    ender_pearl: { profession: 'cleric', price: '~5 emeralds' },
+    redstone: { profession: 'cleric', price: '1 emerald' },
+    lapis_lazuli: { profession: 'cleric', price: '1 emerald' },
+    glowstone: { profession: 'cleric', price: '4 emeralds' },
+    // farmer
+    bread: { profession: 'farmer', price: '1 emerald' },
+    golden_carrot: { profession: 'farmer', price: '3 emeralds' },
+    // fletcher
+    arrow: { profession: 'fletcher', price: '1 emerald' },
+    bow: { profession: 'fletcher', price: '2-3 emeralds' },
+    // toolsmith / weaponsmith / armorer
+    diamond_pickaxe: { profession: 'toolsmith', price: '~12+ emeralds' },
+    diamond_axe: { profession: 'toolsmith', price: '~12+ emeralds' },
+    diamond_sword: { profession: 'weaponsmith', price: '~12+ emeralds' },
+    diamond_chestplate: { profession: 'armorer', price: 'high emerald cost' },
+    // leatherworker (saddle = uncraftable tack, master trade)
+    saddle: { profession: 'leatherworker', price: '~6 emeralds (master trade)' },
+    // cartographer
+    woodland_explorer_map: { profession: 'cartographer', price: '~12+ emeralds + compass' },
+    ocean_explorer_map: { profession: 'cartographer', price: '~12+ emeralds + compass' },
+    // wandering trader (no profession block — appears randomly)
+    nautilus_shell: { profession: 'wandering trader', price: '~5 emeralds' },
+    small_dripleaf: { profession: 'wandering trader', price: 'emeralds' },
+    moss_block: { profession: 'wandering trader', price: 'emeralds' },
+    melon: { profession: 'wandering trader', price: 'emerald' },
+};
+export function getItemVillagerTrade(itemName) {
+    return VILLAGER_TRADES[String(itemName || '').toLowerCase()] || null;
+}
+export const VILLAGER_TRADE_KEYS = new Set(Object.keys(VILLAGER_TRADES));
+
+// Loot-only / boss-gated items: no recipe, no mob drop, no villager sells them.
+// minecraft-data can't tell us this (it only knows drops + recipes), so this is
+// a hand-maintained set: full Netherite gear, trims, music discs, boss drops,
+// smithing templates, and structure-exclusive loot.
+const LOOT_ONLY = new Set([
+    // netherite gear (upgrade at a smithing table, never crafted/looted whole)
+    'netherite_helmet', 'netherite_chestplate', 'netherite_leggings', 'netherite_boots',
+    'netherite_sword', 'netherite_pickaxe', 'netherite_axe', 'netherite_shovel', 'netherite_hoe',
+    // smithing templates
+    'netherite_upgrade_smithing_template',
+    'sentry_armor_trim_smithing_template', 'dune_armor_trim_smithing_template',
+    'coast_armor_trim_smithing_template', 'wild_armor_trim_smithing_template',
+    'ward_armor_trim_smithing_template', 'tide_armor_trim_smithing_template',
+    'vex_armor_trim_smithing_template', 'rib_armor_trim_smithing_template',
+    'snout_armor_trim_smithing_template', 'eye_armor_trim_smithing_template',
+    'spire_armor_trim_smithing_template', 'flow_armor_trim_smithing_template',
+    'bolt_armor_trim_smithing_template', 'host_armor_trim_smithing_template',
+    'shaper_armor_trim_smithing_template', 'silence_armor_trim_smithing_template',
+    // music discs
+    'music_disc_13', 'music_disc_cat', 'music_disc_blocks', 'music_disc_chirps',
+    'music_disc_far', 'music_disc_mall', 'music_disc_mellohi', 'music_disc_stal',
+    'music_disc_strad', 'music_disc_ward', 'music_disc_11', 'music_disc_wait',
+    'music_disc_otherside', 'music_disc_relic', 'music_disc_5', 'music_disc_pigstep',
+    // boss / structure-exclusive
+    'dragon_egg', 'dragon_head', 'elytra', 'totem_of_undying', 'heart_of_the_sea',
+    'trident', 'mace', 'heavy_core', 'wind_charge', 'ominous_trial_key',
+    'trial_key', 'vault', 'ominous_vault', 'trial_spawner',
+    'recovery_compass', 'echo_shard', 'disc_fragment_9', 'turtle_helmet',
+]);
+export function getItemLootOnly(itemName) {
+    return LOOT_ONLY.has(String(itemName || '').toLowerCase()) ? 'loot-only' : null;
+}
+export const LOOT_ONLY_KEYS = LOOT_ONLY;
 
 export function getBlockTool(blockName) {
     let block = mcdata.blocksByName[blockName];
@@ -449,6 +562,257 @@ export function getBlockHarvestTools(blockName) {
     return Object.keys(block.harvestTools)
         .map(id => getItemName(id))
         .filter(Boolean);
+}
+
+// ---- block vision: physics, classes, hazard ----
+// Gravity: falls when unsupported (sand/gravel/concrete powder/anvil/dragon egg).
+// Pistons, string and "canPlaceOn" plans must treat these as moving ground.
+export const GRAVITY_BLOCKS = new Set([
+    'sand', 'red_sand', 'gravel', 'anvil', 'chipped_anvil', 'damaged_anvil', 'dragon_egg',
+    'white_concrete_powder', 'orange_concrete_powder', 'magenta_concrete_powder',
+    'light_blue_concrete_powder', 'yellow_concrete_powder', 'lime_concrete_powder',
+    'pink_concrete_powder', 'gray_concrete_powder', 'light_gray_concrete_powder',
+    'cyan_concrete_powder', 'purple_concrete_powder', 'blue_concrete_powder',
+    'brown_concrete_powder', 'green_concrete_powder', 'red_concrete_powder', 'black_concrete_powder',
+]);
+
+// Tile-entity / utterly-hard blocks a piston can NEVER push or pull. Secret doors,
+// pitfalls and push-traps must be planned around these (use them as the frame that
+// never moves, or keep them out of the moving part entirely).
+export const UNPUSHABLE = new Set([
+    'bedrock', 'obsidian', 'crying_obsidian', 'reinforced_deepslate',
+    'spawner', 'trial_spawner', 'vault', 'end_portal_frame', 'command_block',
+    'structure_block', 'barrier', 'chest', 'trapped_chest', 'ender_chest',
+    'copper_chest', 'exposed_copper_chest', 'weathered_copper_chest', 'oxidized_copper_chest',
+    'furnace', 'blast_furnace', 'smoker', 'hopper', 'dropper', 'dispenser', 'crafter',
+    'brewing_stand', 'enchanting_table', 'beacon', 'jukebox', 'lectern', 'chiseled_bookshelf',
+    'white_shulker_box', 'orange_shulker_box', 'magenta_shulker_box', 'light_blue_shulker_box',
+    'yellow_shulker_box', 'lime_shulker_box', 'pink_shulker_box', 'gray_shulker_box',
+    'light_gray_shulker_box', 'cyan_shulker_box', 'purple_shulker_box', 'blue_shulker_box',
+    'brown_shulker_box', 'green_shulker_box', 'red_shulker_box', 'black_shulker_box',
+]);
+
+// Blocks that hurt, burn, freeze or blow up. Vision marks these with (!) so she
+// never pathfinds through them blindly and reads them as danger in others' builds.
+export const HAZARD_BLOCKS = new Set([
+    'lava', 'fire', 'soul_fire', 'magma_block', 'cactus', 'pointed_dripstone',
+    'wither_rose', 'sweet_berry_bush', 'powder_snow', 'tnt',
+]);
+
+const _INTERACTIVE_SUFFIX = ['_door', '_trapdoor', '_fence_gate', '_button', '_pressure_plate', '_bed', '_boat'];
+
+// Right-clickable / usable blocks: doors, hatches, switches, beds, boats,
+// workstations, containers, note/bell/bulb. Used to spot "mechanic" blocks in a
+// scan and as pointing-target candidates (someone gesturing at one means something).
+export function isInteractiveBlock(name) {
+    const n = String(name || '').toLowerCase();
+    if (!n) return false;
+    for (const s of _INTERACTIVE_SUFFIX) if (n.endsWith(s)) return true;
+    return ['lever', 'chest', 'trapped_chest', 'copper_chest', 'exposed_copper_chest',
+        'weathered_copper_chest', 'oxidized_copper_chest', 'ender_chest', 'barrel',
+        'note_block', 'bell', 'copper_bulb', 'daylight_detector', 'jukebox', 'lectern',
+        'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'brewing_stand',
+        'enchanting_table', 'anvil', 'chipped_anvil', 'damaged_anvil', 'grindstone',
+        'stonecutter', 'loom', 'cartography_table', 'smithing_table', 'composter',
+        'cauldron', 'beacon', 'shulker_box', 'crafter', 'dispenser', 'dropper',
+        'hopper', 'respawn_anchor'].includes(n);
+}
+
+// Terrain: generates with the land itself (stone/dirt/deepslate/netherrack/end
+// rock, ores, natural ice/snow, sculk, dripstone...). Seeing these = the world as
+// the seed made it.
+export const NATURAL_TERRAIN = new Set([
+    'air', 'cave_air', 'void_air', 'grass_block', 'dirt', 'coarse_dirt', 'rooted_dirt',
+    'podzol', 'mycelium', 'mud', 'muddy_mangrove_roots', 'clay',
+    'stone', 'cobblestone', 'mossy_cobblestone', 'gravel', 'sand', 'red_sand', 'water',
+    'lava', 'bedrock', 'deepslate', 'cobbled_deepslate', 'tuff', 'diorite', 'andesite',
+    'granite', 'calcite', 'dripstone_block', 'pointed_dripstone', 'smooth_basalt', 'basalt',
+    'blackstone', 'netherrack', 'soul_sand', 'soul_soil', 'glowstone', 'nether_quartz_ore',
+    'nether_gold_ore', 'ancient_debris', 'end_stone', 'obsidian',
+    'snow', 'snow_block', 'ice', 'packed_ice', 'blue_ice', 'frosted_ice', 'powder_snow',
+    'sandstone', 'red_sandstone', 'smooth_sandstone', 'smooth_red_sandstone',
+    'cut_sandstone', 'cut_red_sandstone', 'chiseled_sandstone', 'chiseled_red_sandstone',
+    'sculk', 'sculk_vein', 'sculk_catalyst', 'sculk_sensor', 'sculk_shrieker', 'reinforced_deepslate',
+    'coal_ore', 'iron_ore', 'gold_ore', 'diamond_ore', 'redstone_ore', 'copper_ore',
+    'lapis_ore', 'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore',
+    'deepslate_gold_ore', 'deepslate_diamond_ore', 'deepslate_redstone_ore',
+    'deepslate_copper_ore', 'deepslate_lapis_ore', 'deepslate_emerald_ore',
+    'infested_stone', 'infested_cobblestone', 'infested_deepslate',
+]);
+
+// Vegetation: grows on its own (trees, flowers, crops-gone-wild, vines, moss...).
+// A forest of these is nature; a PERFECT ROW of them is a player farm.
+export const NATURAL_VEG = new Set([
+    'short_grass', 'tall_grass', 'grass', 'fern', 'large_fern', 'dead_bush', 'vine',
+    'glow_lichen', 'moss_block', 'moss_carpet', 'hanging_roots', 'spore_blossom',
+    'azalea', 'flowering_azalea', 'azalea_leaves', 'flowering_azalea_leaves',
+    'cactus', 'sugar_cane', 'bamboo', 'bamboo_sapling', 'kelp', 'kelp_plant',
+    'seagrass', 'tall_seagrass', 'sea_pickle', 'lily_pad', 'frogspawn',
+    'red_mushroom', 'brown_mushroom', 'red_mushroom_block', 'brown_mushroom_block',
+    'mushroom_stem', 'nether_sprouts', 'crimson_roots', 'warped_roots', 'crimson_fungus',
+    'warped_fungus', 'weeping_vines', 'weeping_vines_plant', 'twisting_vines', 'twisting_vines_plant',
+    'shroomlight', 'glow_berries', 'glow_berry_bush', 'sweet_berry_bush', 'cave_vines',
+    'cave_vines_plant', 'dripleaf', 'small_dripleaf', 'big_dripleaf', 'big_dripleaf_stem',
+    'chorus_plant', 'chorus_flower', 'cocoa', 'wheat', 'carrots', 'potatoes', 'beetroots',
+    'melon_stem', 'pumpkin_stem', 'torchflower_crop', 'pitcher_crop',
+]);
+
+// Generates naturally AND gets built/farmed by players: logs, leaves, wool
+// (mansions), pumpkins/melons (patches + farms), hay bales (villages), glass-free
+// structures... vision must read ARRANGEMENT, not just the name.
+export const AMBIGUOUS_ORIGIN = new Set([
+    'hay_block', 'pumpkin', 'carved_pumpkin', 'jack_o_lantern', 'melon',
+    'bookshelf', 'lodestone', 'tinted_glass',
+]);
+
+function _isWoodOrLeaf(n) {
+    if (n.endsWith('_log') || n.endsWith('_wood') || n.includes('_leaves') || n.endsWith('_sapling')) return true;
+    if (n === 'bamboo' || n === 'bamboo_sapling') return true;
+    return false;
+}
+
+function _isWool(n) { return n.endsWith('_wool') || n === 'wool'; }
+
+function _isDoorish(n) {
+    return n.endsWith('_door') || n.endsWith('_trapdoor') || n.endsWith('_fence_gate') ||
+        n.endsWith('_button') || n.endsWith('_pressure_plate') || n.endsWith('_stairs') ||
+        n.endsWith('_slab') || n.endsWith('_fence') || n.endsWith('_sign') || n.endsWith('_boat');
+}
+
+// Where did this block most likely come from: terrain (seed-made land),
+// vegetation (grown), crafted (only players make/place these), ambiguous (both —
+// read the arrangement), air, or unknown. The single function behind "natural vs
+// player-placed" vision.
+//
+// Headless-safe: mcdata is null until the bot logs in, so the sets above decide
+// everything they can on their own; the recipe cross-check is a bonus, not the
+// gate. Crafted = explicit set (every recipe output the registry knows) PLUS the
+// recipe-lookup when data is live — so furnace/oak_planks answer even headless.
+const CRAFTED_EXTRA = new Set([
+    'oak_planks', 'spruce_planks', 'birch_planks', 'jungle_planks', 'acacia_planks',
+    'dark_oak_planks', 'mangrove_planks', 'cherry_planks', 'pale_oak_planks', 'poplar_planks',
+    'bamboo_planks', 'crimson_planks', 'warped_planks',
+    'crafting_table', 'furnace', 'blast_furnace', 'smoker', 'chest', 'trapped_chest',
+    'barrel', 'hopper', 'dropper', 'dispenser', 'crafter', 'brewing_stand',
+    'enchanting_table', 'anvil', 'chipped_anvil', 'damaged_anvil', 'grindstone',
+    'stonecutter', 'loom', 'cartography_table', 'smithing_table', 'composter',
+    'cauldron', 'jukebox', 'lectern', 'beacon', 'bookshelf', 'chiseled_bookshelf',
+    'torch', 'redstone_torch', 'soul_torch', 'copper_torch', 'lantern', 'copper_lantern',
+    'soul_lantern', 'redstone_lamp', 'copper_bulb', 'redstone_block', 'tnt',
+    'glass', 'glass_pane', 'tinted_glass', 'white_stained_glass',
+    'brick', 'bricks', 'stone_bricks', 'deepslate_bricks', 'deepslate_tiles',
+    'nether_bricks', 'red_nether_bricks', 'end_stone_bricks', 'prismarine',
+    'prismarine_bricks', 'dark_prismarine', 'sea_lantern', 'conduit',
+    'sponge', 'wet_sponge', 'bookshelf',
+]);
+export function blockOrigin(name) {
+    const n = String(name || '').toLowerCase();
+    if (!n) return 'air';
+    if (n === 'air' || n === 'cave_air' || n === 'void_air') return 'air';
+    if (NATURAL_TERRAIN.has(n)) return 'terrain';
+    if (NATURAL_VEG.has(n)) return 'vegetation';
+    if (CRAFTED_EXTRA.has(n)) return 'crafted';
+    if (_isDoorish(n)) return 'crafted'; // doors/stairs/slabs/fences/signs/boats only exist placed
+    if (AMBIGUOUS_ORIGIN.has(n) || _isWoodOrLeaf(n) || _isWool(n)) return 'ambiguous';
+    try {
+        if (mcdata && mcdata.blocksByName && mcdata.blocksByName[n]) {
+            if (mcdata.recipes) {
+                for (const id of Object.keys(mcdata.recipes)) {
+                    const item = mcdata.items && mcdata.items[id];
+                    if (item && item.name === n) return 'crafted';
+                }
+            }
+            return 'ambiguous';
+        }
+    } catch (_) { /* registry not ready — fall through */ }
+    return 'unknown';
+}
+
+// Full physics card for one block: solidity, light, gravity, piston-pushable,
+// hazard, interactive. Powers !blockFacts and the "movable / good / bad" answers.
+// Headless-safe: falls back to the static tables above when the registry isn't
+// loaded yet (bot offline), so answers stay correct, just less complete.
+const _STATIC_FACTS = {
+    sand: { solid: true, transparent: false, emitLight: 0, gravity: true, pushable: true, hazard: false, interactive: false, material: 'mineable/shovel' },
+    red_sand: { solid: true, transparent: false, emitLight: 0, gravity: true, pushable: true, hazard: false, interactive: false, material: 'mineable/shovel' },
+    gravel: { solid: true, transparent: false, emitLight: 0, gravity: true, pushable: true, hazard: false, interactive: false, material: 'mineable/shovel' },
+    stone: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: 'mineable/pickaxe' },
+    oak_planks: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: 'mineable/axe' },
+    furnace: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: true, material: 'mineable/pickaxe' },
+    chest: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: true, material: 'mineable/axe' },
+    obsidian: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: false, material: 'mineable/pickaxe' },
+    bedrock: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: false, material: null },
+    tnt: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: true, interactive: false, material: null },
+    water: { solid: false, transparent: true, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: false, material: null },
+    lava: { solid: false, transparent: true, emitLight: 15, gravity: false, pushable: false, hazard: true, interactive: false, material: null },
+    glass: { solid: true, transparent: true, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: null },
+    torch: { solid: false, transparent: true, emitLight: 14, gravity: false, pushable: false, hazard: false, interactive: false, material: null },
+    white_wool: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: null },
+    diamond_ore: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: 'mineable/pickaxe' },
+    oak_log: { solid: true, transparent: false, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: false, material: 'mineable/axe' },
+    oak_door: { solid: true, transparent: true, emitLight: 0, gravity: false, pushable: true, hazard: false, interactive: true, material: 'mineable/axe' },
+    wheat: { solid: false, transparent: true, emitLight: 0, gravity: false, pushable: false, hazard: false, interactive: false, material: null },
+};
+export function getBlockFacts(name) {
+    const n = String(name || '').toLowerCase();
+    let b = null;
+    try { b = mcdata && mcdata.blocksByName ? mcdata.blocksByName[n] : null; } catch (_) { b = null; }
+    if (b) {
+        return {
+            name: n,
+            solid: b.boundingBox === 'block',
+            transparent: !!b.transparent,
+            emitLight: b.emitLight || 0,
+            gravity: GRAVITY_BLOCKS.has(n),
+            pushable: b.boundingBox === 'block' && !UNPUSHABLE.has(n),
+            hazard: HAZARD_BLOCKS.has(n) || n === 'tnt',
+            interactive: isInteractiveBlock(n),
+            origin: blockOrigin(n),
+            material: b.material || null,
+        };
+    }
+    // static fallback: correct for the common blocks, honest about the rest.
+    const s = _STATIC_FACTS[n];
+    if (!s) return null;
+    return { name: n, ...s, origin: blockOrigin(n) };
+}
+
+// Light movement: which blocks let sky/block light PASS THROUGH vs which
+// BLOCK it (cast shadow). Rule from the registry: transparent=true passes
+// (glass, leaves, water, ice, trapdoor, ladder, vine, torch...), false blocks
+// (stone, planks, wool, slabs, stairs, carpet, fences, chests, glowstone...).
+// Cushions are entities (not blocks) — they never block light, same as air.
+// Slabs/stairs/carpets do NOT pass light despite their shape (registry says
+// opaque) — the classic spawn-proofing trap. Powers !lightPasses + the brain.
+const _LIGHT_PASS_CACHE = new Map();
+// Registry-verified transparent (light passes) vs opaque (blocks) for the
+// common blocks — static so answers stay correct even headless/offline.
+// Verified against minecraft-data 1.21.4 transparent flags 2026-09-26.
+const _LIGHT_PASS_YES = new Set(['glass', 'glass_pane', 'white_stained_glass', 'oak_leaves',
+    'water', 'ice', 'oak_trapdoor', 'ladder', 'vine', 'weeping_vines', 'twisting_vines',
+    'cave_vines', 'torch', 'wall_torch', 'lantern', 'rail', 'detector_rail', 'cobweb',
+    'air', 'cave_air', 'void_air', 'snow', 'short_grass', 'tall_grass', 'fern',
+    'redstone_wire', 'lever', 'button', 'repeater', 'comparator', 'daylight_detector']);
+const _LIGHT_PASS_NO = new Set(['cobblestone', 'stone', 'oak_planks', 'white_wool',
+    'oak_slab', 'cobblestone_slab', 'oak_stairs', 'white_carpet', 'oak_fence',
+    'chest', 'barrel', 'glowstone', 'dirt', 'grass_block', 'sand', 'gravel',
+    'diamond_ore', 'coal_ore', 'iron_ore', 'obsidian', 'furnace', 'tnt', 'bedrock']);
+export function lightPasses(name) {
+    const n = String(name || '').toLowerCase();
+    if (!n) return null;
+    if (/cushion$/.test(n)) return true; // entity seat — light passes like air
+    if (_LIGHT_PASS_CACHE.has(n)) return _LIGHT_PASS_CACHE.get(n);
+    let v = null;
+    try {
+        const b = mcdata && mcdata.blocksByName ? mcdata.blocksByName[n] : null;
+        if (b) v = !!b.transparent;
+    } catch (_) { v = null; }
+    if (v === null) {
+        if (_LIGHT_PASS_YES.has(n)) v = true;
+        else if (_LIGHT_PASS_NO.has(n)) v = false;
+    }
+    _LIGHT_PASS_CACHE.set(n, v);
+    return v;
 }
 
 // Substitute candidates for a block: the rest of its material family (same shape,
@@ -670,7 +1034,7 @@ function formatPlan(targetItem, { required, steps, leftovers }) {
 
     if (Object.keys(required).length > 0) {
         lines.push('You are missing the following items:');
-        Object.entries(required).forEach(([item, count]) => 
+        Object.entries(required).forEach(([item, count]) =>
             lines.push(`- ${count} ${item}`));
         lines.push('\nOnce you have these items, here\'s your crafting plan:');
     } else {
@@ -681,13 +1045,22 @@ function formatPlan(targetItem, { required, steps, leftovers }) {
     lines.push('');
     lines.push(...steps);
 
+    // Crafting-table verdict: computed from the raw recipe shape (2x2 bbox or
+    // <=4 shapeless units = inventory grid, else table). Say it plainly so she
+    // knows WHERE to stand before she starts.
+    try {
+        const need = recipeNeedsTable(targetItem);
+        if (need === true) lines.push('\nNeeds a crafting table (3x3) — place or find one first.');
+        else if (need === false) lines.push('\nNo table needed — fits the 2x2 inventory grid.');
+    } catch (_) {}
+
     if (Object.keys(required).some(item => item.includes('oak')) && !targetItem.includes('oak')) {
         lines.push('Note: Any varient of wood can be used for this recipe.');
     }
 
     if (Object.keys(leftovers).length > 0) {
         lines.push('\nYou will have leftover:');
-        Object.entries(leftovers).forEach(([item, count]) => 
+        Object.entries(leftovers).forEach(([item, count]) =>
             lines.push(`- ${count} ${item}`));
     }
 
