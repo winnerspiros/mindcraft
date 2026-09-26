@@ -230,6 +230,22 @@ const modes_list = [
         update: async function (agent) {
             // Fight only when calm/brave; at/above the threshold cowardice flees.
             if ((agent.psyche?.mood?.fear ?? 0) >= FEAR_FLEE_THRESHOLD) return;
+            // FLYERS FIRST (wither snipes from 30+ blocks — past the 14-block
+            // ground scan): a wide sync eye-scan only, no RCON here (update
+            // must stay <100ms; defendSelf does the RCON truth itself).
+            const FLYERS = ['wither', 'ghast', 'phantom', 'blaze', 'ender_dragon'];
+            let foe = null;
+            try {
+                foe = world.getNearestEntityWhere(agent.bot,
+                    entity => entity?.position && Number.isFinite(entity.position.x) && entity.name && FLYERS.includes(entity.name), 48);
+            } catch (_) {}
+            if (foe) {
+                say(agent, `Spotted a ${foe.name.replace(/_/g, ' ')} — bow fight!`);
+                execute(this, agent, async () => {
+                    await skills.defendSelf(agent.bot, 48);
+                });
+                return;
+            }
             const enemy = world.getNearestEntityWhere(agent.bot,
                 entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 14);
             if (!enemy) return;
