@@ -446,6 +446,165 @@ def ensure_physics_fallback(base):
     print("[physics] liquid-gravity fallback installed")
 
 
+def ensure_pathfinder_prs(base):
+    """Adopt 8 upstream pathfinder PRs + 3 gated fixes (df0324e) into
+    node_modules/mineflayer-pathfinder. Marker-idempotent per hunk: each
+    patch applies only if its marker comment/code is absent, and skips with
+    a warning if the anchor text moved (never blind-writes). Covers:
+    #394 swim-up+shore (method+wiring+executor), #384 water plants, #393
+    no-corner-cut, #392 overhead reach, #385 drop-to-feet, #386 revision
+    guard, #369 heap+sentinel, #357 goto order (+else fix), #371 placing
+    reset, #387 enchants w/ NBT fallback."""
+    import re
+    pf = os.path.join(base, "mineflayer-pathfinder")
+    edits = [
+        # (file, marker, old, new, label)
+        ("lib/heap.js", "if (smallerChild < size) {",
+         "      if (smallerChild < size - 1) {",
+         "      if (smallerChild < size) {", "#369 heap sift-down bound"),
+        ("lib/goals.js", "let max = -Infinity",
+         "  heuristic (node) {\n    let max = Number.MIN_VALUE",
+         "  heuristic (node) {\n    // -Infinity is the correct identity for max-reduction (MIN_VALUE is +5e-324, wrongly clamps negative GoalInvert heuristics to 0).\n    let max = -Infinity", "#369 GoalCompositeAll sentinel"),
+        ("lib/goals.js", "Measure reach from eyes to each visible face",
+         "  isEnd (node) {\n    if (node.distanceTo(this.pos.offset(0, this.entityHeight, 0)) > this.reach) return false",
+         "  isEnd (node) {\n    // Measure reach from eyes to each visible face (not feet-to-center-shifted), so overhead blocks within range aren't wrongly rejected.\n    const startPos = new Vec3(node.x + 0.5, node.y + this.entityHeight, node.z + 0.5)",
+         "#392 overhead reach (1/2: hoist startPos, drop feet check)"),
+        ("lib/goals.js", "if (startPos.distanceTo(targetPos) > this.reach) continue",
+         "      const startPos = new Vec3(node.x + 0.5, node.y + this.entityHeight, node.z + 0.5)\n      const rayPos",
+         "      if (startPos.distanceTo(targetPos) > this.reach) continue\n      const rayPos",
+         "#392 overhead reach (2/2: per-face range gate)"),
+        ("lib/goto.js", "} else if (results.path.length === 0) {",
+         "    function noPathListener (results) {\n      if (results.path.length === 0) {\n        cleanup()\n      } else if (results.status === 'noPath') {",
+         "    function noPathListener (results) {\n      if (results.status === 'noPath') {",
+         "#357 goto noPath-first (1/2)"),
+        ("lib/goto.js", "} else if (results.status === 'timeout') {\n        cleanup(error('Timeout', 'Took to long to decide path to goal!'))\n      } else if (results.path.length === 0) {",
+         "} else if (results.status === 'noPath') {",
+         "} else if (results.status === 'noPath') {",
+         "#357 noop guard (structure check)"),
+        ("lib/movements.js", "if (node.y - (blockLand.position.y + 1) <= this.maxDropDown)",
+         "        if (node.y - blockLand.position.y <= this.maxDropDown) return this.getBlock(blockLand.position, 0, 1, 0)",
+         "        // Measure drop to landing FEET (support top), not support base — else legal 1-block stairs are rejected at maxDropDown=1.\n        if (node.y - (blockLand.position.y + 1) <= this.maxDropDown) return this.getBlock(blockLand.position, 0, 1, 0)",
+         "#385 drop-to-feet"),
+        ("lib/movements.js", "if (y === 1) return",
+         "    const blockC = this.getBlock(node, dir.x, 0, dir.z) // Landing block or standing on block when jumping up by 1\n    const y = blockC.physical ? 1 : 0\n\n    const block0",
+         "    const blockC = this.getBlock(node, dir.x, 0, dir.z) // Landing block or standing on block when jumping up by 1\n    const y = blockC.physical ? 1 : 0\n    // A diagonal jump clips the corner of the raised block — route raised landings via a cardinal jump head-on instead.\n    if (y === 1) return\n\n    const block0",
+         "#393 raised-diagonal guard"),
+        ("lib/movements.js", "if (!blockB1.safe || !blockC1.safe) return",
+         "    const blockD1 = this.getBlock(node, 0, y - 1, dir.z)\n    cost1 += this.safeOrBreak(blockB1, toBreak1)",
+         "    const blockD1 = this.getBlock(node, 0, y - 1, dir.z)\n    if (!blockB1.safe || !blockC1.safe) return\n    cost1 += this.safeOrBreak(blockB1, toBreak1)",
+         "#393 side-corridor guard (1/2)"),
+        ("lib/movements.js", "if (!blockB2.safe || !blockC2.safe) return",
+         "    const blockD2 = this.getBlock(node, dir.x, y - 1, 0)\n    cost2 += this.safeOrBreak(blockB2, toBreak2)",
+         "    const blockD2 = this.getBlock(node, dir.x, y - 1, 0)\n    if (!blockB2.safe || !blockC2.safe) return\n    cost2 += this.safeOrBreak(blockB2, toBreak2)",
+         "#393 side-corridor guard (2/2)"),
+        ("lib/movements.js", "this.getMoveWaterExit(node, neighbors)",
+         "    this.getMoveDown(node, neighbors)\n    this.getMoveUp(node, neighbors)\n\n    // Enhanced climbing moves",
+         "    this.getMoveDown(node, neighbors)\n    this.getMoveUp(node, neighbors)\n    this.getMoveWaterExit(node, neighbors)\n\n    // Enhanced climbing moves",
+         "#394 wire water-exit into move list"),
+        ("index.js", "let pathRevision = 0",
+         "  let path = []\n  let pathUpdated = false",
+         "  let path = []\n  let pathRevision = 0 // bumped on every reset/stop so stale path_update results are discarded, not installed\n  let pathUpdated = false",
+         "#386 revision counter decl"),
+        ("index.js", "const enchants = tool?.enchants ??",
+         "      const enchants = (tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : []",
+         "      // Component API first (1.20.5+; legacy NBT second) so Efficiency etc. rank correctly.\n      const enchants = tool?.enchants ?? ((tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : [])",
+         "#387 enchants via component API"),
+        ("index.js", "Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)",
+         "    const reached = Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < 1",
+         "    const reached = Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)",
+         "#394 in-water arrival 0.25"),
+        ("index.js", "Swim straight up when the next node is directly above",
+         "    if (bot.entity.isInWater) {\n      bot.setControlState('jump', true)",
+         "    if (bot.entity.isInWater) {\n      // Swim straight up when the next node is directly above (water-exit ascent) — forward would fight the column.\n      if (Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35) bot.setControlState('forward', false)\n      bot.setControlState('jump', true)",
+         "#394 forward-off on vertical ascent"),
+        ("index.js", "A useOne is the whole of this node's work",
+         "          placingBlock = nextPoint.toPlace.shift()\n          if (!placingBlock) {\n            placing = false\n          }",
+         "          placingBlock = nextPoint.toPlace.shift()\n          if (!placingBlock) {\n            // A useOne is the whole of this node's work — without this the next tick falls through to scaffolding with nothing to place.\n            placing = false\n            lastNodeTime = performance.now()\n          }",
+         "#371 placing reset + lastNodeTime"),
+    ]
+    # #386 multi-site guard: handled as one block (decl above + 4 sites)
+    rev_sites = [
+        ("    pathRevision++\n    if (!stopPathing", "  function resetPath (reason, clearStates = true) {\n    if (!stopPathing", "  function resetPath (reason, clearStates = true) {\n    pathRevision++\n    if (!stopPathing", "resetPath bump"),
+        ("    pathRevision++\n    stopPathing = false", "  function stop () {\n    stopPathing = false", "  function stop () {\n    pathRevision++\n    stopPathing = false", "stop() bump"),
+        ("const revision = pathRevision\n      bot.emit('path_update', results)\n      if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path\n      path = results.path\n      astartTimedout = results.status === 'partial'\n    }\n\n    if (bot.pathfinder.LOSWhenPlacingBlocks", "bot.emit('path_update', results)\n      path = results.path\n      astartTimedout = results.status === 'partial'\n    }\n\n    if (bot.pathfinder.LOSWhenPlacingBlocks",
+         "bot.emit('path_update', results)\n      path = results.path\n      astartTimedout = results.status === 'partial'\n    }\n\n    if (bot.pathfinder.LOSWhenPlacingBlocks",
+         "#386 continued-search guard"),
+        ("const revision = pathRevision\n          bot.emit('path_update', results)\n          if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true", "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
+         "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
+         "#386 fresh-search guard"),
+    ]
+    applied, skipped, warned = 0, 0, 0
+    for rel, marker, old, new, label in edits:
+        p = os.path.join(pf, rel)
+        if not os.path.exists(p):
+            print(f"[pf] WARNING: {rel} missing"); warned += 1; continue
+        s = open(p).read()
+        if marker in s:
+            skipped += 1; continue
+        if old not in s:
+            print(f"[pf] WARNING: {label}: anchor moved, skipped"); warned += 1; continue
+        open(p, "w").write(s.replace(old, new, 1))
+        print(f"[pf] {label}: applied"); applied += 1
+    for marker, old, new, label in rev_sites:
+        p = os.path.join(pf, "index.js")
+        s = open(p).read()
+        if marker in s:
+            skipped += 1; continue
+        if old not in s:
+            print(f"[pf] WARNING: {label}: anchor moved, skipped"); warned += 1; continue
+        open(p, "w").write(s.replace(old, new, 1))
+        print(f"[pf] {label}: applied"); applied += 1
+    # #394 method body (large): apply only if absent
+    mp = os.path.join(pf, "lib", "movements.js")
+    s = open(mp).read()
+    if "getMoveWaterExit (node, neighbors)" in s:
+        skipped += 1
+    else:
+        anchor = "  // Jump up, down or forward over a 1 block gap"
+        method = ("  // Swim up through water or climb out onto a shore block (#394)\n"
+                  "  getMoveWaterExit (node, neighbors) {\n"
+                  "    if (!this.getBlock(node, 0, 0, 0).liquid) return\n"
+                  "    const above = this.getBlock(node, 0, 1, 0)\n"
+                  "    if (above.physical || this.getBlock(node, 0, 2, 0).physical) return\n"
+                  "    // Swimming upward needs no scaffolding, unlike the ordinary tower move.\n"
+                  "    if (above.liquid) {\n"
+                  "      neighbors.push(new Move(node.x, node.y + 1, node.z, node.remainingBlocks, 1 + this.liquidCost))\n"
+                  "    }\n"
+                  "    for (const dir of cardinalDirections) {\n"
+                  "      const shore = this.getBlock(node, dir.x, 0, dir.z)\n"
+                  "      if (!shore.physical || this.blocksToAvoid.has(shore.type)) continue\n"
+                  "      const feet = this.getBlock(node, dir.x, 1, dir.z)\n"
+                  "      const head = this.getBlock(node, dir.x, 2, dir.z)\n"
+                  "      if (feet.liquid || head.liquid) continue\n"
+                  "      const toBreak = []\n"
+                  "      const cost = 2 + this.liquidCost + this.safeOrBreak(feet, toBreak) + this.safeOrBreak(head, toBreak)\n"
+                  "      if (cost >= 100) continue\n"
+                  "      neighbors.push(new Move(node.x + dir.x, node.y + 1, node.z + dir.z, node.remainingBlocks, cost, toBreak))\n"
+                  "    }\n"
+                  "  }\n\n")
+        if anchor not in s:
+            print("[pf] WARNING: #394 method anchor moved, skipped"); warned += 1
+        else:
+            open(mp, "w").write(s.replace(anchor, method + anchor, 1))
+            print("[pf] #394 getMoveWaterExit method: applied"); applied += 1
+    # #384 water-plant liquids (small, anchor on plain water add)
+    if "bubble_column" in s:
+        skipped += 1
+    else:
+        old = "    this.liquids.add(registry.blocksByName.lava.id)\n"
+        new = (old + "    // Water-containing blocks that swim like water even though their ID is not water (#384)\n"
+               "    for (const name of ['seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']) {\n"
+               "      if (registry.blocksByName[name]) this.liquids.add(registry.blocksByName[name].id)\n"
+               "    }\n")
+        s = open(mp).read()
+        if old not in s:
+            print("[pf] WARNING: #384 liquids anchor moved, skipped"); warned += 1
+        else:
+            open(mp, "w").write(s.replace(old, new, 1))
+            print("[pf] #384 water-plant liquids: applied"); applied += 1
+    print(f"[pf] done: {applied} applied, {skipped} already present, {warned} warnings")
+
+
 def main():
     md26_2 = os.path.join(
         BASE, "minecraft-data", "minecraft-data", "data", "pc", "26.2", "protocol.json"
@@ -511,6 +670,9 @@ def main():
     # 2. chunk impl + fluid-count + physics fallback
     ensure_chunk_26_3(BASE)
     ensure_physics_fallback(BASE)
+
+    # 3. upstream pathfinder PRs (idempotent — no-op when already present)
+    ensure_pathfinder_prs(BASE)
 
     print("done.")
 

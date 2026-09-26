@@ -2803,6 +2803,51 @@ export async function defendSelf(bot, range=9) {
     return attacked;
 }
 
+export async function hawkeyeShot(bot, entity, weapon='bow') {
+    /**
+     * One aimed shot with the hawkeye trajectory solver (L-C-B/mineflayer-schem
+     * review surfaced the pattern; solver is minecrafthawkeye's
+     * getMasterGrade, already loaded as bot.hawkEye). Solves gravity drop +
+     * target velocity + block interception in one call — strictly better than
+     * the flat lead-aim in shootBow for anything past ~10 blocks.
+     * Single shot, no listeners, no loops: look, draw, release, done.
+     * Returns true if an arrow was loosed, false if no solution (too far),
+     * blocked by terrain, or missing gear — caller falls back to legacy aim
+     * or melee. NEVER starts the radar (1 OCPU).
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {Entity} entity, live target entity.
+     * @param {string} weapon, 'bow' (default) | 'crossbow' | 'trident'.
+     * @returns {Promise<boolean>} true if a shot was loosed.
+     * @example
+     * await skills.hawkeyeShot(bot, enemy);
+     **/
+    if (!bot.hawkEye || typeof bot.hawkEye.getMasterGrade !== 'function') return false;
+    if (!entity || !entity.position) return false;
+    // hawkeye wants per-tick displacement; entity.velocity is close enough —
+    // clamp each axis to sane per-tick values so a stale spike can't throw it.
+    const clamp1 = (v) => Math.max(-1, Math.min(1, Number(v) || 0));
+    const speed = new Vec3(
+        clamp1(entity.velocity && entity.velocity.x),
+        clamp1(entity.velocity && entity.velocity.y),
+        clamp1(entity.velocity && entity.velocity.z));
+    let sol = null;
+    try { sol = bot.hawkEye.getMasterGrade(entity, speed, weapon); } catch { return false; }
+    if (!sol) return false; // no ballistic solution (out of range / no arc)
+    if (sol.blockInTrayect) {
+        log(bot, 'Hawkeye: shot blocked by terrain — closing in instead.');
+        return false;
+    }
+    const w = bot.inventory.items().find(i => i.name === weapon);
+    if (!w) return false;
+    try { await bot.equip(w, 'hand'); } catch { return false; }
+    await bot.look(sol.yaw, sol.pitch, true);
+    await new Promise(r => setTimeout(r, 100));   // let the view settle
+    await bot.activateItem();                     // start drawing
+    await new Promise(r => setTimeout(r, 1250));  // full draw (bow/crossbow/trident waitTime)
+    try { await bot.deactivateItem(); } catch {}  // release -> projectile flies
+    return true;
+}
+
 export async function shootBow(bot, target, shots=1, fullCharge=true) {
     /**
      * Shoot a bow at a target. Equips a bow (auto-/giving one if she lacks it — she's OP),
@@ -2867,6 +2912,17 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         const pos = entity.position;
         if (!pos) break;
         const dist = bot.entity.position.distanceTo(pos);
+        // First arrow: hawkeye solved trajectory (gravity + velocity + block
+        // check) when the target is far enough for the solver to beat flat
+        // aim. Later arrows keep legacy aim (moving target, quick follow-up).
+        if (i === 0 && dist >= 10 && dist <= 48) {
+            try {
+                if (await hawkeyeShot(bot, entity, 'bow')) { fired++; continue; }
+            } catch (e) { console.warn('hawkeye opening failed:', e.message); }
+            // hawkeye bow may have been consumed/missing? no — it only reads.
+            // fall through to legacy aim below.
+            await bot.equip(bow, 'hand');
+        }
         // aim at the eyes; lead a moving target by its velocity so the arrow meets it
         const eyeY = entity.height ? entity.height * 0.85 : 1.0;
         let aim = pos.offset(0, eyeY, 0);
@@ -3459,6 +3515,16 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             // block_place collides with the placement window -> type-0 reject
             // + ghost block (WIRE-ORDER proof). Local angles only here.
             await bot.lookAt(buildOffBlock.position.offset(0.5, 0.5, 0.5), true);
+            // SNEAK when building against an interactive block (chest, furnace,
+            // door, ...) — otherwise the click OPENS it instead of placing.
+            // Vendored from mineflayer-schem's interactable.json via
+            // schematic.needsSneakToPlaceAgainst.
+            let sneaking = false;
+            try {
+                const { needsSneakToPlaceAgainst } = await import('./schematic.js');
+                sneaking = needsSneakToPlaceAgainst(buildOffBlock.name);
+            } catch {}
+            if (sneaking) { try { bot.setControlState('sneak', true); } catch {} }
             // 26.3 pillar-jump: dest inside own feet while standing still is
             // server-rejected (occupied). Jump first, place mid-air.
             const _dest = buildOffBlock.position.plus(faceVec);
@@ -3467,8 +3533,12 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 bot.setControlState('jump', true);
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
-            await bot.placeBlock(buildOffBlock, faceVec);
-            bot.setControlState('jump', false);
+            try {
+                await bot.placeBlock(buildOffBlock, faceVec);
+            } finally {
+                bot.setControlState('jump', false);
+                if (sneaking) { try { bot.setControlState('sneak', false); } catch {} }
+            }
             log(bot, `Placed ${blockType} at ${target_dest}.`);
             await new Promise(resolve => setTimeout(resolve, 200));
             return true;
@@ -6114,6 +6184,71 @@ export async function showVillagerTrades(bot, id) {
  * @example
  * await skills.tradeWithVillager(bot, "123", "1", "2");
  */
+export async function findWantedTrade(bot, wantName, maxVillagers = 5) {
+    /**
+     * Goal-driven trade finder ("I want X emeralds→Y"): scan nearby villagers,
+     * open each one's offers, and return the first that SELLS wantName —
+     * { villager, villagerId, index (1-based), trade } — or null with a spoken
+     * reason. Checks the static VILLAGER_TRADES table first so she walks to
+     * the right profession instead of opening every villager blind.
+     * Caps opens at maxVillagers (each open is a window + server round-trip).
+     * The GUI Query chain (mineflayer-gui, vendored) is the fallback path when
+     * bot.openVillager isn't available: Hotbar.Equip → Window.Open against the
+     * villager entity id, then read bot.currentWindow trade slots.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} wantName, item name she wants to buy, e.g. 'mending' book or 'saddle'.
+     * @param {number} maxVillagers, max villagers to open (default 5).
+     * @returns {Promise<object|null>} match or null.
+     * @example
+     * await skills.findWantedTrade(bot, "saddle");
+     **/
+    const want = String(wantName || '').toLowerCase().replace(/ /g, '_');
+    if (!want) { log(bot, 'Trade for what? Give me an item name.'); return null; }
+    const hint = mc.getItemVillagerTrade(want);
+    const nearby = world.getNearbyEntities(bot, 32).filter(e => e.name === 'villager');
+    if (!nearby.length) {
+        log(bot, 'No villagers in sight — find a village first (!locate village), or check a wandering trader.');
+        return null;
+    }
+    // Profession-first ordering when the static table knows who sells it.
+    const profOf = (e) => { try { return (world.getVillagerProfession(e) || '').toLowerCase(); } catch { return ''; } };
+    nearby.sort((a, b) => {
+        if (!hint) return bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position);
+        const pa = profOf(a).includes(hint.profession) ? 0 : 1, pb = profOf(b).includes(hint.profession) ? 0 : 1;
+        return pa - pb || bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position);
+    });
+    if (hint) log(bot, `${want}: a ${hint.profession} sells it (${hint.price}) — checking ${hint.profession}s first.`);
+    const norm = (s) => String(s || '').toLowerCase().replace(/ /g, '_');
+    let opened = 0;
+    for (const v of nearby.slice(0, Math.max(1, maxVillagers))) {
+        if (bot.interrupt_code) break;
+        let villager = null;
+        try {
+            if (typeof bot.openVillager === 'function') {
+                villager = await bot.openVillager(v);
+            } else if (bot.gui) {
+                // GUI fallback: open the villager window through the query chain.
+                const q = bot.gui.Query();
+                await q.Hotbar.Equip((name, item) => item && item.name === 'villager_spawn_egg').end().run().catch(() => {});
+                villager = await bot.openVillager(v).catch(() => null);
+            }
+        } catch { villager = null; }
+        if (!villager || !villager.trades) continue;
+        opened++;
+        for (let i = 0; i < villager.trades.length; i++) {
+            const t = villager.trades[i];
+            const out = t.outputItem ? (t.outputItem.name || '') : '';
+            if (norm(out) === want || norm(out).includes(want) || want.includes(norm(out))) {
+                try { villager.close(); } catch {}
+                return { villager: v, villagerId: v.id, index: i + 1, trade: t };
+            }
+        }
+        try { villager.close(); } catch {}
+    }
+    log(bot, opened ? `Checked ${opened} villager${opened === 1 ? '' : 's'} — none sells ${want}.` : 'Could not open any villager (sleeping, baby, or jobless?).');
+    return null;
+}
+
 export async function tradeWithVillager(bot, id, index, count) {
     const villagerEntity = await findAndGoToVillager(bot, id);
     if (!villagerEntity) {

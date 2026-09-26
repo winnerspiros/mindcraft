@@ -1490,6 +1490,20 @@ export const actionsList = [
         })
     },
     {
+        name: '!trade',
+        description: 'Buy an item from villagers by NAME ("I want a saddle"): finds who sells it (right profession first), shows the price, and trades up to count times if you can afford it. Her goal-driven trading chain.',
+        params: {
+            'item': { type: 'string', description: 'Item to buy, e.g. saddle, mending, ender_pearl.' },
+            'count': { type: 'int', default: 1, description: 'How many times to trade (optional).', domain: [1, 64] },
+        },
+        perform: runAsAction(async (agent, item, count) => {
+            const bot = agent.bot;
+            const found = await skills.findWantedTrade(bot, item, 5);
+            if (!found) return;
+            await skills.tradeWithVillager(bot, found.villagerId, found.index, count ?? 1);
+        })
+    },
+    {
         name: '!tradeWithVillager',
         description: 'Trade with a specified villager.',
         params: {
