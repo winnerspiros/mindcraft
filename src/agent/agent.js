@@ -1119,7 +1119,12 @@ export class Agent {
 
     // Suffocation self-rescue: pvp/pathfinder can clip her head into a wall while
     // fighting (the "UwU suffocated in a wall" deaths). Detect it before the damage
-    // kills her and escape to open air (she's OP, /tp resolves).
+    // kills her and escape to open air.
+    // 26.3 TP UPDATE: RCON tp is proven safe (lands clean, no kick), so the
+    // escape pops her straight to the safe column — no more 2.5s stand-still.
+    // Detector hardened: requires the head block to read solid on CONSECUTIVE
+    // polls (stale-chunk single reads wedged the old code in a 101x/5min loop)
+    // AND requires real suffocation damage ticking (hurtTime > 0) before firing.
     _checkSuffocation() {
         if (this._escapingSuffocation) return;
         const bot = this.bot;
@@ -1128,11 +1133,18 @@ export class Agent {
         const h = bot.entity.height || 1.8;
         // Her head block only — a solid full block there means she's clipping a wall.
         // (Checking feet would false-positive on slabs/fences she merely stands on.)
-        const head = bot.blockAt(pos.offset(0, Math.max(0.5, h - 0.1), 0));
-        if (!head || head.boundingBox !== 'block') return;
+        let head = null;
+        try { head = bot.blockAt(pos.offset(0, Math.max(0.5, h - 0.1), 0)); } catch (_) { this._suffHeadHits = 0; return; }
+        if (!head || head.boundingBox !== 'block') { this._suffHeadHits = 0; return; }
+        this._suffHeadHits = (this._suffHeadHits || 0) + 1;
+        if (this._suffHeadHits < 3) return; // 3 consecutive solid reads (~0.9s), not one stale read
+        let takingDamage = false;
+        try { takingDamage = (bot.entity.hurtTime || 0) > 0 || (bot.health !== undefined && bot.health < (this._suffLastHp ?? 20)); } catch (_) {}
+        try { this._suffLastHp = bot.health; } catch (_) {}
+        if (!takingDamage) { this._suffHeadHits = 0; return; } // solid head but no damage = stale chunk, ignore
 
         this._escapingSuffocation = true;
-        this._escapeSuffocation().finally(() => { this._escapingSuffocation = false; });
+        this._escapeSuffocation().finally(() => { this._escapingSuffocation = false; this._suffHeadHits = 0; });
     }
 
     async _escapeSuffocation() {
@@ -1153,11 +1165,14 @@ export class Agent {
                 }
             }
             bot.chat(`/effect give @s minecraft:resistance 3 4 true`);
-            console.log(`[suffocation] resistance bridge, walking out`);
-            await new Promise(r => setTimeout(r, 2500));
-            // Walk toward open air instead of /tp: 26.3 server teleports kick
-            // this client stack ("Invalid move"). Re-check after the walk;
-            // if still stuck, repeat next poll (300ms) — resistance refreshes.
+            console.log(`[suffocation] real damage + solid head x3 — RCON tp to open air (${x}, ${safeY}, ${z})`);
+            try {
+                const { rconCommand } = await import('../utils/rcon.js');
+                await rconCommand(`tp ${bot.username} ${x} ${safeY} ${z}`);
+                try { bot.entity.position.set(x + 0.5, safeY, z + 0.5); } catch (_) {}
+            } catch (e) {
+                console.warn('suffocation RCON tp failed, resistance only:', e.message);
+            }
         } catch (e) {
             console.warn('suffocation escape failed:', e.message);
         }
