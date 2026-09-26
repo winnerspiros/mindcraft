@@ -2028,13 +2028,22 @@ export const actionsList = [
     {
         name: '!teleportMe',
         power: 'teleporting players',
-        description: 'TP YOURSELF to x y z (you are OP — /tp aloud, chat-visible). LAST resort, not the commute: walk near, sprint far flat, boat water, pearl far+healthy, bridge mid, climb walls. Use when someone trusted asks ("tp to me"), when stuck/buried/pathed-out, or for rescue/recall. NEVER to dodge a fight you started, into the void, or to snoop uninvited. Gated friend+ like all powers.',
+        description: 'TP YOURSELF to x y z (you are OP — quiet RCON tp, no kick on 26.3). LAST resort, not the commute: walk near, sprint far flat, boat water, pearl far+healthy, bridge mid, climb walls. Use when someone trusted asks ("tp to me"), when stuck/buried/pathed-out, or for rescue/recall. You MAY omit x y z to tp to the last person who spoke to you (their live server position). NEVER to dodge a fight you started, into the void, or to snoop uninvited. Gated friend+ like all powers.',
         params: {
-            'x': { type: 'float', description: 'Target X.' },
-            'y': { type: 'float', description: 'Target Y (-64..320).' },
-            'z': { type: 'float', description: 'Target Z.' }
+            'x': { type: 'float', default: null, description: 'Target X (omit all three to tp to last sender).' },
+            'y': { type: 'float', default: null, description: 'Target Y (-64..320).' },
+            'z': { type: 'float', default: null, description: 'Target Z.' }
         },
         perform: runAsAction(async (agent, x, y, z) => {
+            if (x == null || y == null || z == null) {
+                const who = agent.last_sender;
+                if (!who) { skills.log(agent.bot, '!teleportMe needs x y z — or someone to tp to.'); return; }
+                const { rconPlayerPos } = await import('../../utils/rcon.js');
+                const t = await rconPlayerPos(who).catch(() => null);
+                if (!t) { skills.log(agent.bot, `Can't see ${who} to tp to.`); return; }
+                await skills.teleportSelf(agent.bot, Math.floor(t.x), Math.floor(t.y), Math.floor(t.z));
+                return;
+            }
             await skills.teleportSelf(agent.bot, x, y, z);
         })
     },

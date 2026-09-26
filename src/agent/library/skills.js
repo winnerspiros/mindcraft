@@ -1,6 +1,6 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from "./world.js";
-import { rconPlayerPos } from "../../utils/rcon.js";
+import { rconPlayerPos, rconCommand } from "../../utils/rcon.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
@@ -5016,12 +5016,25 @@ export async function teleportSelf(bot, x, y, z) {
     // (buried/no path), or when the trip is pointless walking (rescue, recall).
     // NEVER tp's to dodge a fight she started, into unloaded void, or to
     // snoop on players uninvited. Says /tp aloud (chat-visible anyway).
+    // 26.3 TP MYSTERY SOLVED: RCON `tp UwU x y z` lands clean (verified live,
+    // still online, exact coords), and chat `/tp UwU x y z` is the same server
+    // op. The old \"Invalid move\" belief came from walk-death-era stale-state
+    // echoes, not from teleports themselves. So: tp via quiet RCON (no
+    // chat-log spam), then re-sync her client pos to the echo.
     x = Math.floor(Number(x)); y = Math.floor(Number(y)); z = Math.floor(Number(z));
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { log(bot, '!teleportMe needs x y z — where to?'); return false; }
     if (y < -64 || y > 320) { log(bot, `Y=${y} is outside the world — refusing the tp.`); return false; }
-    bot.chat(`/tp ${bot.username} ${x} ${y} ${z}`);
-    log(bot, `Tp'd myself to ${x} ${y} ${z} — the fast road, used sparingly.`);
-    return true;
+    try {
+        await rconCommand(`tp ${bot.username} ${x} ${y} ${z}`);
+        try { bot.entity.position.set(x + 0.5, y, z + 0.5); } catch (_) {}
+        log(bot, `Tp'd myself to ${x} ${y} ${z} — the fast road, used sparingly.`);
+        return true;
+    } catch (e) {
+        // RCON hiccup — fall back to the old chat /tp (still works, just loud).
+        try { bot.chat(`/tp ${bot.username} ${x} ${y} ${z}`); } catch (_) {}
+        log(bot, `Tp'd myself to ${x} ${y} ${z} — the fast road, used sparingly.`);
+        return true;
+    }
 }
 
 export async function comeHere(bot, requester, paced = null) {
@@ -5683,8 +5696,14 @@ export async function goToPlayer(bot, username, distance=3) {
                 const d = bot.entity.position.distanceTo(new Vec3(t.x, t.y, t.z));
                 if (d <= Math.max(distance, 2) + 1) break;
             }
-            log(bot, `You have reached ${username}.`);
-            return true;
+            const endD = bot.entity.position.distanceTo(new Vec3(t.x, Math.floor(t.y), t.z));
+            if (endD <= Math.max(distance, 2) + 1) {
+                log(bot, `You have reached ${username}.`);
+                return true;
+            }
+            const shortBy = Number.isFinite(endD) ? endD.toFixed(0) : '?';
+            log(bot, `I walked toward ${username} but I'm still ${shortBy} blocks short (no path through) — say "tp to me" (!teleportMe) and I'll pop over.`);
+            return false;
         }
         log(bot, `Could not find ${username}.`);
         return false;
@@ -5698,7 +5717,12 @@ export async function goToPlayer(bot, username, distance=3) {
 
     await goToGoal(bot, goal);
 
-    log(bot, `You have reached ${username}.`);
+    try {
+        const endD = bot.entity.position.distanceTo(playerEntity.position);
+        if (endD <= distance + 1) { log(bot, `You have reached ${username}.`); return true; }
+        log(bot, `I walked toward ${username} but I'm still ${endD.toFixed(0)} blocks short (no path through) — say "tp to me" (!teleportMe) and I'll pop over.`);
+        return false;
+    } catch (_) { log(bot, `You have reached ${username}.`); return true; }
 }
 
 
