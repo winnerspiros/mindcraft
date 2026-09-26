@@ -34,15 +34,67 @@ function rotateRelative(x, z, sx, sz, steps) {
 }
 
 const H_DIRS = ['north', 'east', 'south', 'west'];
+// Facing table vendored from L-C-B/mineflayer-schem (lib/facing.json): which
+// blocks mirror their facing when the schematic is rotated 180° ("inverted")
+// vs which keep world axes. Builders use it to keep stairs/logs/furnaces
+// pointing the right way after a rotation. is3D = block whose shape depends
+// on the face placed against (stairs, slabs) — needs face-accurate placement.
+const SCHEM_FACING = {
+    barrel: { inverted: true, is3D: false },
+    chest: { inverted: true, is3D: false },
+    trapped_chest: { inverted: true, is3D: false },
+    ender_chest: { inverted: true, is3D: false },
+    furnace: { inverted: true, is3D: false },
+    dispenser: { inverted: true, is3D: true },
+    dropper: { inverted: true, is3D: true },
+    observer: { inverted: true, is3D: true },
+    hopper: { inverted: true, is3D: true },
+};
+// *-stairs / *-slabs / logs / pillars: never inverted, face-accurate.
+function schemFacingEntry(name) {
+    if (!name) return null;
+    if (SCHEM_FACING[name]) return SCHEM_FACING[name];
+    if (name.endsWith('_stairs') || name.endsWith('_slab') || name.endsWith('_log') ||
+        name.endsWith('_wood') || name === 'piston' || name === 'sticky_piston')
+        return { inverted: false, is3D: true };
+    if (name.endsWith('_door') || name.endsWith('_trapdoor') || name.endsWith('_gate') ||
+        name.endsWith('_button') || name === 'lever' || name.endsWith('_sign'))
+        return { inverted: false, is3D: false };
+    return null;
+}
+// Blocks you must SNEAK to place against (chest, shulker, furnace, ...)
+// vendored from mineflayer-schem's lib/interactable.json (136 names, sampled
+// here by family — full list lives in the review dir). Placing normally
+// against these OPENS them instead of building.
+const SNEAK_FAMILIES = ['chest', 'shulker', 'furnace', 'smoker', 'blast_furnace',
+    'barrel', 'dispenser', 'dropper', 'hopper', 'brewing_stand', 'beacon',
+    'anvil', 'enchanting_table', 'crafting_table', 'stonecutter', 'loom',
+    'cartography', 'grindstone', 'smithing_table', 'composter', 'jukebox',
+    'note_block', 'bed', 'sign', 'door', 'trapdoor', 'fence_gate', 'button',
+    'lever', 'cake', 'cauldron', 'comparator', 'repeater', 'daylight_detector',
+    'lectern', 'bell', 'tinted_glass'];
+export function needsSneakToPlaceAgainst(blockName) {
+    const n = String(blockName || '').toLowerCase();
+    return SNEAK_FAMILIES.some(f => n.includes(f));
+}
 // Rotate a block-state `props` object with the schematic. `facing` (a horizontal
 // direction) is remapped; everything else (powered, delay, extended, up/down, ...)
-// is invariant under a Y rotation.
-function rotateProps(props, steps) {
+// is invariant under a Y rotation. + axis remap for logs/pillars (x<->z on odd
+// quarter-turns) and half flip for upside-down stairs on 180° — both from the
+// schem review (rotateBlockProperties), without which rotated builds come out
+// mirrored/wrong-facing.
+function rotateProps(props, steps, blockName = null) {
     if (!steps || !props || typeof props !== 'object') return props || {};
     const out = {};
+    const entry = schemFacingEntry(blockName);
+    const effSteps = (entry && entry.inverted && steps === 2) ? 0 : steps;
     for (const [k, v] of Object.entries(props)) {
         if (k === 'facing' && H_DIRS.includes(String(v))) {
-            out[k] = H_DIRS[(H_DIRS.indexOf(String(v)) + steps) % 4];
+            out[k] = H_DIRS[(H_DIRS.indexOf(String(v)) + effSteps) % 4];
+        } else if (k === 'axis' && (effSteps % 2 === 1) && (v === 'x' || v === 'z')) {
+            out[k] = v === 'x' ? 'z' : 'x'; // logs/pillars swap axis on 90°/270°
+        } else if (k === 'half' && effSteps === 2 && (v === 'top' || v === 'bottom')) {
+            out[k] = v === 'top' ? 'bottom' : 'top'; // upside-down stairs flip on 180°
         } else {
             out[k] = v;
         }
@@ -137,7 +189,7 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
 
     const rotated = schematic.blocks.map((b) => {
         const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
-        return { x, y: b.y, z, name: b.name, props: rotateProps(b.props || {}, steps) };
+        return { x, y: b.y, z, name: b.name, props: rotateProps(b.props || {}, steps, b.name) };
     });
 
     // A stateful schematic (redstone/mechanisms — any block carrying props) is placed
@@ -177,12 +229,35 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
     rotated.sort((a, b) => a.y - b.y || edgeDist(a) - edgeDist(b));
 
     let placed = 0;
+    const failed = [];
     for (const b of rotated) {
         if (bot.interrupt_code) break;
         const wx = Math.floor(origin.x) + b.x;
         const wy = Math.floor(origin.y) + b.y;
         const wz = Math.floor(origin.z) + b.z;
-        if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) placed++;
+        // Retry pass (schem review: single-attempt placement is the #1 cause of
+        // holey builds — a miss because she was still walking is permanent).
+        // Two tries with a short settle between; still-failing blocks go on the
+        // failed list for the re-visit sweep below.
+        let ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
+        if (!ok && !bot.interrupt_code) {
+            await new Promise(r => setTimeout(r, 400));
+            ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
+        }
+        if (ok) placed++;
+        else failed.push(b);
+    }
+    // Re-visit sweep: walk back over misses now that neighbours exist (many
+    // "nothing to place on" failures succeed once adjacent blocks are in).
+    if (failed.length && !bot.interrupt_code) {
+        skills.log(bot, `Re-visiting ${failed.length} missed blocks...`);
+        for (const b of failed) {
+            if (bot.interrupt_code) break;
+            const wx = Math.floor(origin.x) + b.x;
+            const wy = Math.floor(origin.y) + b.y;
+            const wz = Math.floor(origin.z) + b.z;
+            if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) placed++;
+        }
     }
     return placed;
 }
