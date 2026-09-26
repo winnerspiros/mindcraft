@@ -3507,6 +3507,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
 
     for (let d of dirs) {
         const block = bot.blockAt(target_dest.plus(d));
+        if (!block) continue;
         if (!empty_blocks.includes(block.name)) {
             buildOffBlock = block;
             faceVec = new Vec3(-d.x, -d.y, -d.z); // invert
@@ -3514,8 +3515,42 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         }
     }
     if (!buildOffBlock) {
-        log(bot, `Cannot place ${blockType} at ${targetBlock.position}: nothing to place on.`);
-        return false;
+        // No neighbour to click on (floating block in mid-air). Bridge it:
+        // drop a dirt scaffold at the closest air cell adjacent to the target
+        // that HAS a neighbour (schem review: attemptOneBlockBridge pattern),
+        // place against it, then dig the scaffold away. One block, verified.
+        const isAirLike = (b) => !b || b.name === 'air' || b.boundingBox === 'empty';
+        let bridged = null;
+        const feet = bot.entity.position.floored();
+        const cands = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1]]
+            .map(([dx, dy, dz]) => target_dest.plus(new Vec3(dx, dy, dz)))
+            .filter(p => { try { return isAirLike(bot.blockAt(p)); } catch { return false; } })
+            .sort((a, b) => a.distanceTo(feet) - b.distanceTo(feet));
+        for (const p of cands) {
+            if (bot.interrupt_code) break;
+            // scaffold cell needs its own neighbour (can't float either)
+            let hasN = false;
+            for (const dd of Object.values(dir_map)) {
+                try { const n = bot.blockAt(p.plus(dd)); if (n && !isAirLike(n)) { hasN = true; break; } } catch {}
+            }
+            if (!hasN) continue;
+            try {
+                if (await placeBlock(bot, 'dirt', p.x, p.y, p.z, 'bottom', true)) {
+                    const chk = bot.blockAt(p);
+                    if (chk && chk.name !== 'air' && chk.boundingBox !== 'empty') { bridged = p; break; }
+                }
+            } catch {}
+        }
+        if (!bridged) {
+            log(bot, `Cannot place ${blockType} at ${targetBlock.position}: nothing to place on.`);
+            return false;
+        }
+        buildOffBlock = bot.blockAt(bridged);
+        // face from the scaffold back toward the target
+        faceVec = new Vec3(Math.sign(target_dest.x - bridged.x), Math.sign(target_dest.y - bridged.y), Math.sign(target_dest.z - bridged.z));
+        if (!faceVec.x && !faceVec.y && !faceVec.z) faceVec = new Vec3(0, 1, 0);
+        // remember to dig the scaffold after the real placement lands
+        var _scaffoldToClean = bridged;
     }
 
     const pos = bot.entity.position;
@@ -3530,12 +3565,46 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         await goToGoal(bot, inverted_goal);
     }
     if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
-        // too far
+        // too far — walk to a STANDABLE spot near the target, not just near it.
+        // (schem review: GoalNear can strand her across a 1-gap or on the wrong
+        // side of a wall, staring at an unreachable face. canStandAt checks
+        // feet+head clear and solid support below, ring1 then ring2.)
+        const isAirLike = (b) => !b || b.name === 'air' || b.boundingBox === 'empty';
+        const canStandAt = (p) => {
+            try {
+                const feet = bot.blockAt(p, false), head = bot.blockAt(p.offset(0, 1, 0), false),
+                    below = bot.blockAt(p.offset(0, -1, 0), false);
+                return isAirLike(feet) && isAirLike(head) && below && below.name !== 'air' && below.boundingBox !== 'empty';
+            } catch { return false; }
+        };
+        let standGoal = null;
+        const tp = targetBlock.position;
+        const ring = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1],
+            [2,0,0],[-2,0,0],[0,0,2],[0,0,-2]];
+        for (const [dx, , dz] of ring) {
+            for (const dy of [0, 1, -1]) {
+                const c = new Vec3(tp.x + dx, tp.y + dy, tp.z + dz);
+                if (!canStandAt(c)) continue;
+                if (c.distanceTo(tp) > 4.5) continue;
+                standGoal = c; break;
+            }
+            if (standGoal) break;
+        }
         let pos = targetBlock.position;
         let movements = new pf.Movements(bot);
     movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
         bot.pathfinder.setMovements(movements);
-        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        await goToGoal(bot, standGoal
+            ? new pf.goals.GoalBlock(standGoal.x, standGoal.y, standGoal.z)
+            : new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        // Second chance: still out of reach (GoalNear settled across a gap)?
+        // step to the closest standable ring cell directly.
+        if (bot.entity.position.distanceTo(targetBlock.position) > 4.5 && standGoal) {
+            try {
+                bot.pathfinder.setMovements(movements);
+                await goToGoal(bot, new pf.goals.GoalBlock(standGoal.x, standGoal.y, standGoal.z));
+            } catch (_) {}
+        }
     }
 
     // will throw error if an entity is in the way, and sometimes even if the block was placed
@@ -3573,6 +3642,33 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 bot.setControlState('jump', false);
                 if (sneaking) { try { bot.setControlState('sneak', false); } catch {} }
             }
+            // VERIFY the placement actually landed (schem review: placeBlockTracked
+            // pattern — the server can reject silently, leaving a hole she thinks
+            // is filled). Wrong block or still air = failure, not success.
+            try {
+                await new Promise(resolve => setTimeout(resolve, 200));
+                const chk = bot.blockAt(target_dest);
+                if (chk) {
+                    const wantBase = String(blockType).split('[')[0];
+                    const gotBase = String(chk.name || '').replace(/^wall_/, '').replace(/_wall$/, '');
+                    const wantNorm = wantBase.replace(/^(wall_)/, '');
+                    if (chk.name === 'air' || chk.boundingBox === 'empty') {
+                        log(bot, `Placed ${blockType} at ${target_dest} but it's still air — server rejected it.`);
+                        return false;
+                    }
+                    if (chk.name !== wantBase && gotBase !== wantBase && gotBase !== wantNorm && chk.name !== wantNorm) {
+                        log(bot, `Placed ${blockType} at ${target_dest} but found ${chk.name} — wrong block.`);
+                        return false;
+                    }
+                }
+            } catch {}
+            // Clean the dirt scaffold bridged in above (if any) now that the
+            // real block is verified in place.
+            try {
+                if (typeof _scaffoldToClean !== 'undefined' && _scaffoldToClean) {
+                    await breakBlockAt(bot, _scaffoldToClean.x, _scaffoldToClean.y, _scaffoldToClean.z);
+                }
+            } catch {}
             log(bot, `Placed ${blockType} at ${target_dest}.`);
             await new Promise(resolve => setTimeout(resolve, 200));
             return true;
