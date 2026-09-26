@@ -4,6 +4,7 @@ import * as buildsense from '../library/buildsense.js';
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import { researchBuildTopic } from '../../utils/research.js';
+import { addBrowserViewer, removeBrowserViewer, isViewerOn } from '../vision/browser_viewer.js';
 import Vec3 from 'vec3';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
@@ -1717,6 +1718,41 @@ export const actionsList = [
         params: {'range': { type: 'float', default: 9, description: 'How far to look for threats (optional).', domain: [0, 64] }},
         perform: runAsAction(async (agent, range) => {
             await skills.defendSelf(agent.bot, range);
+        })
+    },
+    {
+        name: '!guardMode',
+        description: 'Bodyguard someone: follow them and fight anything hostile near THEM (not just you). Built on the statemachine behavior brain (follow/look/idle states). Runs until stop or they log off. Give a player name, or no name to guard the last person who talked to you.',
+        params: {
+            'player_name': { type: 'string', default: null, description: 'Who to guard (optional, defaults to last sender).' },
+            'radius': { type: 'float', default: 6, description: 'Follow distance (optional).', domain: [2, 16] },
+        },
+        perform: runAsAction(async (agent, player_name, radius) => {
+            const who = player_name || agent.last_sender;
+            if (!who) { skills.log(agent.bot, 'Who should I guard? Give me a name.'); return; }
+            await skills.guardPlayer(agent.bot, who, radius || 6);
+        }, false, 600)
+    },
+    {
+        name: '!viewer',
+        description: 'Open or close your live 3D first-person view in the browser (prismarine-viewer, port 3000). On is heavy (~400MB) — open it only while someone is watching, then close it. No args = status.',
+        params: {
+            'how': { type: 'string', default: null, description: 'on, off, or empty for status.' },
+        },
+        perform: runAsAction(async (agent, how) => {
+            const bot = agent.bot;
+            const h = String(how || '').toLowerCase();
+            if (h === 'on' || h === 'open' || h === 'start') {
+                if (isViewerOn(bot)) { skills.log(bot, 'My view is already open (port 3000).'); return; }
+                const ok = await addBrowserViewer(bot, agent.count_id || 0, true);
+                skills.log(bot, ok ? 'View open — port 3000, first-person.' : 'Could not open my view (3D stack missing?).');
+            } else if (h === 'off' || h === 'close' || h === 'stop') {
+                if (!isViewerOn(bot)) { skills.log(bot, 'My view is not open.'); return; }
+                await removeBrowserViewer(bot);
+                skills.log(bot, 'View closed — that RAM is free again.');
+            } else {
+                skills.log(bot, isViewerOn(bot) ? 'My view is OPEN (port 3000).' : 'My view is closed. Say viewer on to open it.');
+            }
         })
     },
     {

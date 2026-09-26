@@ -391,7 +391,9 @@ def ensure_26_3_data(base):
 
 def ensure_chunk_26_3(base):
     """Register 26.3 -> 1.18 chunk impl (same wire format + 26.2 fluid-count
-    short) in prismarine-chunk. Idempotent."""
+    short) in the top-level prismarine-chunk (live bot chunks). The nested
+    copy inside prismarine-provider-anvil already maps via a >= check, so it
+    needs no row. Idempotent."""
     for cj in [os.path.join(base, "prismarine-chunk", "src", "index.js")]:
         if not os.path.exists(cj):
             print(f"[chunk] WARNING: {cj} missing")
@@ -417,6 +419,73 @@ def ensure_chunk_26_3(base):
             print("[chunk] 1.18 ChunkColumn: 26.3 already present -> no-op")
         else:
             print("[chunk] WARNING: hasFluidCount anchor not found")
+
+
+def ensure_anvil_26_3(base):
+    """Teach prismarine-provider-anvil's version->impl table the 26.x keys
+    (26.1/26.2/26.3 -> 1.18 reader/writer: same section/palette format +
+    26.2 fluid-count short, shared with the live bot's Complexity chunk).
+    Needed for the offline region scout (read-only .mca scans of the live
+    26.3 world). Idempotent: skips rows already present."""
+    aj = os.path.join(base, "prismarine-provider-anvil", "src", "chunk.js")
+    if not os.path.exists(aj):
+        print(f"[anvil] WARNING: {aj} missing")
+        return
+    s = open(aj).read()
+    anchor = "    1.21: () => require('./1.18/chunk')"
+    if anchor not in s:
+        print("[anvil] WARNING: 1.21 anchor not found")
+        return
+    added = 0
+    for key in ["26.1", "26.2", "26.3"]:
+        row = f"    {key}: () => require('./1.18/chunk')"
+        if row in s:
+            continue
+        s = s.replace(anchor, anchor + ",\n" + row, 1)
+        anchor = row
+        added += 1
+    if added:
+        open(aj, "w").write(s)
+        print(f"[anvil] 26.x rows added ({added}) -> 1.18 impl")
+    else:
+        print("[anvil] 26.x rows present -> no-op")
+    # Top-level chunk redirect: the provider's nested prismarine-chunk 1.41.0
+    # ends at 26.1, while the top-level Complexity chunk knows 26.3 -> 1.18
+    # (registered by ensure_chunk_26_3 above). Point the require at it.
+    ac = open(aj).read()
+    old_req = "const PrismarineChunk = require('prismarine-chunk')"
+    if old_req in ac:
+        new_req = ("// 26.3: use the patched top-level Complexity prismarine-chunk\n"
+                   "    // (26.3 -> 1.18 impl) instead of the nested 1.41.0 copy.\n"
+                   "    const PrismarineChunk = require('/home/ubuntu/uwu-bot/node_modules/prismarine-chunk')")
+        # keep the original line shape (no indent in stock file)
+        new_req = new_req.replace("    //", "//").replace("    const", "const")
+        open(aj, "w").write(ac.replace(old_req, new_req, 1))
+        print("[anvil] chunk require redirected to top-level Complexity copy")
+    elif "node_modules/prismarine-chunk" in ac:
+        print("[anvil] chunk redirect present -> no-op")
+    else:
+        print("[anvil] WARNING: chunk require anchor not found")
+    # fromNBT normalizer for 26.x world shapes (verified live r.0.0.mca):
+    # bare section elements, bare-string + {id,properties} + {"":X} palette
+    # entries, [hi,lo] longArray pairs, plain-array light. Without it,
+    # load() dies at ChunkColumn e.Name.replace on every 26.3 chunk.
+    # node_modules is git-ignored, so the canonical copy lives at
+    # /home/ubuntu/anvil-118-chunk.norm.js — re-applied automatically.
+    cj118 = os.path.join(base, "prismarine-provider-anvil", "src", "1.18", "chunk.js")
+    norm_src = "/home/ubuntu/anvil-118-chunk.norm.js"
+    if os.path.exists(cj118):
+        c118 = open(cj118).read()
+        if "const normEntry" in c118:
+            print("[anvil] 1.18 fromNBT normalizer present -> no-op")
+        elif os.path.exists(norm_src):
+            import shutil
+            shutil.copyfile(norm_src, cj118)
+            print("[anvil] 1.18 normalizer re-applied from canonical backup")
+        else:
+            print("[anvil] WARNING: 1.18 normalizer missing and no backup found")
+    else:
+        print(f"[anvil] WARNING: {cj118} missing")
 
 
 def ensure_physics_fallback(base):
@@ -667,8 +736,9 @@ def main():
     else:
         print(f"[data] WARNING: {DATA_SRC_263} missing (26.3 assets not present?)")
 
-    # 2. chunk impl + fluid-count + physics fallback
+    # 2. chunk impl + fluid-count + physics fallback + anvil 26.x table
     ensure_chunk_26_3(BASE)
+    ensure_anvil_26_3(BASE)
     ensure_physics_fallback(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)

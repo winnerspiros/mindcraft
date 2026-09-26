@@ -82,6 +82,61 @@ export function moveProfile(bot, mode = 'walk') {
     return m;
 }
 
+// Small angle helpers (vendored pattern from firejoust/mineflayer-movement's
+// angle.js: inverse/difference on yaw radians — the smaller signed turn
+// between two headings). Used by the stalled-leg danger probe below and
+// anywhere she needs "how far to turn" without a dependency.
+export function angInverse(angle) {
+    const TAU = Math.PI * 2;
+    return angle < 0 ? angle + TAU : angle - TAU;
+}
+export function angDifference(a, b) {
+    const d1 = b - a, d2 = angInverse(d1);
+    return Math.abs(d1) < Math.abs(d2) ? d1 : d2;
+}
+
+// Stalled-leg danger probe (hand-rolled 5-ray version of firejoust's Danger
+// heuristic — the full movement plugin is a separate pathfinder replacement
+// and stays OUT; pathfinder remains primary). When a walk leg reports
+// failure, probe 5 yaw rays (ahead, ±45°, ±90°) a few blocks out: each ray
+// scores ground solidity + headroom + lava/water/void underfoot, and the
+// caller re-aims at the best ray instead of standing still. Cheap (~25
+// blockAt reads), sync, no movement. Returns { yaw, score } of the best
+// ray, or null when every ray is bad.
+export function dangerProbe(bot, rays = 5, dist = 4) {
+    const p = bot.entity.position;
+    const baseYaw = bot.entity.yaw || 0;
+    const spread = rays <= 1 ? [0] : Array.from({ length: rays }, (_, i) => -Math.PI / 2 + (Math.PI * i) / (rays - 1));
+    let best = null;
+    for (const off of spread) {
+        const yaw = baseYaw + off;
+        const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+        let score = 0, ok = true;
+        for (let d = 1; d <= dist; d++) {
+            const bx = Math.floor(p.x + dx * d), bz = Math.floor(p.z + dz * d);
+            const by = Math.floor(p.y);
+            let below = null, at = null, head = null;
+            try {
+                below = bot.blockAt(new Vec3(bx, by - 1, bz));
+                at = bot.blockAt(new Vec3(bx, by, bz));
+                head = bot.blockAt(new Vec3(bx, by + 1, bz));
+            } catch (_) { ok = false; break; }
+            const solid = (b) => b && b.boundingBox === 'block';
+            if (!below || !solid(below)) { ok = false; break; } // gap/void edge
+            if (below.name === 'lava' || below.name === 'magma_block') { ok = false; break; }
+            if (at && (solid(at) || at.name === 'lava' || at.name === 'water')) { ok = false; break; } // wall/water wall
+            if (head && solid(head)) { score -= 1; } // low ceiling, passable but meh
+            if (below.name === 'water' || below.name === 'powder_snow') score -= 2;
+            score += 1;
+        }
+        if (!ok) continue;
+        // prefer small turns (firejoust conformity spirit): penalize wide rays
+        score -= Math.abs(angDifference(baseYaw, yaw)) * 0.5;
+        if (!best || score > best.score) best = { yaw, score };
+    }
+    return best;
+}
+
 // ============================================================================
 // PARKOUR PRIMITIVES — neos, 45-strafe, backwards momentum, edge sneaks,
 // speed bridging, ladder + block clutches. Low-level control-state driving
@@ -2809,6 +2864,162 @@ export async function defendSelf(bot, range=9) {
     return attacked;
 }
 
+// GUARD MODE (mineflayer-statemachine, on-demand — never auto-started):
+// follow a player and fight anything hostile near THEM (not just her).
+// Built on the real statemachine lib (BehaviorFollowEntity + Idle +
+// StateTransition + NestedStateMachine + BotStateMachine, 1.7.0) but with
+// two 26.3 adaptations: (1) follow legs run through OUR goToGoal (walk
+// profile, watchdog, door interval) instead of the behavior's raw
+// pathfinder.setGoal — the stock BehaviorFollowEntity ctor also calls
+// minecraft-data(bot.version) which throws on the fork's 26.3 version
+// string; (2) the machine is tick-driven by physicTick and torn down by
+// flipping states + setGoal(null) — the lib has no stop()/deactivate, and
+// BotStateMachine holds a permanent physicTick listener, so one guard run
+// = one machine, discarded on exit (no reuse, no leak pile-up).
+// Interrupt-aware: !stop (interrupt_code) ends the guard loop cleanly.
+export async function guardPlayer(bot, username, radius = 6, range = 9) {
+    /**
+     * Bodyguard a player: follow them and kill anything hostile near them.
+     * Stays until interrupted (!stop) or the player vanishes. Re-resolves
+     * the entity every tick (same stale-handle lesson as followPlayer) and
+     * falls back to RCON server position when the entity is withheld.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} username, who to guard.
+     * @param {number} radius, follow distance (default 6 — looser than follow's 4, so she doesn't body-block).
+     * @param {number} range, hostile scan range around HER (default 9, same as defendSelf).
+     * @returns {Promise<boolean>} true if she guarded at least one tick.
+     * @example
+     * await skills.guardPlayer(bot, "YandereDev");
+     **/
+    const sm = bot.statemachine;
+    if (!sm || !sm.BehaviorIdle || !sm.StateTransition || !sm.NestedStateMachine || !sm.BotStateMachine) {
+        log(bot, 'Guard brain unavailable (statemachine lib not loaded) — defending in place instead.');
+        return await defendSelf(bot, range);
+    }
+    let targets = { entity: null };
+    let idle, follow, look, machine, machineTick;
+    try {
+        idle = new sm.BehaviorIdle();
+        // Stock BehaviorFollowEntity ctor dies on 26.3 (minecraft-data('26.3')
+        // throws inside the lib), so subclass with OUR movements instead.
+        class GuardFollow extends sm.BehaviorFollowEntity {
+            constructor(b, t) {
+                super(b, t);
+                // mcData from the ctor throw is unusable on 26.3 — but our
+                // startMoving() override never touches it (walk profile +
+                // GoalFollow directly), so null is fine.
+                try { this.mcData = null; } catch (_) {}
+                this.followDistance = radius;
+            }
+            startMoving() {
+                const entity = this.targets.entity;
+                if (entity == null) return;
+                try {
+                    const g = new pf.goals.GoalFollow(entity, this.followDistance);
+                    bot.pathfinder.setMovements(moveProfile(bot, 'walk'));
+                    bot.pathfinder.setGoal(g, true);
+                } catch (_) {}
+            }
+        }
+        follow = new GuardFollow(bot, targets);
+        look = new sm.BehaviorLookAtEntity(bot, targets);
+        const nearWard = () => {
+            const w = targets.entity;
+            if (!w || !w.position) return false;
+            try { return bot.entity.position.distanceTo(w.position) <= Math.max(radius + 2, 4); } catch (_) { return false; }
+        };
+        const transitions = [
+            new sm.StateTransition({ parent: idle, child: follow, name: 'idle->follow', shouldTransition: () => !!targets.entity && !nearWard() }),
+            new sm.StateTransition({ parent: follow, child: look, name: 'follow->look', shouldTransition: () => nearWard() }),
+            new sm.StateTransition({ parent: look, child: follow, name: 'look->follow', shouldTransition: () => !!targets.entity && !nearWard() }),
+            new sm.StateTransition({ parent: follow, child: idle, name: 'follow->idle', shouldTransition: () => !targets.entity }),
+            new sm.StateTransition({ parent: look, child: idle, name: 'look->idle', shouldTransition: () => !targets.entity }),
+        ];
+        const root = new sm.NestedStateMachine(transitions, idle);
+        // BotStateMachine ctor subscribes its OWN anonymous arrow
+        // (bot.on('physicTick', () => this.update())) — no handle to remove.
+        // So: detach the whole listener by swapping in our own counted
+        // wrapper. Simplest safe teardown: keep the machine reference and
+        // gate updates with a dead flag (update() early-returns when the
+        // root is inactive). flipActive pattern from the lib's own update().
+        machine = new sm.BotStateMachine(bot, root);
+        machineTick = () => { try { if (machine && root.active) machine.update(); } catch (_) {} };
+        bot.on('physicTick', machineTick);
+    } catch (e) {
+        log(bot, `Guard brain failed to start (${e.message}) — defending in place instead.`);
+        return await defendSelf(bot, range);
+    }
+    const stopMachine = () => {
+        try {
+            for (const st of [idle, follow, look]) { try { if (st) st.active = false; } catch (_) {} }
+            try { bot.pathfinder.setGoal(null); } catch (_) {}
+            // Teardown: gate the machine dead (root.active=false makes our
+            // wrapper skip updates) and remove OUR wrapper. The ctor's own
+            // anonymous arrow can't be removed by handle — but with every
+            // state inactive its update() just re-checks shouldTransition on
+            // dead states (cheap, no movement: behaviors only act from
+            // onStateEntered/update of the ACTIVE state, all now inactive).
+            // killSwitch: force every transition's shouldTransition false by
+            // clearing targets, so even the orphan arrow is a no-op.
+            try { targets.entity = null; } catch (_) {}
+            try { if (machineTick) bot.removeListener('physicTick', machineTick); } catch (_) {}
+            try { if (machine) machine.rootStateMachine.active = false; } catch (_) {}
+        } catch (_) {}
+        try { bot.pvp.stop(); } catch (_) {}
+    };
+    log(bot, `Guarding ${username} — follow close, fight anything hostile near them. Say !stop to stand down.`);
+    bot.modes.pause('self_defense');
+    bot.modes.pause('cowardice');
+    let ticks = 0;
+    try {
+        while (!bot.interrupt_code) {
+            await new Promise(r => setTimeout(r, 1000));
+            if (bot.interrupt_code) break;
+            // re-resolve the ward every tick (stale-handle + withheld-entity lessons)
+            let ward = bot.players[username] && bot.players[username].entity;
+            if (!ward) {
+                const rpos = await rconPlayerPos(username).catch(() => null);
+                if (!rpos) { log(bot, `${username} is gone — standing down.`); break; }
+                // RCON position but no entity: walk the leg ourselves; the
+                // machine idles (no target) until the entity renders.
+                const d = Math.hypot(rpos.x - bot.entity.position.x, rpos.z - bot.entity.position.z);
+                if (d > radius + 1) {
+                    try {
+                        const g = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), radius);
+                        await goToGoal(bot, g);
+                    } catch (_) {}
+                }
+                targets.entity = null;
+            } else {
+                targets.entity = ward;
+            }
+            // fight anything hostile near HER (she stands next to the ward,
+            // so her range covers them) — one sweep per tick, no loop-hog.
+            try {
+                const enemy = world.getNearestEntityWhere(bot, e => mc.isHostile(e), range);
+                if (enemy) {
+                    bot.armorManager.equipAll();
+                    await equipHighestAttack(bot);
+                    bot.pvp.attack(enemy);
+                    attacked_tick_guard(bot);
+                }
+            } catch (_) {}
+            if (++ticks % 30 === 0) log(bot, `Still guarding ${username}...`);
+        }
+    } finally {
+        stopMachine();
+    }
+    log(bot, `Stood down from guarding ${username}.`);
+    return ticks > 0;
+}
+
+function attacked_tick_guard(bot) {
+    // one-shot pvp pulse per guard tick — the while(enemy) loop lives in
+    // defendSelf; here we pulse and re-scan next tick so movement states
+    // keep breathing between hits.
+    setTimeout(() => { try { bot.pvp.stop(); } catch (_) {} }, 900);
+}
+
 export async function hawkeyeShot(bot, entity, weapon='bow') {
     /**
      * One aimed shot with the hawkeye trajectory solver (L-C-B/mineflayer-schem
@@ -5019,6 +5230,31 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
                 loose._moveMode = goal._moveMode; loose._sprintTrial = goal._sprintTrial; loose._pathTimeout = Math.max(pathfind_timeout * 3, 4000);
                 const retry2 = await bot.pathfinder.getPathTo(destructiveMovements, loose, Math.max(pathfind_timeout * 3, 4000));
                 if (retry2 && retry2.status === 'success') { final_movements = destructiveMovements; log(bot, `Found near-path on retry (exact spot unreachable, close counts).`); rescued = true; goal = loose; }
+            } catch (_) {}
+        }
+        if (!rescued) {
+            // LAST RESORT before giving up: the 5-ray danger probe — the
+            // planner may be blind (unloaded chunk slice, door state) while
+            // open ground sits one turn away. Probe rays, step 3 blocks
+            // toward the best one, re-plan once from there.
+            try {
+                const ray = dangerProbe(bot, 5, 4);
+                if (ray) {
+                    const p = bot.entity.position;
+                    const tx = Math.floor(p.x - Math.sin(ray.yaw) * 3);
+                    const tz = Math.floor(p.z - Math.cos(ray.yaw) * 3);
+                    log(bot, `Planner blind — sidestepping to open ground first.`);
+                    const stepGoal = new pf.goals.GoalNear(tx, Math.floor(p.y), tz, 1);
+                    stepGoal._moveMode = goal._moveMode;
+                    const step = await bot.pathfinder.getPathTo(destructiveMovements, stepGoal, 3000);
+                    if (step && step.status === 'success') {
+                        final_movements = destructiveMovements;
+                        bot.pathfinder.setMovements(final_movements);
+                        try { await bot.pathfinder.goto(stepGoal); } catch (_) {}
+                        const retry3 = await bot.pathfinder.getPathTo(destructiveMovements, goal, Math.max(pathfind_timeout * 3, 4000));
+                        if (retry3 && retry3.status === 'success') { log(bot, `Found path after sidestep.`); rescued = true; }
+                    }
+                }
             } catch (_) {}
         }
         if (!rescued) {
