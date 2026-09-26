@@ -17,6 +17,10 @@ const AIR = new Set(['air', 'cave_air', 'void_air']);
 
 // Blocks that mark terrain (not a player's construction). Anything else in a
 // region counts as "built" for the site-check and classification heuristics.
+// NOTE: this is the OLD coarse list. Prefer mc.blockOrigin(name) — it splits
+// terrain vs vegetation vs crafted vs ambiguous (logs/leaves/wool/hay/pumpkins
+// grow AND get built, so arrangement decides). NATURAL is kept for the two
+// hot paths below; new code should call blockOrigin.
 const NATURAL = new Set([
     'air', 'cave_air', 'void_air', 'grass_block', 'dirt', 'coarse_dirt', 'rooted_dirt',
     'stone', 'cobblestone', 'mossy_cobblestone', 'gravel', 'sand', 'red_sand', 'water',
@@ -121,6 +125,11 @@ export function parseDesignSpec(bot, spec) {
 /**
  * Understand an existing region: block histogram, dominant material, how much of
  * it is constructed vs terrain, whether it is hollow, and a rough structure type.
+ * Now origin-aware: every block is classed terrain / vegetation / ambiguous /
+ * crafted / air, so the summary can say "a player wall cut into a hillside" and
+ * not just "60% constructed". Ambiguous blocks (logs/leaves/wool/hay/pumpkins)
+ * are read by ARRANGEMENT: scattered + mixed with terrain = nature; straight
+ * lines, rows or grids = player work.
  * Uses captureRegion so only loaded chunks near the bot are read.
  */
 export async function summarizeRegion(bot, p1, p2) {
@@ -134,8 +143,28 @@ export async function summarizeRegion(bot, p1, p2) {
     const dominant = sorted[0] ? sorted[0][0] : 'air';
 
     const total = sch.blocks.length;
-    const builtCount = sch.blocks.filter(b => !NATURAL.has(b.name)).length;
+    const originOf = (n) => { try { return mc.blockOrigin(n); } catch (_) { return NATURAL.has(n) ? 'terrain' : 'crafted'; } };
+    const builtCount = sch.blocks.filter(b => { const o = originOf(b.name); return o === 'crafted' || o === 'ambiguous'; }).length;
     const builtRatio = total ? builtCount / total : 0;
+    // origin census: how much is raw land vs grown vs placed vs ambiguous.
+    const originCount = { terrain: 0, vegetation: 0, ambiguous: 0, crafted: 0, air: 0 };
+    for (const b of sch.blocks) { const o = originOf(b.name); if (originCount[o] == null) originCount[o] = 0; originCount[o]++; }
+    // arrangement read on the ambiguous pile: grid-aligned runs = player work.
+    // (logs in a straight 5+ line, wool in a flat sheet, crops in rows.)
+    const ambigCells = new Set(sch.blocks.filter(b => originOf(b.name) === 'ambiguous').map(b => `${b.x},${b.y},${b.z}`));
+    let lineHits = 0;
+    for (const b of sch.blocks) {
+        if (!ambigCells.has(`${b.x},${b.y},${b.z}`)) continue;
+        // straight run along x or z at same y with same name?
+        let run = 1;
+        for (let dx = 1; dx <= 4; dx++) { if (ambigCells.has(`${b.x + dx},${b.y},${b.z}`)) run++; else break; }
+        let runZ = 1;
+        for (let dz = 1; dz <= 4; dz++) { if (ambigCells.has(`${b.x},${b.y},${b.z + dz}`)) runZ++; else break; }
+        if (run >= 5 || runZ >= 5) lineHits++;
+    }
+    const arrangedNote = ambigCells.size
+        ? (lineHits >= 3 ? 'arranged in lines/rows (player work)' : 'scattered, mixed with land (looks grown/natural)')
+        : null;
 
     // Occupy a set of (x,y,z) for interior sampling.
     const occupied = new Set(sch.blocks.map(b => `${b.x},${b.y},${b.z}`));
@@ -156,10 +185,16 @@ export async function summarizeRegion(bot, p1, p2) {
 
     const type = classify(size, builtRatio, interiorAirFrac, hasRoof);
     const pal = topBlocks.join(', ') || 'empty/air';
+    const orgBits = [];
+    if (originCount.terrain) orgBits.push(`${Math.round(originCount.terrain / total * 100)}% raw terrain`);
+    if (originCount.vegetation) orgBits.push(`${Math.round(originCount.vegetation / total * 100)}% grown`);
+    if (originCount.crafted) orgBits.push(`${Math.round(originCount.crafted / total * 100)}% placed by players`);
+    if (originCount.ambiguous) orgBits.push(`${Math.round(originCount.ambiguous / total * 100)}% wood/leaf/wool-like (${arrangedNote || 'unread'})`);
     const summary =
         `${size.x}x${size.y}x${size.z} ${type}${dominant !== 'air' ? ` (mostly ${dominant})` : ''}` +
         ` — ${total} blocks, ${Math.round(builtRatio * 100)}% constructed${interior ? `, ${Math.round(interiorAirFrac * 100)}% hollow` : ''}` +
-        `${hasRoof ? ', roofed' : ', open-top'}. Palette: ${pal}.`;
+        `${hasRoof ? ', roofed' : ', open-top'}. Palette: ${pal}.` +
+        (orgBits.length ? ` Origin: ${orgBits.join(' · ')}.` : '');
 
     return {
         size,
@@ -170,6 +205,9 @@ export async function summarizeRegion(bot, p1, p2) {
         type,
         dominant,
         topBlocks,
+        hist,
+        origin: originCount,
+        arrangedNote,
         summary,
         unloaded: sch.unloaded || 0,
     };
@@ -297,37 +335,184 @@ export function formatPlan(plan, label) {
 
 // Where/how to find raw materials. Keyed by the SOURCE block or item she must
 // gather. Feeds sourcingHint -> she learns the whole supply chain, not just the
-// final block.
+// final block. Depth numbers are best-Y for 1.20+ ore distribution.
 const FIND_HINTS = {
+    // wood (all 10 families + bamboo)
     oak_log: 'chop oak trees (forests / plains)',
     spruce_log: 'chop spruce trees (taiga)',
     birch_log: 'chop birch trees (birch forest)',
     jungle_log: 'chop jungle trees (jungle)',
     acacia_log: 'chop acacia trees (savanna)',
     dark_oak_log: 'chop dark oak (dark forest / roofed)',
-    mangrove_log: 'chop mangrove (swamp)',
+    mangrove_log: 'chop mangrove (swamp, + propagules below the leaves)',
     cherry_log: 'chop cherry trees (cherry grove)',
-    coal_ore: 'mine coal (common, any depth, caves/stony slopes)',
-    iron_ore: 'mine iron (caves, below the surface)',
-    copper_ore: 'mine copper (caves / dripstone caves)',
-    gold_ore: 'mine gold (deep, y<32, or badlands)',
-    redstone_ore: 'mine redstone (deep, y<16)',
-    diamond_ore: 'mine diamond (very deep, y<16)',
-    lapis_ore: 'mine lapis (deep, y<32)',
-    emerald_ore: 'mine emerald (mountains, rare)',
+    pale_oak_log: 'chop pale oak (pale garden, + resin from creaking hearts)',
+    poplar_log: 'chop poplar trees',
+    bamboo: 'cut bamboo (jungle, + fishing loot)',
+    // overworld ores (deepslate_ variants share the hint — very deep stone)
+    coal_ore: 'mine coal (common everywhere, best y 96+, exposed in mountains)',
+    iron_ore: 'mine iron (caves; best y 15, also high y 232 in mountains)',
+    copper_ore: 'mine copper (best y 48, dripstone caves)',
+    gold_ore: 'mine gold (best y -16; badlands y 32..256 everywhere)',
+    redstone_ore: 'mine redstone (deep, best y -59)',
+    diamond_ore: 'mine diamond (very deep, best y -59)',
+    lapis_ore: 'mine lapis (best y 0)',
+    emerald_ore: 'mine emerald (mountains / windswept hills, high up) or trade with villagers',
+    // raw metals (drop straight from the ore block)
+    raw_iron: 'mine iron_ore (caves, best y 15)',
+    raw_gold: 'mine gold_ore (best y -16, or badlands)',
+    raw_copper: 'mine copper_ore (best y 48)',
+    // common stone
     stone: 'mine stone (underground, pickaxe)',
     cobblestone: 'mine stone (pickaxe)',
-    deepslate: 'mine deepslate (very deep, pickaxe)',
-    sand: 'dig sand (beaches / deserts / rivers)',
-    red_sand: 'dig red sand (badlands)',
-    gravel: 'dig gravel (underwater / mountains)',
-    clay: 'dig clay (shallow water / riverbeds)',
-    dirt: 'dig dirt (surface)',
-    grass_block: 'dig grass (surface, silk touch)',
-    cactus: 'find cactus (deserts)',
-    kelp: 'find kelp (ocean)',
-    sugarcane: 'grow sugarcane (near water)',
+    deepslate: 'mine deepslate (very deep, below y 0, pickaxe)',
+    tuff: 'mine tuff (deep caves, trial chambers)',
+    calcite: 'mine calcite (amethyst geode shells, stony peaks)',
+    diorite: 'mine diorite (underground blobs)', andesite: 'mine andesite (underground blobs)',
+    granite: 'mine granite (underground blobs)', dripstone_block: 'mine dripstone (dripstone caves)',
+    pointed_dripstone: 'collect in dripstone caves (grows into lava/water farms)',
+    obsidian: 'pour water over lava, or loot ruined portals / end pillars (diamond pickaxe)',
+    crying_obsidian: 'loot ruined portals, or barter with piglins (NEVER works for portals — cries, won\'t light)',
+    // light kit: torches + fuels (spawn-proofing = her own survival job)
+    // NOTE: cushions verified 0 light (no emission in Cushion.class) — they sit
+    // in building/survival notes, never here as lamps.
+    torch: 'craft 1 coal/charcoal + 1 stick = 4 torches (light 14, spawn-proof grid ~11 apart) — coal from coal_ore (best y 96+), charcoal = smelt any log in a furnace when coal runs out',
+    lantern: 'craft 8 iron_nugget ring + 1 torch (light 15, brighter than torch, hangs or sits) — the upgrade once iron flows',
+    campfire: 'craft 3 stick + 1 coal/charcoal + 3 log (light 15, cooks food, keeps piglins calm nearby) — outdoor base light + kitchen',
+    glowstone: 'break glowstone clusters (nether ceilings — light 15 block, craft 4 dust = 1 block)',
+    coal: 'mine coal_ore (best y 96+, mountains) — torches + furnace fuel + fire_charge',
+    charcoal: 'smelt any log in a furnace (no coal needed) — identical to coal for torches, never waste coal on torches when charcoal works',
+    stick: 'craft 2 planks = 4 sticks (torch handles + tools + ladders)',
+    flint_and_steel: 'craft 1 iron_ingot + 1 flint (gravel) — the nether-portal lighter; also lights TNT/creepers/campfires',
+    fire_charge: 'craft blaze_powder + coal/charcoal + gunpowder — one-shot portal lighter (also ghast-fireball ammo)',
+    ender_eye: 'craft 1 ender_pearl + 1 blaze_powder (!sourcing "ender_pearl" + nether-fortress blazes) — the END-portal key: 12 fill a stronghold frame; thrown, it flies toward the stronghold',
+    ender_chest: 'craft 8 obsidian (ring) + 1 ender_eye (middle) — your PRIVATE cross-world vault: 27 per-player slots shared across EVERY ender chest, death-proof + grief-proof (breaking one only drops 8 obsidian, shows nothing). Found one in the world = free bank branch: USE it (your vault through their chest), REMEMBER it, never break it for loot',
+    end_portal_frame: 'stronghold-only (NOT craftable, NOT collectible) — 12 in a ring, each needs an ender_eye; find via thrown ender_eye or !sourcing',
+    // dirt/sand/gravel/clay
+    dirt: 'dig dirt (surface)', coarse_dirt: 'dig (taiga / savanna), hoe it back to dirt',
+    rooted_dirt: 'dig under azalea trees (lush caves below)',
+    mud: 'use a water bottle on dirt (mangrove swamp), or find mangrove swamps',
+    clay: 'dig clay (shallow water / riverbeds, lush caves)',
+    sand: 'dig sand (beaches / deserts / rivers)', red_sand: 'dig red sand (badlands)',
+    gravel: 'dig gravel (underwater / mountains / nether), flint drops too',
+    soul_sand: 'dig soul sand (soul sand valley, nether) — underwater: UPDRAFT elevator (ride up + refill oxygen free)',
+    soul_soil: 'dig soul soil (soul sand valley)',
+    // plants/food
+    oak_sapling: 'from oak leaves (forests)', birch_sapling: 'from birch leaves', spruce_sapling: 'from spruce leaves',
+    jungle_sapling: 'from jungle leaves', acacia_sapling: 'from acacia leaves', dark_oak_sapling: 'from dark oak leaves (needs 2x2 to grow)',
+    mangrove_propagule: 'below mangrove leaves (swamp)', cherry_sapling: 'from cherry leaves (grove)',
+    pale_oak_sapling: 'from pale oak leaves (pale garden)',
+    wheat: 'farm wheat seeds (tall grass) on tilled soil near water, or loot villages',
+    carrot: 'loot villages / pillager outposts, or rare zombie drop', potato: 'loot villages, or rare zombie drop',
+    beetroot: 'loot villages', melon: 'find jungle / savanna villages, or trade with wandering trader',
+    pumpkin: 'find plains / taiga, or woodland mansions', cocoa_beans: 'break cocoa pods (jungle)',
+    sugarcane: 'grow sugarcane on sand/dirt near water', cactus: 'find cactus (deserts, + green dye when smelted)',
+    kelp: 'find kelp (ocean)', seagrass: 'find seagrass (ocean / rivers, shears)',
+    sweet_berries: 'pick sweet_berry_bush (taiga)', glow_berries: 'pick cave vines (lush caves)',
+    chorus_fruit: 'break chorus plants (outer End islands) — TELEPORT food: eating randomly teleports you +/-8 blocks, escapes ANY box/cage/burial (no health cost, costs hunger). Carry for stuck-escapes, NOT for hunger', chorus_flower: 'break chorus tops (outer End)',
+    popped_chorus_fruit: 'smelt chorus_fruit in a furnace (purpur blocks + end rods, NOT teleport food — smelting kills the teleport)',
+    nether_wart: 'loot nether fortresses (soul sand soil), grows on soul sand — THE potion base (awkward = wart + water bottle)',
+    magma_cream: 'kill magma cubes, or craft blaze_powder + slimeball — fire-res key (awkward + cream = fire resistance)',
+    brewing_stand: 'craft 1 blaze_rod + 3 cobble — potions: water bottle + nether_wart = awkward; awkward + magma_cream = FIRE-RES (lava-swim ticket)',
+    cauldron: 'craft 7 iron in a U — holds water/potions/dye, the nether water bank; lava-drip farm catcher (!cauldron fills it)',
+    glass_bottle: 'craft 3 glass in a V (smelt sand) — dip water (!bottle) = potion-ready water_bottle',
+    red_mushroom: 'dark forest / swamp / nether', brown_mushroom: 'dark places / swamp / nether',
+    crimson_fungus: 'crimson forest floor (nether)', warped_fungus: 'warped forest floor (nether, scares hoglins)',
+    twisting_vines: 'climb in warped forest', weeping_vines: 'crimson forest ceilings',
+    nether_sprouts: 'warped forest floor', crimson_roots: 'crimson forest floor', warped_roots: 'warped forest floor',
+    shroomlight: 'break shroomlights (nether forest canopies)',
+    glow_lichen: 'caves walls (shears or bonemeal to spread)',
+    moss_block: 'lush caves, or trade with wandering trader', moss_carpet: 'craft from moss, or lush caves',
+    vine: 'jungle / swamp walls (shears)', lily_pad: 'swamps (boat through them)',
+    small_dripleaf: 'lush caves (trader also sells)', big_dripleaf: 'lush caves (climbable)',
+    spore_blossom: 'lush cave ceilings', azalea: 'lush caves / above azalea trees', flowering_azalea: 'lush caves',
+    torchflower_seeds: 'sniffer digs them up (warm ocean ruins egg)', pitcher_pod: 'sniffer digs it up',
+    // flowers -> dye (shears for double-tall, bonemeal spreads)
+    poppy: 'plains (red dye)', dandelion: 'plains (yellow dye)', blue_orchid: 'swamps (light blue dye)',
+    allium: 'flower forest (magenta dye)', azure_bluet: 'plains (light gray dye)',
+    cornflower: 'plains (blue dye)', tulip: 'flower forest (red/orange/white/pink dye)',
+    oxeye_daisy: 'flower forest (light gray dye)', lily_of_the_valley: 'flower forest (white dye)',
+    wither_rose: 'where a wither kills a mob (black dye)', torchflower: 'sniffer (orange dye)',
+    pitcher_plant: 'sniffer pod grown (cyan dye)', peony: 'forest (pink dye, 2-tall)',
+    lilac: 'forest (magenta dye, 2-tall)', rose_bush: 'forest (red dye, 2-tall)', sunflower: 'plains (yellow dye, faces east)',
+    eyeblossom: 'pale garden (open at night / closed by day, gray dye)',
+    // ocean
+    prismarine_shard: 'kill guardians (ocean monument)', prismarine_crystals: 'kill guardians (monument)',
+    sea_lantern: 'break sea lanterns (monument, silk touch or crystals back)',
+    sponge: 'elder guardian drop, or monument sponge rooms (dries in furnace/nether)',
+    wet_sponge: 'monument sponge rooms — dry in furnace (or instant-dry click in the nether) = sponge that soaks water rooms dry',
+    bucket: 'craft 3 iron_ingot in a V — vessel for EVERYTHING below; scoop STILL source blocks (flowing never fills)',
+    water_bucket: 'scoop still water (!scoop water) — clutch falls, douse fire, obsidian (pour on lava), spring/cauldron',
+    lava_bucket: 'scoop pools or deep lakes y10-11 (!scoop lava, stand back) — 100-smelt fuel (keeps bucket), pour on water = obsidian',
+    milk_bucket: 'bucket on cow/goat/mooshroom (!scoop milk) — clears ALL effects (buffs too: cure-only, never casual)',
+    nautilus_shell: 'fishing, or wandering trader / drowned drops', heart_of_the_sea: 'buried treasure chests only',
+    // uncraftable tack & utilities (NO recipe — loot / fish / trade / drop)
+    saddle: 'NO recipe — loot dungeon / mineshaft / desert-temple / jungle-temple / nether-fortress / bastion / end-city / ancient-city / stronghold chests, fish it as treasure loot, trade a master leatherworker (~6 emeralds), or kill a ravager',
+    name_tag: 'NO recipe — loot dungeon / mineshaft / woodland-mansion chests, or fish it as treasure',
+    lead: 'craft 4 string + 1 slimeball, or loot woodland-mansion / buried-treasure / trial-chamber chests',
+    leather_horse_armor: 'craft 7 leather, or loot dungeon / nether-fortress / desert-temple / jungle-temple / stronghold / village chests',
+    iron_horse_armor: 'NO recipe — loot dungeon / nether-fortress / desert-temple / jungle-temple / stronghold / village / end-city chests',
+    golden_horse_armor: 'NO recipe — loot dungeon / nether-fortress / desert-temple / jungle-temple / stronghold / village / end-city chests',
+    diamond_horse_armor: 'NO recipe — loot dungeon / nether-fortress / desert-temple / jungle-temple / stronghold / village / end-city / ancient-city chests',
+    wolf_armor: 'craft 6 armadillo_scute (brush armadillos in savanna)',
+    turtle_egg: 'breed turtles on their home beach (silk touch to move)', scute: 'baby turtles growing up (turtle helmet)',
+    armadillo_scute: 'brush armadillos (savanna, wolf armor)',
+    ink_sac: 'kill squid (rivers / ocean)', glow_ink_sac: 'kill glow squid (lush caves / deep dark water)',
+    // nether ores/materials
+    nether_quartz_ore: 'mine quartz (everywhere in the nether)',
+    nether_gold_ore: 'mine gold (everywhere in the nether, piglin brutes guard bastions)',
+    ancient_debris: 'mine debris (y 8..22, best y 15 — bed-mine or TNT, blast-resistant)',
+    basalt: 'basalt deltas', blackstone: 'basalt deltas / bastions (gilded variant in bastions)',
+    glowstone: 'break glowstone clusters (nether ceilings — pillars up, or ghast-proof)',
+    magma_block: 'magma ravines / nether (hurts to stand on, frost walker melts it) — underwater: DOWNDRAFT bubble column (drags down + breath damage, never ride blind)',
+    soul_sand: 'dig soul sand (soul sand valley, nether) — underwater: UPDRAFT elevator (ride up + refill oxygen free)',
+    soul_soil: 'dig soul soil (soul sand valley)',
+    bone_block: 'soul sand valley fossils', netherrack: 'everywhere in the nether',
+    crimson_nylium: 'crimson forest floor (spread with bonemeal)', warped_nylium: 'warped forest floor',
+    crimson_stem: 'chop crimson stems (crimson forest)', warped_stem: 'chop warped stems (warped forest)',
+    // end
+    end_stone: 'mine end stone (the End)', purpur_block: 'break purpur (end cities)',
+    end_rod: 'craft blaze rod + popped chorus, or break them in end cities',
+    chorus_plant: 'outer End islands', dragon_egg: 'the End fountain after killing the dragon (torch-trick to collect)',
+    respawn_anchor: 'craft 3 glowstone + 6 crying_obsidian — charge with glowstone, NETHER-ONLY spawn (explodes in overworld)',
+    end_crystal: 'craft 7 glass + eye_of_ender + ghast_tear (bottom) — heals the dragon when lit; 4 on the fountain re-summons her',
+    dragon_breath: 'bottle the purple clouds she breathes (lingering potions) — never stand in them',
+    // sculk / deep dark
+    sculk: 'deep dark / ancient cities (y -52ish, XP when mined)',
+    sculk_sensor: 'deep dark (silk touch to keep, hears vibrations)',
+    sculk_catalyst: 'deep dark / ancient cities (spreads sculk on kills)',
+    sculk_shrieker: 'deep dark (summons the warden — break from range)',
+    echo_shard: 'ancient city chests (recovery compass)',
+    disc_fragment: 'ancient city chests (9 = music disc 5)',
+    // trial chambers (copper + tuff, y -20..-40 under mountains)
+    trial_spawner: 'trial chambers (loot: keys, honey, wind charges)',
+    vault: 'trial chambers (open with trial keys)', ominous_vault: 'ominous trials (heavy core, trims)',
+    breeze_rod: 'kill breezes (trial chambers)', wind_charge: 'breeze drops / vaults (launch yourself, fall-negate)',
+    heavy_core: 'ominous vaults only (mace core)',
+    copper_bulb: 'trial chambers (redstone light, oxidizes)', crafter: 'trial chambers, or craft (iron + redstone + dropper + table)',
+    // mob-drop basics
+    rotten_flesh: 'kill zombies / drowned (clerics buy it)', bone: 'kill skeletons (fossils in deserts too)',
+    arrow: 'kill skeletons, or craft (flint + stick + feather)', string: 'kill spiders, or shear cobwebs / trial vaults',
+    spider_eye: 'kill spiders / witches', gunpowder: 'kill creepers / ghasts / witches, or desert temple chests',
+    slimeball: 'kill slimes (swamps at night / slime chunks below y 40)', magma_cream: 'kill magma cubes, or blaze powder + slimeball',
+    blaze_rod: 'kill blazes (nether fortresses, brewing + eyes of ender)',
+    shulker_shell: 'shulker drops in End Cities / End ships (outer End islands past the dragon — 2 per box, 1 chest + 2 shells shapeless). Fight: they fire HOMING bullets = LEVITATION 10s (the FALL kills) — strafe behind pillars, hit when OPEN (closed = armored), carry chorus_fruit + pearls vs void falls',
+    ender_pearl: 'kill endermen (warped forests best), or barter with piglins',
+    ghast_tear: 'kill ghasts (nether wastes)', phantom_membrane: 'kill phantoms (no sleep 3+ nights, repairs elytra)',
+    leather: 'kill cows / hoglins (books, armor, item frames)', feather: 'kill chickens (arrows, books)',
+    egg: 'chickens lay them', rabbit_hide: 'kill rabbits (4 = leather, bundles)',
+    wool: 'shear sheep (or kill)', honeycomb: 'shear full beehives (plains / flower forest, campfire below to calm)',
+    // metals from ores
+    gold_ingot: 'smelt gold ore / raw gold (badlands surface gold too)', iron_ingot: 'smelt iron ore / raw iron',
+    copper_ingot: 'smelt copper ore / raw copper (trial chambers have raw blocks)',
+    netherite_scrap: 'smelt ancient debris', netherite_ingot: 'smith 4 scrap + 4 gold ingots',
+    lapis_lazuli: 'mine lapis (best y 0), or cleric trade / mineshaft chests',
+    redstone: 'mine redstone (best y -59), or witch drops / temple chests',
+    quartz: 'mine nether quartz ore (XP-rich)',
+    amethyst_shard: 'break amethyst clusters (geodes y -64..30, spyglass + tinted glass)',
 };
+export const FIND_HINT_KEYS = new Set(Object.keys(FIND_HINTS));
+
 
 // Extra smelt recipes getItemSmeltingIngredient does not cover (also keeps the hint
 // available before mcdata is ready).
@@ -344,6 +529,7 @@ const CRAFT_FALLBACK = {
     torch: 'craft from coal/charcoal + a stick', glass_pane: 'craft from 6 glass',
     ladder: 'craft from 7 sticks', glowstone: 'mine glowstone (nether) or craft from glowstone_dust',
 };
+export const CRAFT_FALLBACK_KEYS = new Set(Object.keys(CRAFT_FALLBACK));
 const WOOD_FURNITURE = ['slab', 'stairs', 'fence', 'fence_gate', 'door', 'trapdoor', 'sign', 'pressure_plate', 'button', 'boat'];
 
 // A one-line "how and where do I get this" answer for a block/item, composing
@@ -352,12 +538,15 @@ const WOOD_FURNITURE = ['slab', 'stairs', 'fence', 'fence_gate', 'door', 'trapdo
 export function sourcingHint(name) {
     const n = String(name || '');
     if (!n) return 'unknown';
+    // deepslate ore variants share the stone hint (they only differ below y 0)
+    const plain = n.replace(/^deepslate_/, '');
     // coloured/plain wool -> sheep (roam plains/meadows and shear or kill)
     if (n.endsWith('_wool')) return 'shear or kill a sheep (sheep roam plains/meadows)';
     // raw material with a known biome/depth location
-    if (FIND_HINTS[n]) {
-        const tool = safeGet(() => mc.getBlockTool(n), null);
-        return `${FIND_HINTS[n]}${tool ? ` (${tool})` : ''}`;
+    if (FIND_HINTS[n] || FIND_HINTS[plain]) {
+        const hit = FIND_HINTS[n] || FIND_HINTS[plain];
+        const tool = safeGet(() => mc.getBlockTool(n), null) || safeGet(() => mc.getBlockTool(plain), null);
+        return `${hit}${tool ? ` (${tool})` : ''}`;
     }
     // animal-sourced (leather, meats)
     const animal = safeGet(() => mc.getItemAnimalSource(n), null);
@@ -377,12 +566,17 @@ export function sourcingHint(name) {
         if (n.endsWith('_' + f)) { const w = n.slice(0, -(f.length + 1)); return `craft from ${w}_planks`; }
     }
     // mine a source block
-    const source = (safeGet(() => mc.getItemBlockSources(n), []) || [])[0];
+    const source = (safeGet(() => mc.getItemBlockSources(n), []) || [])[0] || (safeGet(() => mc.getItemBlockSources(plain), []) || [])[0];
     if (source) {
         const tool = safeGet(() => mc.getBlockTool(source), null);
         const hint = FIND_HINTS[source] || `mine ${source}`;
         return `${hint}${tool ? ` (${tool})` : ''}`;
     }
+    // villager-trade / loot-only / boss-gated items: say so instead of 'unknown'
+    const trade = safeGet(() => mc.getItemVillagerTrade(n), null);
+    if (trade) return `trade with a ${trade.profession} villager (${trade.price})`;
+    const lootOnly = safeGet(() => mc.getItemLootOnly(n), null);
+    if (lootOnly === 'loot-only') return 'loot-only (no craft/gather — explore structures, never buyable)';
     return 'not gatherable or craftable (rare / villager trade)';
 }
 

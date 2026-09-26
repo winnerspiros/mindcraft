@@ -80,14 +80,17 @@ const KIT_GIVE = [ // [item, count]
 
 // RCON position read: where IS a player, even when the 26.3 server withholds
 // their entity from bot.entities (verified 18:24: YandereDev 11 blocks away,
-// invisible). Returns {x,y,z} floats or null. Cached 5s per name so a walk leg
-// doesn't spam RCON (broadcasts if the flag is on; silent once fixed).
+// invisible). Returns {x,y,z} floats or null. Cached 1.2s per name: fresh
+// enough for per-tick stare/social gating (a 5s cache froze her gaze on a
+// stale spot for seconds after the player moved), still cheap enough that a
+// walk leg doesn't spam RCON.
 const _posCache = {};
+const POS_CACHE_MS = 1200;
 export async function rconPlayerPos(name) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     if (!safe) return null;
     const now = Date.now();
-    if (_posCache[safe] && now - _posCache[safe].t < 5000) return _posCache[safe].pos;
+    if (_posCache[safe] && now - _posCache[safe].t < POS_CACHE_MS) return _posCache[safe].pos;
     let out;
     try { out = await rconCommand(`data get entity ${safe} Pos`); }
     catch (e) { return null; }

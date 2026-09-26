@@ -194,6 +194,38 @@ function getWorldKnowledge() {
     return _worldKnowledge;
 }
 
+// Summoning reference — static knowledge injected via $SUMMON_KNOWLEDGE.
+// What every mob does, what it drops, how to survive and fight it, and the
+// observe-first / clean-up-after discipline. Kept in its own markdown file.
+const SUMMON_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/summon_knowledge.md');
+let _summonKnowledge = null;
+function getSummonKnowledge() {
+    if (_summonKnowledge != null) return _summonKnowledge;
+    try {
+        _summonKnowledge = readFileSync(SUMMON_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load summon knowledge:', e.message);
+        _summonKnowledge = '';
+    }
+    return _summonKnowledge;
+}
+
+// Survival reference — gear tiers, food, shelter, fight-vs-flight, material
+// runs. Static knowledge injected via $SURVIVAL_KNOWLEDGE. Kept in its own
+// markdown file for easy editing.
+const SURVIVAL_KNOWLEDGE_PATH = path.join(__dirname, '../agent/library/survival_knowledge.md');
+let _survivalKnowledge = null;
+function getSurvivalKnowledge() {
+    if (_survivalKnowledge != null) return _survivalKnowledge;
+    try {
+        _survivalKnowledge = readFileSync(SURVIVAL_KNOWLEDGE_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load survival knowledge:', e.message);
+        _survivalKnowledge = '';
+    }
+    return _survivalKnowledge;
+}
+
 // Storage & containers reference — static knowledge injected via $STORAGE_KNOWLEDGE.
 // Chests, furnaces, hoppers, dispensers, shulker boxes, bundles, etc. — what they are,
 // how to craft, how to get, and how to use them. Kept in its own markdown file.
@@ -423,6 +455,10 @@ export class Prompter {
             prompt = prompt.replaceAll('$BUILDING_KNOWLEDGE', getBuildingKnowledge());
         if (prompt.includes('$WORLD_KNOWLEDGE'))
             prompt = prompt.replaceAll('$WORLD_KNOWLEDGE', getWorldKnowledge());
+        if (prompt.includes('$SUMMON_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$SUMMON_KNOWLEDGE', getSummonKnowledge());
+        if (prompt.includes('$SURVIVAL_KNOWLEDGE'))
+            prompt = prompt.replaceAll('$SURVIVAL_KNOWLEDGE', getSurvivalKnowledge());
         if (prompt.includes('$PERSONAL'))
             prompt = prompt.replaceAll('$PERSONAL', this.agent.personal ? this.agent.personal.summarize() : '');
         if (prompt.includes('$HEAT'))
@@ -470,7 +506,12 @@ export class Prompter {
     }
 
     async promptConvo(messages) {
-        this.most_recent_msg_time = Date.now();
+        // 26.3 liveness fix: the old guard stamped most_recent_msg_time at
+        // ENTRY, so any message arriving mid-generation (including the bot's
+        // own queued follow-ups) discarded a GOOD reply and the loop retried
+        // with max_responses=1 during self-prompts — the "she goes silent
+        // right when spoken to" wedge. Only a genuinely NEWER inbound message
+        // (stamped by handleMessage below) may invalidate this generation.
         let current_msg_time = this.most_recent_msg_time;
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations

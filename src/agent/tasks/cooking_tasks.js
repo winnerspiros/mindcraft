@@ -261,6 +261,9 @@ export class CookingTaskInitiator {
     }
 
     async summonAnimals (animals, amount) {
+        // NOTE: task-script path with explicit coordinates — NOT her conversational
+        // summoning. Amounts here are the task's own business (farm restock), and the
+        // coordinate form means openChat's intercept deliberately leaves these alone.
         const position = getPosition(this.bot);
         for (const animal of animals) {
             for (let i = 0; i < amount; i++) {
@@ -272,6 +275,8 @@ export class CookingTaskInitiator {
     }
 
     async killEntities(entities) {
+        // NOTE: same as summonAnimals — internal task cleanup with explicit
+        // coordinates/selectors, not her chat summoning. Left as-is on purpose.
         for (const entity of entities) {
             await this.bot.chat(`/kill @e[type=${entity},distance=..200]`);
         }

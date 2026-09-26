@@ -1,6 +1,16 @@
 import { getBlockId, getItemId, suggestBlockNames, suggestItemNames, suggestBlockOrItemNames } from "../../utils/mcdata.js";
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
+import { powerRank, powerRefused } from '../library/skills.js';
+
+// Trust levels for operator-power commands. Thin wrappers so this module
+// doesn't reach into relationship internals directly.
+function powerRankFor(agent, playerName) {
+    try { return powerRank(agent, playerName); } catch (_) { return 'none'; }
+}
+function powerRefusedFor(agent, playerName, what) {
+    try { powerRefused(agent, playerName, what); } catch (_) {}
+}
 
 let suppressNoDomainWarning = true;
 
@@ -143,7 +153,7 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
  * @param {string} message - A message from a player or language model containing a command.
  * @returns {string | Object}
  */
-export function parseCommandMessage(message) {
+export function parseCommandMessage(message, preCap = null) {
     const info = getCommandInfo(message);
     if (!info) return `Command is incorrectly formatted`;
 
@@ -155,6 +165,22 @@ export function parseCommandMessage(message) {
 
     const command = getCommand(commandName);
     if(!command) return `${commandName} is not a command.`
+
+    // Power-cap pre-pass: shrink absurd asks (200 withers) to the cap BEFORE
+    // domain validation, so a capped request proceeds at the cap instead of
+    // tripping the domain error. Runs on RAW string args, so numeric parsing
+    // happens here, not in the cap function.
+    if (preCap && typeof preCap === 'function' && command.power && args) {
+        const coerced = args.map(a => {
+            let t = String(a).trim();
+            if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'")))
+                t = t.substring(1, t.length - 1);
+            const n = Number(t);
+            return t !== '' && !Number.isNaN(n) ? n : t;
+        });
+        preCap(coerced);
+        args = coerced.map(a => typeof a === 'number' ? String(a) : `"${a}"`);
+    }
 
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
@@ -286,12 +312,32 @@ function numParams(command) {
 }
 
 export async function executeCommand(agent, message) {
-    let parsed = parseCommandMessage(message);
+    // Cheap pre-resolve so the power-cap pre-pass knows which cap to apply
+    // before parse-domain validation runs (parse-then-cap trips the domain
+    // error on absurd asks like 200 withers instead of shrinking them).
+    const preInfo = getCommandInfo(message);
+    const preCmd = preInfo ? getCommand(preInfo.name) : null;
+    const preCap = preCmd && preCmd.power && typeof preCmd.powerCap === 'function' ? preCmd.powerCap : null;
+    let parsed = parseCommandMessage(message, preCap);
     if (typeof parsed === 'string')
         return parsed; //The command was incorrectly formatted or an invalid input was given.
     else {
-        console.log('parsed command:', parsed);
         const command = getCommand(parsed.commandName);
+        // POWER GATE: operator-power commands need a trusted requester. The
+        // requester is the last human sender (players can't invoke these via
+        // !-syntax from chat unless the LLM echoes them — in both cases the
+        // human who triggered this turn is agent.last_sender).
+        if (command.power) {
+            const requester = agent.last_sender;
+            const level = powerRankFor(agent, requester);
+            if (level === 'none') {
+                powerRefusedFor(agent, requester, command.power);
+                return `${parsed.commandName} refused: ${requester || 'unknown'} is not trusted enough for operator powers.`;
+            }
+            // Trust never waives physics: the pre-pass already shrunk the ask
+            // to the cap for 'small' AND 'full' alike. Nothing more to do here.
+        }
+        console.log('parsed command:', parsed);
         let numArgs = 0;
         if (parsed.args) {
             numArgs = parsed.args.length;

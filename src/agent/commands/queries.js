@@ -270,19 +270,95 @@ export const queryList = [
         }
     },
     {
+        name: "!surroundings",
+        description: "Get a directional summary of what is around the bot — biome, depth band, light level, cave sense, what it stands on, and the first solid thing in each compass direction plus overhead. Hazards marked (!), mechanics marked.",
+        perform: function (agent) {
+            let res = 'SURROUNDINGS';
+            for (const line of world.getTerrainProfile(agent.bot)) {
+                res += `\n- ${line}`;
+            }
+            return pad(res);
+        }
+    },
+    {
+        name: "!chunk",
+        description: "Chunk + spawn-range card: which 16x16 chunk you stand in, the world spawn's chunk and distance, and the live spawn/despawn distances (spawn 24-128m, despawn past 32m, instant past 128m, sim-distance 3 = live inside 48m).",
+        perform: function (agent) {
+            let res = 'CHUNK';
+            for (const line of world.getChunkInfo(agent.bot)) {
+                res += `\n- ${line}`;
+            }
+            return pad(res);
+        }
+    },
+    {
+        name: "!seed",
+        description: "Seed + map card: the world seed, whether YOUR chunk is slime (slimes below y40 at any light), what the seed unlocks vs its honest no-far-seeing limit. Usage: !seed (card), !seed slime [chunks-radius] (nearest slime-farm chunks with coords to walk to).",
+        params: {
+            'job': { type: 'string', default: 'card', description: 'card, or slime.' },
+            'arg': { type: 'string', default: null, description: 'Search radius in chunks for slime (optional).' }
+        },
+        perform: function (agent, job, arg) {
+            job = String(job || 'card').toLowerCase();
+            if (job === 'slime') {
+                const r = Math.max(1, Math.min(12, parseInt(arg) || 4));
+                const found = world.findSlimeChunks(agent.bot, r, 8);
+                if (!found.length) return pad(`SEED slime: no slime chunk within ${r} chunks — try a wider radius (!seed slime 8), or farm swamp surface at night.`);
+                let res = `SEED slime (seed ${world.WORLD_SEED} — slimes below y40 at ANY light):`;
+                for (const c of found) res += `\n- chunk ${c.cx},${c.cz} → stand at ${c.x},?,${c.z} (!goToCoordinates ${c.x} 60 ${c.z})`;
+                return pad(res + '\n- farm shape: 3-high hollow room below y30, light it (slimes ignore light), AFK 24-44m away.');
+            }
+            let res = 'SEED';
+            for (const line of world.getSeedInfo(agent.bot)) {
+                res += `\n- ${line}`;
+            }
+            return pad(res);
+        }
+    },
+    {
+        name: "!blockFacts",
+        description: "Physics card for ONE block: is it solid, does it glow, does LIGHT pass through it or does it cast shadow, does it fall (gravity), can a piston push it, does it hurt, is it right-clickable, and is it seed-made land / grown / player-placed / ambiguous. Ask before trusting a floor, a wall, a roof, or a lamp.",
+        params: {
+            'name': { type: 'string', description: 'Exact block name, e.g. "sand", "obsidian", "oak_door", "white_cushion".' },
+        },
+        perform: function (agent, name) {
+            if (!name) return pad('Tell me which block (e.g. !blockFacts("sand")).');
+            if (/cushion$/i.test(String(name || ''))) return pad(`BLOCK ${String(name).toLowerCase()}\n- solid: no (entity seat, sit on it)\n- light: LIGHT PASSES THROUGH (entity — never casts shadow, but GLOWS NOTHING: 0 light emitted, decoration + seat only)\n- gravity: stays put (pops off if anchor/air fails)\n- piston: not pushable (entity)\n- danger: safe to touch\n- use: sittable (right-click to sit, jump to stand)\n- origin: player-placed (crafted: 3 same-colour wool slabs in a row)`);
+            let facts = null;
+            try { facts = mc.getBlockFacts(name); } catch (_) { facts = null; }
+            if (!facts) return pad(`No data for "${name}" — check the name (exact snake_case) and retry.`);
+            let pass = null;
+            try { pass = mc.lightPasses ? mc.lightPasses(name) : null; } catch (_) { pass = null; }
+            const bits = [
+                `solid: ${facts.solid ? 'yes (stand on it, blocks you)' : 'no (walk/fall through)'}`,
+                `light: ${facts.transparent ? 'see-through' : 'opaque'}${facts.emitLight ? `, glows ${facts.emitLight}/15` : ''}${pass === true ? ', LIGHT PASSES THROUGH (no shadow)' : pass === false ? ', BLOCKS light (casts shadow)' : ''}`,
+                `gravity: ${facts.gravity ? 'FALLS when unsupported (sand-like — never build on it unbraced)' : 'stays put'}`,
+                `piston: ${facts.pushable ? 'pushable' : 'CANNOT be pushed (frame around it or keep it out of moving parts)'}`,
+                `danger: ${facts.hazard ? 'YES (!) — hurts/burns/blows up' : 'safe to touch'}`,
+                `use: ${facts.interactive ? 'right-clickable mechanic (door/switch/chest-like)' : 'not interactive'}`,
+                `origin: ${facts.origin} (terrain = seed land, grown = vegetation, player-placed = crafted, ambiguous = read the arrangement)`,
+            ];
+            return pad(`BLOCK ${facts.name}\n- ` + bits.join('\n- '));
+        }
+    },
+    {
         name: "!nearbyBlocks",
-        description: "Get the blocks near the bot.",
+        description: "Get the blocks near the bot (hazards marked (!), mechanics marked).",
         perform: function (agent) {
             let bot = agent.bot;
             let res = 'NEARBY_BLOCKS';
             let blocks = world.getNearestBlocks(bot);
             let block_details = new Set();
-            
+
             for (let block of blocks) {
                 let details = block.name;
                 if (block.name === 'water' || block.name === 'lava') {
                     details += block.metadata === 0 ? ' (source)' : ' (flowing)';
                 }
+                try {
+                    if (mc.HAZARD_BLOCKS && (mc.HAZARD_BLOCKS.has(block.name) || block.name === 'tnt')) details += ' (!) hazard';
+                    else if (mc.isInteractiveBlock && mc.isInteractiveBlock(block.name)) details += ' (mechanic)';
+                } catch (_) { /* plain */ }
                 block_details.add(details);
             }
             for (let details of block_details) {
@@ -290,17 +366,6 @@ export const queryList = [
             }
             if (block_details.size === 0) {
                 res += ': none';
-            } 
-            return pad(res);
-        }
-    },
-    {
-        name: "!surroundings",
-        description: "Get a directional summary of what is around the bot — what it stands on, and the first solid thing in each compass direction plus overhead.",
-        perform: function (agent) {
-            let res = 'SURROUNDINGS';
-            for (const line of world.getTerrainProfile(agent.bot)) {
-                res += `\n- ${line}`;
             }
             return pad(res);
         }
@@ -404,7 +469,18 @@ export const queryList = [
             players = players.filter(p => !bots.includes(p));
 
             for (const player of players) {
-                res += `\n- Human player: ${player}`;
+                // facing read: who is looking AT her (attention / pointing with their face).
+                let facing = '';
+                try {
+                    const e = bot.players[player] && bot.players[player].entity;
+                    const me = bot.entity.position;
+                    if (e && e.position && e.yaw != null && me.distanceTo(e.position) <= 8) {
+                        const want = Math.atan2(-(me.x - e.position.x), -(me.z - e.position.z));
+                        let d = Math.abs(((e.yaw - want + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+                        if (d < 0.5) facing = ' (facing YOU)';
+                    }
+                } catch (_) { /* skip */ }
+                res += `\n- Human player: ${player}${facing}`;
             }
             for (const bot of bots) {
                 res += `\n- Bot player: ${bot}`;
@@ -517,7 +593,7 @@ export const queryList = [
     },
     {
         name: '!getCraftingPlan',
-        description: "Provides a comprehensive crafting plan for a specified item. This includes a breakdown of required ingredients, the exact quantities needed, and an analysis of missing ingredients or extra items needed based on the bot's current inventory.",
+        description: "Provides a comprehensive crafting plan for a specified item. This includes a breakdown of required ingredients, the exact quantities needed, whether it needs a crafting table (3x3) or fits the 2x2 inventory grid, and an analysis of missing ingredients or extra items needed based on the bot's current inventory.",
         params: {
             targetItem: { 
                 type: 'string', 

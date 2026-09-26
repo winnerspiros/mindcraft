@@ -321,6 +321,105 @@ export function getPosition(bot) {
     return bot.entity.position;
 }
 
+export const WORLD_SEED = '1117332047292399705';
+
+function _javaRandomNextInt10(seedLong) {
+    // java.util.Random算法 (48-bit LCG) — nextInt(10) 精确复刻，BigInt 无精度损失。
+    const MULT = 0x5DEECE66Dn, ADD = 0xBn, MASK = (1n << 48n) - 1n;
+    let s = (seedLong ^ MULT) & MASK;
+    const next = (bits) => { s = (s * MULT + ADD) & MASK; return s >> (48n - BigInt(bits)); };
+    // nextInt(10)：非 2 的幂走拒绝采样
+    for (;;) {
+        const bits = next(31);
+        const val = bits % 10n;
+        if (bits - val + 9n >= 0n) return Number(val);
+    }
+}
+
+export function isSlimeChunk(cx, cz, seedStr = WORLD_SEED) {
+    /**
+     * Slime-chunk test (Java formula): mix the world seed with the chunk
+     * coords, run java.util.Random, nextInt(10) == 0 means slimes spawn
+     * below y 40 even at ANY light. Swamps spawn slimes on the surface at
+     * night regardless — this test is for the underground farm chunks.
+     * @returns {boolean} true if this chunk grows slimes underground.
+     **/
+    try {
+        const seed = BigInt(seedStr);
+        const x = BigInt(cx), z = BigInt(cz);
+        const mixed = seed + x * x * 4987142n + x * 5947611n + z * z * 4392875n + z * 389711n;
+        return _javaRandomNextInt10(mixed) === 0;
+    } catch (_) { return false; }
+}
+
+export function getSeedInfo(bot) {
+    /**
+     * Seed + map card: the world seed, what it unlocks (slime test, biome
+     * reasoning, /locate pairs with it), and the honest boundary — she can
+     * COMPUTE seed facts (this chunk slime? which biome grows what) but she
+     * cannot SEE far land without walking or a command; /locate output read
+     * aloud in chat becomes a waypoint she walks to.
+     * @param {Bot} bot - the bot.
+     * @returns {string[]} one fact per line.
+     * @example
+     * let lines = world.getSeedInfo(bot);
+     **/
+    const lines = [];
+    try {
+        const p = bot.entity.position;
+        const cx = Math.floor(p.x / 16), cz = Math.floor(p.z / 16);
+        lines.push(`seed: ${WORLD_SEED} (this world's DNA — terrain, biomes, structures all derive from it)`);
+        lines.push(`this chunk ${cx},${cz}: ${isSlimeChunk(cx, cz) ? 'SLIME chunk — slimes spawn below y 40 at any light (dig the farm here)' : 'not slime (swamp surface at night still works; !seed slime r finds farm chunks)'}`);
+        lines.push('seed unlocks: slime test (computed), biome↔resource reasoning (!surroundings biome + seed bands = where to walk), structure hunting via /locate output read in chat');
+        lines.push('honest limit: no far-seeing — unknown land needs walking, !map (21x21 live), or a player/OP /locate readout as waypoint');
+    } catch (_) { /* headless — skip */ }
+    return lines;
+}
+
+export function findSlimeChunks(bot, radiusChunks = 4, limit = 8) {
+    /**
+     * Scan nearby chunks for slime candidates, nearest first.
+     * @returns {Array<{cx:number,cz:number,x:number,z:number}>} slime chunk centers.
+     **/
+    const out = [];
+    try {
+        const p = bot.entity.position;
+        const ccx = Math.floor(p.x / 16), ccz = Math.floor(p.z / 16);
+        for (let r = 0; r <= radiusChunks && out.length < limit; r++) {
+            for (let dx = -r; dx <= r && out.length < limit; dx++) {
+                for (let dz = -r; dz <= r && out.length < limit; dz++) {
+                    if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+                    const cx = ccx + dx, cz = ccz + dz;
+                    if (isSlimeChunk(cx, cz)) out.push({ cx, cz, x: cx * 16 + 8, z: cz * 16 + 8 });
+                }
+            }
+        }
+    } catch (_) { /* headless */ }
+    return out;
+}
+
+export function getChunkInfo(bot) {
+    const lines = [];
+    try {
+        const p = bot.entity.position;
+        const cx = Math.floor(p.x / 16), cz = Math.floor(p.z / 16);
+        lines.push(`chunk: ${cx},${cz} (blocks x ${cx * 16}..${cx * 16 + 15}, z ${cz * 16}..${cz * 16 + 15} — 16x16, bedrock to sky)`);
+        let sp = null;
+        try { sp = bot.game && bot.game.spawnPoint ? bot.game.spawnPoint : null; } catch (_) { sp = null; }
+        if (sp) {
+            const scx = Math.floor(sp.x / 16), scz = Math.floor(sp.z / 16);
+            const d = Math.round(Math.hypot(p.x - sp.x, p.z - sp.z));
+            lines.push(`world spawn: ${Math.round(sp.x)},${Math.round(sp.y)},${Math.round(sp.z)} (chunk ${scx},${scz} — ~${d}m away)`);
+        } else {
+            lines.push('world spawn: unknown this session (ask !compassToPlayer or check a compass — spawn = where compasses point with no lodestone)');
+        }
+        lines.push('spawn band: mobs spawn 24-128 blocks from you, light 0 floor, solid footing, 2+ air above');
+        lines.push('despawn: random past 32m, instant past 128m (named/tamed/armored never despawn — name-tag keepers)');
+        lines.push('this server: simulation-distance 3 (~48m) — mobs/spawns/farms only live inside 48m of a player; AFK inside it');
+    } catch (_) { /* headless — skip */ }
+    return lines;
+}
+
 
 export function getNearbyEntityTypes(bot) {
     /**
@@ -437,6 +536,8 @@ export function getTerrainProfile(bot, range = 24) {
      * can "see" in each compass direction. Raycasts horizontally at feet + head
      * level to find the first solid feature per direction, plus what she stands
      * on and the first solid block overhead. Neutral facts, no interpretation.
+     * Now also opens with WHERE she is (biome, depth band, light, cave sense)
+     * so the reader knows the ground rules before the directions.
      * @param {Bot} bot - the bot.
      * @param {number} range - raycast distance in blocks.
      * @returns {string[]} one line per direction.
@@ -450,6 +551,26 @@ export function getTerrainProfile(bot, range = 24) {
     ];
     const solid = (b) => b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air';
     const lines = [];
+    // WHERE: biome + depth band + light + cave air nearby, first — the frame.
+    try {
+        const biomeId = bot.world.getBiome(bot.entity.position);
+        const biome = mc.getAllBiomes()[biomeId];
+        if (biome) lines.push(`biome: ${biome.name} (${biome.category || 'wilds'}, ${biome.dimension || 'overworld'})`);
+    } catch (_) { /* headless — skip */ }
+    const y = Math.floor(pos.y);
+    const band = y >= 70 ? 'high ground' : y >= 60 ? 'surface' : y >= 0 ? 'underground (stone band)' : y >= -54 ? 'deepslate band (diamond depth below y16)' : 'bedrock floor';
+    lines.push(`depth: y=${y} (${band})`);
+    try {
+        const here = bot.blockAt(pos);
+        if (here) {
+            const bright = Math.max(here.light ?? 0, here.skyLight ?? 0);
+            lines.push(`light here: ${bright}/15 (${bright >= 8 ? 'bright — mobs cannot spawn' : bright >= 1 ? 'dim — mobs CAN spawn' : 'dark — mobs WILL spawn'})`);
+        }
+    } catch (_) { /* skip */ }
+    try {
+        const cave = bot.findBlocks({ matching: (b) => b && b.name === 'cave_air', maxDistance: 12, count: 40 }) || [];
+        if (cave.length >= 10) lines.push(`cave sense: open cave air within 12m (${cave.length}+ pockets — caves below/around, ores likely)`);
+    } catch (_) { /* skip */ }
     const below = bot.blockAt(pos.offset(0, -1, 0));
     lines.push(`standing on ${below ? below.name : 'air'}`);
 
@@ -460,7 +581,12 @@ export function getTerrainProfile(bot, range = 24) {
             const b1 = bot.blockAt(pos.offset(dx * d, 1, dz * d));   // head level
             if (solid(b0) || solid(b1)) {
                 const b = solid(b0) ? b0 : b1;
-                hit = `${b.name} ${d}m`;
+                let tag = '';
+                try {
+                    if (mc.HAZARD_BLOCKS && mc.HAZARD_BLOCKS.has(b.name)) tag = ' (!) hazard';
+                    else if (mc.isInteractiveBlock && mc.isInteractiveBlock(b.name)) tag = ' (mechanic)';
+                } catch (_) { /* skip */ }
+                hit = `${b.name} ${d}m${tag}`;
                 break;
             }
         }
@@ -473,6 +599,9 @@ export function getTerrainProfile(bot, range = 24) {
 export function getTopDownMap(bot, radius = 10) {
     /**
      * ASCII top-down map of the terrain around the bot, one char per column.
+     * Now origin-aware: player-placed blocks render UPPERCASE (walls, floors,
+     * roofs shout), natural terrain stays lowercase, hazards get '!'. So she
+     * can SEE at a glance what is a build and what is the land.
      * @param {Bot} bot - the bot.
      * @param {number} radius - half-width of the square map.
      * @returns {string} newline-joined map with a legend.
@@ -483,11 +612,21 @@ export function getTopDownMap(bot, radius = 10) {
     const px = Math.floor(pos.x), py = Math.floor(pos.y), pz = Math.floor(pos.z);
     const solid = (b) => b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air';
     const charFor = (name) => {
-        if (name === 'water' || name === 'lava') return '~';
-        if (name.endsWith('_log') || name.includes('leaves')) return 'T';
-        if (name === 'short_grass' || name === 'tall_grass' || name === 'fern' || name === 'snow' || name === 'dead_bush') return ',';
-        if (['grass_block', 'dirt', 'coarse_dirt', 'sand', 'gravel', 'farmland', 'dirt_path', 'mud', 'clay', 'snow_block', 'podzol', 'mycelium', 'red_sand', 'rooted_dirt'].includes(name)) return '.';
-        return '#';
+        let ch;
+        if (name === 'water' || name === 'lava') ch = '~';
+        else if (name.endsWith('_log') || name.includes('leaves')) ch = 'T';
+        else if (name === 'short_grass' || name === 'tall_grass' || name === 'fern' || name === 'snow' || name === 'dead_bush') ch = ',';
+        else if (['grass_block', 'dirt', 'coarse_dirt', 'sand', 'gravel', 'farmland', 'dirt_path', 'mud', 'clay', 'snow_block', 'podzol', 'mycelium', 'red_sand', 'rooted_dirt'].includes(name)) ch = '.';
+        else ch = '#';
+        // origin overlay: crafted/ambiguous blocks SHOUT (uppercase # -> @-free 'B'),
+        // hazards warn ('!'), vegetation stays soft lowercase.
+        try {
+            if (mc.HAZARD_BLOCKS && mc.HAZARD_BLOCKS.has(name)) return '!';
+            const o = mc.blockOrigin ? mc.blockOrigin(name) : 'unknown';
+            if (o === 'crafted') return 'B';
+            if (o === 'ambiguous' && ch === '#') return 'B';
+        } catch (_) { /* skip */ }
+        return ch;
     };
     const surface = (x, z) => {
         for (let y = 319; y >= -64; y--) {
@@ -505,6 +644,6 @@ export function getTopDownMap(bot, radius = 10) {
         lines.push(line);
     }
     lines.push('');
-    lines.push('.=ground  #=solid  T=tree  ~=water/lava  ,=plant  @=you');
+    lines.push('.=ground  #=natural solid  T=tree  ~=water/lava  ,=plant  B=BUILT (player-placed)  !=hazard  @=you');
     return lines.join('\n');
 }

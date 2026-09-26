@@ -1,6 +1,7 @@
 import * as skills from './library/skills.js';
 import * as world from './library/world.js';
 import * as mc from '../utils/mcdata.js';
+import Vec3 from 'vec3';
 import settings from './settings.js'
 import convoManager from './conversation.js';
 
@@ -283,10 +284,14 @@ const modes_list = [
                     agent.bot.pvp?.stop?.();
                 }
                 else {
-                    // overdone: extreme response — primed TNT at their feet (game-only, not lethal forever)
+                    // overdone: extreme response. TNT summon REMOVED (25 Sept:
+                    // players farmed her "protective violence" framing into mass
+                    // summons — 10k withers proved ANY raw /summon path gets
+                    // weaponized). Cap at melee + a scary line instead.
                     await speak(`That's TOO far, ${name}!!! UwU warned you~! 💢💥`);
-                    const p = player.position;
-                    agent.bot.chat(`/summon minecraft:tnt ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`);
+                    await skills.attackEntity(agent.bot, player, false);
+                    await new Promise(r => setTimeout(r, 800));
+                    agent.bot.pvp?.stop?.();
                     delete grudge[name];       // full reset after escalation
                     delete grudge['__last__'];
                     this.last_retaliated = now;
@@ -358,15 +363,43 @@ const modes_list = [
     },
     {
         name: 'torch_placing',
-        description: 'Place torches when idle and there are no torches nearby.',
+        description: 'Place torches when idle and there are no torches nearby. Escalates: if the ground around her is dark AND torch-less over an area (cave floor, night field), run a small !lightUp grid instead of one drip torch.',
         interrupts: ['action:followPlayer'],
         on: true,
         active: false,
         cooldown: 5,
         last_place: Date.now(),
+        last_sweep: 0, // min 3 min between autonomous lightUp sweeps
         update: function (agent) {
             if (world.shouldPlaceTorch(agent.bot)) {
                 if (Date.now() - this.last_place < this.cooldown * 1000) return;
+                // DARK AREA, not a dark corner? sweep a grid instead of one drip.
+                // Count dark floor tiles in a 7-ring: 3+ dark = area job, not a drip.
+                let darkTiles = 0;
+                try {
+                    const b = agent.bot;
+                    const c = b.entity.position.floored();
+                    for (const [dx, dz] of [[7, 0], [-7, 0], [0, 7], [0, -7], [7, 7], [-7, -7]]) {
+                        let ty = null;
+                        for (let y = c.y + 2; y >= c.y - 4; y--) {
+                            const t = b.blockAt(new Vec3(c.x + dx, y, c.z + dz));
+                            const below = t ? b.blockAt(new Vec3(c.x + dx, y - 1, c.z + dz)) : null;
+                            if (t && below && t.name !== 'lava' && below.name !== 'air' && below.name !== 'water' && below.name !== 'lava') { ty = y; break; }
+                        }
+                        if (ty === null) continue;
+                        const t = b.blockAt(new Vec3(c.x + dx, ty, c.z + dz));
+                        if (!t) continue;
+                        if ((t.light ?? 0) < 1 && (t.skyLight ?? 0) < 1) darkTiles++;
+                    }
+                } catch (_) {}
+                if (darkTiles >= 3 && Date.now() - this.last_sweep > 3 * 60 * 1000) {
+                    this.last_sweep = Date.now();
+                    this.last_place = Date.now();
+                    execute(this, agent, async () => {
+                        await skills.lightUp(agent.bot, 7);
+                    });
+                    return;
+                }
                 execute(this, agent, async () => {
                     const pos = agent.bot.entity.position;
                     await skills.placeBlock(agent.bot, 'torch', pos.x, pos.y, pos.z, 'bottom', true);
@@ -410,6 +443,36 @@ const modes_list = [
             const bot = agent.bot;
 
             // Prefer human players so she locks eyes with them; otherwise watch a nearby mob.
+            // 26.3 RCON-truth: the server withholds player entities at range
+            // (verified: 3 blocks apart, entity still absent), so an
+            // entity-only scan concludes "nobody near" while the player stands
+            // right there. RCON position is ground truth — stare at that.
+            let rconTarget = null; // {x,y,z,username} — refreshed ~1s via cache
+            try {
+                const names = Object.keys(bot.players || {})
+                    .filter(n => n && n !== agent.name && n !== bot.username
+                        && !/^(rcon|server|console)$/i.test(n));
+                if (names.length && bot.entity?.position) {
+                    const now = Date.now();
+                    if (!this._rconScan || now - this._rconScan.t > 1200) {
+                        this._rconScan = { t: now, p: null };
+                        Promise.all(names.slice(0, 4).map(n =>
+                            import('../utils/rcon.js').then(m => m.rconPlayerPos(n).then(pos =>
+                                ({ n, pos })).catch(() => null)))).then(rows => {
+                            let best = null, bestD = 17;
+                            for (const r of rows) {
+                                if (!r?.pos || !bot.entity?.position) continue;
+                                const dx = r.pos.x - bot.entity.position.x;
+                                const dz = r.pos.z - bot.entity.position.z;
+                                const d = Math.hypot(dx, dz);
+                                if (d < bestD) { bestD = d; best = { x: r.pos.x, y: r.pos.y, z: r.pos.z, username: r.n }; }
+                            }
+                            this._rconScan.p = best;
+                        }).catch(() => {});
+                    }
+                    rconTarget = this._rconScan.p || null;
+                }
+            } catch (_) {}
             const nearbyPlayers = world.getNearbyPlayers(bot, 16);
             const player = nearbyPlayers[0] || null;
             const nearestMob = player ? null : bot.nearestEntity(e =>
@@ -424,8 +487,20 @@ const modes_list = [
                 // stare longer at a person: ~6-10s locked on, vs ~4-5s for a mob
                 this.next_change = Date.now() + (isPlayer ? 6000 + Math.random() * 4000 : 4000 + Math.random() * 1000);
             }
+            // RCON-truth counts as a target too: if the server says a player
+            // is near but no entity rendered, hold the stare on them instead
+            // of concluding "nobody near" and glancing away.
+            if (!target && rconTarget) {
+                if (this.last_entity !== rconTarget) {
+                    this.staring = true;
+                    this.last_entity = rconTarget;
+                    this.next_change = Date.now() + 6000 + Math.random() * 4000;
+                }
+            } else if (!target && !rconTarget) {
+                this.last_entity = null;
+            }
 
-            if (target && this.staring) {
+            if ((target || rconTarget) && this.staring) {
                 // 26.3: stare via throttled lookAt (max 1 head-turn per 600ms
                 // in physics.js) so the look never races updatePosition's own
                 // send inside the same tick window. Full stare behavior kept.
@@ -438,7 +513,18 @@ const modes_list = [
                     ? !bot.physics.shouldSendLook()
                     : false) {
                     // gated: skip this tick's head-turn
-                } else if (isPlayer) {
+                } else if (rconTarget) {
+                    // RCON-truth stare: look at the server's coordinates for
+                    // the player even when their entity isn't rendered. Aim at
+                    // eye height. lookAt needs a real vec3 Vec3 (it calls
+                    // .minus() internally) — the bot's position constructor
+                    // is NOT vec3 (it lacks .minus), so import vec3 directly.
+                    try {
+                        bot.lookAt(new Vec3(rconTarget.x, rconTarget.y + 1.62, rconTarget.z));
+                    } catch (_) {
+                        if (isPlayer && target) bot.lookAt(target.position.offset(0, 1.62, 0));
+                    }
+                } else if (isPlayer && target) {
                     // aim at eye height (~1.62), not the top of the head
                     bot.lookAt(target.position.offset(0, 1.62, 0));
                 } else {
@@ -448,12 +534,15 @@ const modes_list = [
                 }
             }
 
-            if (!target)
+            if (!target && !rconTarget)
                 this.last_entity = null;
 
             if (Date.now() > this.next_change) {
-                // keep staring far more often when it's a person
-                this.staring = Math.random() < (isPlayer ? 0.8 : 0.3);
+                // RCON-truth holds the person-priority: a server-confirmed
+                // player nearby keeps the stare 80% of the time even with no
+                // entity rendered; true emptiness falls back to mob odds.
+                const personNear = isPlayer || !!rconTarget;
+                this.staring = Math.random() < (personNear ? 0.8 : 0.3);
                 if (!this.staring) {
                     // 26.3: glance-away goes through the same throttled lookAt
                     // path (see physics.js) — safe with players near.
@@ -658,9 +747,23 @@ const modes_list = [
             if (!agent.isIdle() || bot.pathfinder.goal) return;
             const now = Date.now();
             if (now - this.last_seek < this.cooldown) return;
-            // someone already close — nothing to do (stare/chat take it)
+            // someone already close — nothing to do (stare/chat take it).
+            // 26.3 RCON-truth: entity scans miss players the server withholds
+            // (verified 3 blocks apart, still invisible), so check the
+            // server's coordinates too before concluding nobody is close.
             const near = world.getNearbyPlayers(bot, 16).find((e) => e.username !== agent.name && e.username !== bot.username);
             if (near) return;
+            try {
+                const { rconPlayerPos } = await import('../utils/rcon.js');
+                const names = Object.keys(bot.players || {})
+                    .filter(n => n && n !== agent.name && n !== bot.username
+                        && !/^(rcon|server|console)$/i.test(n));
+                for (const n of names.slice(0, 4)) {
+                    const pos = await rconPlayerPos(n).catch(() => null);
+                    if (!pos || !bot.entity?.position) continue;
+                    if (Math.hypot(pos.x - bot.entity.position.x, pos.z - bot.entity.position.z) < 16) return;
+                }
+            } catch (_) {}
             // nearest player entity anywhere visible (up to 64) — walk to them.
             // DECAY-TRUTH (verified 18:24): bot does NOT see YandereDev's entity
             // at 11 blocks on 26.3 — entities arrive only when the server sends
@@ -727,9 +830,28 @@ const modes_list = [
             const now = Date.now();
             if (now < this.next_start) return; // schedule-based: only fire after a random wait
             // need someone near-ish to talk to — 16 blocks (stare/conversation
-            // range), NOT 12: at 12 she stays mute to anyone across a room
+            // range), NOT 12: at 12 she stays mute to anyone across a room.
+            // 26.3 RCON-truth: entities are withheld at range, so an
+            // entity-only scan says "nobody near" while the player stands 3
+            // blocks away. RCON position (1.2s cache) is ground truth.
             const players = world.getNearbyPlayers(bot, 16);
-            const player = players.find((e) => e.username !== agent.name && e.username !== bot.username);
+            let player = players.find((e) => e.username !== agent.name && e.username !== bot.username);
+            if (!player) {
+                try {
+                    const names = Object.keys(bot.players || {})
+                        .filter(n => n && n !== agent.name && n !== bot.username
+                            && !/^(rcon|server|console)$/i.test(n));
+                    const { rconPlayerPos } = await import('../utils/rcon.js');
+                    let best = null, bestD = 17;
+                    for (const n of names.slice(0, 4)) {
+                        const pos = await rconPlayerPos(n).catch(() => null);
+                        if (!pos || !bot.entity?.position) continue;
+                        const d = Math.hypot(pos.x - bot.entity.position.x, pos.z - bot.entity.position.z);
+                        if (d < bestD) { bestD = d; best = { username: n }; }
+                    }
+                    if (best) player = best;
+                } catch (_) {}
+            }
             if (!player) { this.next_start = now + 60000; return; } // nobody near, check again in a bit
             this.next_start = now + this.cooldown_min + Math.random() * (this.cooldown_max - this.cooldown_min);
 
