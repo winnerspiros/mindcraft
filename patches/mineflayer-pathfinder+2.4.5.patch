@@ -1,16 +1,32 @@
-diff --git a/node_modules/mineflayer-pathfinder/index.js b/node_modules/mineflayer-pathfinder/index.js
-index b38bd30..2ca8205 100644
 --- a/node_modules/mineflayer-pathfinder/index.js
 +++ b/node_modules/mineflayer-pathfinder/index.js
-@@ -14,6 +14,7 @@ const interactableBlocks = require('./lib/interactable.json')
+@@ -13,7 +13,6 @@
+ const interactableBlocks = require('./lib/interactable.json')
  
  function inject (bot) {
-   const waterType = bot.registry.blocksByName.water.id
-+  const lavaType = bot.registry.blocksByName.lava.id
+-  const waterType = bot.registry.blocksByName.water.id
    const ladderId = bot.registry.blocksByName.ladder.id
    const vineId = bot.registry.blocksByName.vine.id
    let stateMovements = new Movements(bot)
-@@ -61,6 +62,10 @@ function inject (bot) {
+@@ -22,6 +21,7 @@
+   let astartTimedout = false
+   let dynamicGoal = false
+   let path = []
++  let pathRevision = 0 // bumped on every reset/stop so stale path_update results are discarded, not installed
+   let pathUpdated = false
+   let digging = false
+   let placing = false
+@@ -49,7 +49,8 @@
+     let fastest = Number.MAX_VALUE
+     let bestTool = null
+     for (const tool of availableTools) {
+-      const enchants = (tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : []
++      // Component API first (1.20.5+; legacy NBT second) so Efficiency etc. rank correctly.
++      const enchants = tool?.enchants ?? ((tool && tool.nbt) ? nbt.simplify(tool.nbt).Enchantments : [])
+       const digTime = block.digTime(tool ? tool.type : null, false, false, false, enchants, effects)
+       if (digTime < fastest) {
+         fastest = digTime
+@@ -61,6 +62,10 @@
    }
  
    bot.pathfinder.getPathTo = (movements, goal, timeout) => {
@@ -21,10 +37,19 @@ index b38bd30..2ca8205 100644
      const generator = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, { timeout })
      const { value: { result, astarContext: context } } = generator.next()
      astarContext = context
-@@ -170,6 +175,16 @@ function inject (bot) {
+@@ -121,6 +126,7 @@
+   }
+ 
+   function resetPath (reason, clearStates = true) {
++    pathRevision++
+     if (!stopPathing && path.length > 0) bot.emit('path_reset', reason)
+     path = []
+     if (digging) {
+@@ -170,7 +176,19 @@
        const curPoint = path[i]
        if (curPoint.toBreak.length > 0 || curPoint.toPlace.length > 0) break
        const b = bot.blockAt(new Vec3(curPoint.x, curPoint.y, curPoint.z))
+-      if (b && (b.type === waterType || ((b.type === ladderId || b.type === vineId) && i + 1 < path.length && path[i + 1].y < curPoint.y))) {
 +
 +      // openned doors have small Collision box
 +      // that may stop the bot from moving forward
@@ -35,20 +60,78 @@ index b38bd30..2ca8205 100644
 +        continue
 +      }
 +
-       if (b && (b.type === waterType || ((b.type === ladderId || b.type === vineId) && i + 1 < path.length && path[i + 1].y < curPoint.y))) {
++      const doorway = stateMovements && stateMovements.openable && b && stateMovements.openable.has(b.type)
++      const liquid = b && b.boundingBox === 'empty' && (stateMovements.liquids.has(b.type) || b.isWaterlogged === true)
++      if (b && (liquid || doorway || ((b.type === ladderId || b.type === vineId) && i + 1 < path.length && path[i + 1].y < curPoint.y))) {
          curPoint.x = Math.floor(curPoint.x) + 0.5
          curPoint.y = Math.floor(curPoint.y)
-@@ -524,6 +539,9 @@ function inject (bot) {
+         curPoint.z = Math.floor(curPoint.z) + 0.5
+@@ -223,7 +241,7 @@
+     const dx = n1.x - bot.entity.position.x
+     const dy = n1.y - bot.entity.position.y
+     const dz = n1.z - bot.entity.position.z
+-    const reached = Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < 1
++    const reached = Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35 && Math.abs(dy) < (bot.entity.isInWater && dy > 0 ? 0.25 : 1)
+     if (minI + 1 < path.length && n1.toBreak.length === 0 && n1.toPlace.length === 0) {
+       const n2 = path[minI + 1]
+       const d2 = bot.entity.position.distanceSquared(n2)
+@@ -332,8 +350,13 @@
+ 
+     // Force horizontal velocity to 0 (otherwise inertia can move us too far)
+     // Kind of cheaty, but the server will not tell the difference
+-    bot.entity.velocity.x = 0
+-    bot.entity.velocity.z = 0
++    // 26.3 NaN-CONTAIN: never write NaN velocity/position back (floor(NaN)
++    // is NaN — one poisoned recenter used to lock the poison in forever).
++    if (Number.isFinite(bot.entity.velocity.x)) bot.entity.velocity.x = 0
++    else bot.entity.velocity.x = 0
++    if (Number.isFinite(bot.entity.velocity.z)) bot.entity.velocity.z = 0
++    else bot.entity.velocity.z = 0
++    if (!Number.isFinite(bot.entity.position.x) || !Number.isFinite(bot.entity.position.z)) return
+ 
+     const blockX = Math.floor(bot.entity.position.x) + 0.5
+     const blockZ = Math.floor(bot.entity.position.z) + 0.5
+@@ -388,6 +411,7 @@
+   }
+ 
+   function stop () {
++    pathRevision++
+     stopPathing = false
+     stateGoal = null
+     path = []
+@@ -443,7 +467,9 @@
+       const results = astarContext.compute()
+       results.path = postProcessPath(results.path)
+       pathFromPlayer(results.path)
++      const revision = pathRevision
+       bot.emit('path_update', results)
++      if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path
+       path = results.path
+       astartTimedout = results.status === 'partial'
+     }
+@@ -464,7 +490,9 @@
+           }
+         } else if (!pathUpdated) {
+           const results = bot.pathfinder.getPathTo(stateMovements, stateGoal)
++          const revision = pathRevision
+           bot.emit('path_update', results)
++          if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path
+           path = results.path
+           astartTimedout = results.status === 'partial'
+           pathUpdated = true
+@@ -524,6 +552,11 @@
          bot.activateBlock(bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z))).then(() => {
            lockUseBlock.release()
            placingBlock = nextPoint.toPlace.shift()
 +          if (!placingBlock) {
++            // A useOne is the whole of this node's work — without this the next tick falls through to scaffolding with nothing to place.
 +            placing = false
++            lastNodeTime = performance.now()
 +          }
          }, err => {
            console.error(err)
            lockUseBlock.release()
-@@ -550,6 +568,7 @@ function inject (bot) {
+@@ -550,6 +583,7 @@
              lockEquipItem.release()
              const refBlock = bot.blockAt(new Vec3(placingBlock.x, placingBlock.y, placingBlock.z), false)
              if (!lockPlaceBlock.tryAcquire()) return
@@ -56,7 +139,7 @@ index b38bd30..2ca8205 100644
              if (interactableBlocks.includes(refBlock.name)) {
                bot.setControlState('sneak', true)
              }
-@@ -557,6 +576,7 @@ function inject (bot) {
+@@ -557,6 +591,7 @@
                .then(function () {
                  // Dont release Sneak if the block placement was not successful
                  bot.setControlState('sneak', false)
@@ -64,7 +147,7 @@ index b38bd30..2ca8205 100644
                  if (bot.pathfinder.LOSWhenPlacingBlocks && placingBlock.returnPos) returningPos = placingBlock.returnPos.clone()
                })
                .catch(_ignoreError => {
-@@ -576,7 +596,7 @@ function inject (bot) {
+@@ -576,7 +611,7 @@
      let dx = nextPoint.x - p.x
      const dy = nextPoint.y - p.y
      let dz = nextPoint.z - p.z
@@ -73,21 +156,34 @@ index b38bd30..2ca8205 100644
        // arrived at next point
        lastNodeTime = performance.now()
        if (stopPathing) {
-@@ -611,6 +631,9 @@ function inject (bot) {
+@@ -609,6 +644,11 @@
+     bot.setControlState('jump', false)
+ 
      if (bot.entity.isInWater) {
-       bot.setControlState('jump', true)
-       bot.setControlState('sprint', false)
-+    } else if (bot.entity.isInLava) {
++      // Swim straight up when the next node is directly above (water-exit ascent) — forward would fight the column.
++      if (Math.abs(dx) <= 0.35 && Math.abs(dz) <= 0.35) bot.setControlState('forward', false)
 +      bot.setControlState('jump', true)
 +      bot.setControlState('sprint', false)
++    } else if (bot.entity.isInLava) {
+       bot.setControlState('jump', true)
+       bot.setControlState('sprint', false)
      } else if (stateMovements.allowSprinting && physics.canStraightLine(path, true)) {
-       bot.setControlState('jump', false)
-       bot.setControlState('sprint', true)
-diff --git a/node_modules/mineflayer-pathfinder/lib/movements.js b/node_modules/mineflayer-pathfinder/lib/movements.js
-index a7e3505..84a0841 100644
 --- a/node_modules/mineflayer-pathfinder/lib/movements.js
 +++ b/node_modules/mineflayer-pathfinder/lib/movements.js
-@@ -50,7 +50,12 @@ class Movements {
+@@ -15,6 +15,12 @@
+   { x: 1, z: 1 }
+ ]
+ 
++// A door's open state, from its block properties (boolean on 1.13+, 'true'/'false' on legacy metadata)
++function isOpen (block) {
++  const props = block.getProperties ? block.getProperties() : (block._properties || null)
++  return !!props && (props.open === true || props.open === 'true')
++}
++
+ class Movements {
+   constructor (bot) {
+     const registry = bot.registry
+@@ -50,11 +56,20 @@
      this.blocksToAvoid.add(registry.blocksByName.fire.id)
      if (registry.blocksByName.cobweb) this.blocksToAvoid.add(registry.blocksByName.cobweb.id)
      if (registry.blocksByName.web) this.blocksToAvoid.add(registry.blocksByName.web.id)
@@ -101,7 +197,15 @@ index a7e3505..84a0841 100644
  
      this.liquids = new Set()
      this.liquids.add(registry.blocksByName.water.id)
-@@ -62,7 +67,13 @@ class Movements {
+     this.liquids.add(registry.blocksByName.lava.id)
++    // Water-containing blocks that swim like water even though their ID is not water (#384)
++    for (const name of ['seagrass', 'tall_seagrass', 'kelp', 'kelp_plant', 'bubble_column']) {
++      if (registry.blocksByName[name]) this.liquids.add(registry.blocksByName[name].id)
++    }
+ 
+     this.gravityBlocks = new Set()
+     this.gravityBlocks.add(registry.blocksByName.sand.id)
+@@ -62,7 +77,13 @@
  
      this.climbables = new Set()
      this.climbables.add(registry.blocksByName.ladder.id)
@@ -116,12 +220,12 @@ index a7e3505..84a0841 100644
      this.emptyBlocks = new Set()
  
      this.replaceables = new Set()
-@@ -92,13 +103,15 @@ class Movements {
+@@ -92,13 +113,27 @@
        }
      })
      registry.blocksArray.forEach(block => {
 -      if (this.interactableBlocks.has(block.name) && block.name.toLowerCase().includes('gate') && !block.name.toLowerCase().includes('iron')) {
-+      if (this.interactableBlocks.has(block.name) 
++      if (this.interactableBlocks.has(block.name)
 +        && (block.name.toLowerCase().includes('gate') || block.name.toLowerCase().includes('door') || block.name.toLowerCase().includes('trapdoor'))
 +        && !block.name.toLowerCase().includes('iron')) {
          // console.info(block)
@@ -130,11 +234,29 @@ index a7e3505..84a0841 100644
      })
  
 -    this.canOpenDoors = false // Causes issues. Probably due to none paper servers.
++    // Wooden doors: two blocks tall, and (unlike a gate) still shaped when open, so
++    // they get their own set — getMoveForward reads the open state off the block.
++    // Inert unless canOpenDoors is enabled (default false upstream; bot fork sets true).
++    this.doors = new Set()
++    registry.blocksArray.forEach(block => {
++      const name = block.name.toLowerCase()
++      if (name.endsWith('_door') && !name.includes('iron') && !name.includes('trapdoor')) {
++        this.doors.add(block.id)
++        this.openable.add(block.id)
++      }
++    })
++
 +    this.canOpenDoors = true
  
      this.exclusionAreasStep = []
      this.exclusionAreasBreak = []
-@@ -230,8 +243,13 @@ class Movements {
+@@ -226,17 +261,24 @@
+         liquid: false,
+         climbable: false,
+         height: dy,
+-        openable: false
++        openable: false,
++        door: false
        }
      }
      b.climbable = this.climbables.has(b.type)
@@ -148,9 +270,26 @@ index a7e3505..84a0841 100644
 +    b.safe = (b.boundingBox === 'empty' || b.climbable || this.carpets.has(b.type) || isOpenTrapdoor) && !this.blocksToAvoid.has(b.type)
 +    b.physical = (b.boundingBox === 'block' && !this.fences.has(b.type)) || isClosedTrapdoor
      b.replaceable = this.replaceables.has(b.type) && !b.physical
-     b.liquid = this.liquids.has(b.type)
+-    b.liquid = this.liquids.has(b.type)
++    b.liquid = this.liquids.has(b.type) || b.isWaterlogged === true
      b.height = pos.y + dy
-@@ -284,6 +302,18 @@ class Movements {
+     b.canFall = this.gravityBlocks.has(b.type)
+     b.openable = this.openable.has(b.type)
++    b.door = this.doors.has(b.type)
+ 
+     for (const shape of b.shapes) {
+       b.height = Math.max(b.height, pos.y + dy + shape[4])
+@@ -250,6 +292,9 @@
+    * @returns
+    */
+   safeToBreak (block) {
++    // Gates and doors are walked through, never broken when canOpenDoors is on
++    // (a dig-through would otherwise out-cost the click, and diagonal into a door frame clips)
++    if (this.canOpenDoors && block.openable) return false
+     if (!this.canDig) {
+       return false
+     }
+@@ -284,6 +329,18 @@
      cost += this.exclusionStep(block) // Is excluded so can't move or break
      cost += this.getNumEntitiesAt(block.position, 0, 0, 0) * this.entityCost
      if (block.safe) return cost
@@ -169,21 +308,80 @@ index a7e3505..84a0841 100644
      if (!this.safeToBreak(block)) return 100 // Can't break, so can't move
      toBreak.push(block.position)
  
-@@ -387,8 +417,8 @@ class Movements {
+@@ -387,8 +444,8 @@
      cost += this.safeOrBreak(blockB, toBreak)
      if (cost > 100) return
  
 -    // Open fence gates
 -    if (this.canOpenDoors && blockC.openable && blockC.shapes && blockC.shapes.length !== 0) {
 +    // Open fence gates and doors
-+    if (this.canOpenDoors && blockC.openable && !blockC._properties.open) {
++    if (this.canOpenDoors && blockC.openable && !blockC._properties?.open && !isOpen(blockC)) {
        toPlace.push({ x: node.x + dir.x, y: node.y, z: node.z + dir.z, dx: 0, dy: 0, dz: 0, useOne: true }) // Indicate that a block should be used on this block not placed
      } else {
        cost += this.safeOrBreak(blockC, toBreak)
-@@ -554,6 +584,54 @@ class Movements {
+@@ -406,6 +463,8 @@
+ 
+     const blockC = this.getBlock(node, dir.x, 0, dir.z) // Landing block or standing on block when jumping up by 1
+     const y = blockC.physical ? 1 : 0
++    // A diagonal jump clips the corner of the raised block — route raised landings via a cardinal jump head-on instead.
++    if (y === 1) return
+ 
+     const block0 = this.getBlock(node, 0, -1, 0)
+ 
+@@ -414,6 +473,7 @@
+     const blockB1 = this.getBlock(node, 0, y + 1, dir.z)
+     const blockC1 = this.getBlock(node, 0, y, dir.z)
+     const blockD1 = this.getBlock(node, 0, y - 1, dir.z)
++    if (!blockB1.safe || !blockC1.safe) return
+     cost1 += this.safeOrBreak(blockB1, toBreak1)
+     cost1 += this.safeOrBreak(blockC1, toBreak1)
+     if (blockD1.height - block0.height > 1.2) cost1 += this.safeOrBreak(blockD1, toBreak1)
+@@ -423,6 +483,7 @@
+     const blockB2 = this.getBlock(node, dir.x, y + 1, 0)
+     const blockC2 = this.getBlock(node, dir.x, y, 0)
+     const blockD2 = this.getBlock(node, dir.x, y - 1, 0)
++    if (!blockB2.safe || !blockC2.safe) return
+     cost2 += this.safeOrBreak(blockB2, toBreak2)
+     cost2 += this.safeOrBreak(blockC2, toBreak2)
+     if (blockD2.height - block0.height > 1.2) cost2 += this.safeOrBreak(blockD2, toBreak2)
+@@ -464,7 +525,8 @@
+     while (blockLand.position && blockLand.position.y > this.bot.game.minY) {
+       if (blockLand.liquid && blockLand.safe) return blockLand
+       if (blockLand.physical) {
+-        if (node.y - blockLand.position.y <= this.maxDropDown) return this.getBlock(blockLand.position, 0, 1, 0)
++        // Measure drop to landing FEET (support top), not support base — else legal 1-block stairs are rejected at maxDropDown=1.
++        if (node.y - (blockLand.position.y + 1) <= this.maxDropDown) return this.getBlock(blockLand.position, 0, 1, 0)
+         return null
+       }
+       if (!blockLand.safe) return null
+@@ -554,6 +616,78 @@
      neighbors.push(new Move(node.x, node.y + 1, node.z, node.remainingBlocks - toPlace.length, cost, toBreak, toPlace))
    }
  
++  // Swim up through water or climb out onto a shore block (#394)
++  getMoveWaterExit (node, neighbors) {
++    if (!this.getBlock(node, 0, 0, 0).liquid) return
++    const above = this.getBlock(node, 0, 1, 0)
++    if (above.physical || this.getBlock(node, 0, 2, 0).physical) return
++
++    // Swimming upward needs no scaffolding, unlike the ordinary tower move.
++    if (above.liquid) {
++      neighbors.push(new Move(node.x, node.y + 1, node.z, node.remainingBlocks, 1 + this.liquidCost))
++    }
++
++    for (const dir of cardinalDirections) {
++      const shore = this.getBlock(node, dir.x, 0, dir.z)
++      if (!shore.physical || this.blocksToAvoid.has(shore.type)) continue
++      const feet = this.getBlock(node, dir.x, 1, dir.z)
++      const head = this.getBlock(node, dir.x, 2, dir.z)
++      if (feet.liquid || head.liquid) continue
++      const toBreak = []
++      const cost = 2 + this.liquidCost + this.safeOrBreak(feet, toBreak) + this.safeOrBreak(head, toBreak)
++      if (cost >= 100) continue
++      neighbors.push(new Move(node.x + dir.x, node.y + 1, node.z + dir.z, node.remainingBlocks, cost, toBreak))
++    }
++  }
++
 +  getMoveClimbUpThroughTrapdoor (node, neighbors) {
 +    const blockCurrent = this.getBlock(node, 0, 0, 0) // Current position (should be climbable)
 +    const blockAbove = this.getBlock(node, 0, 1, 0) // Block directly above
@@ -235,14 +433,16 @@ index a7e3505..84a0841 100644
    // Jump up, down or forward over a 1 block gap
    getMoveParkourForward (node, dir, neighbors) {
      const block0 = this.getBlock(node, 0, -1, 0)
-@@ -656,8 +734,27 @@ class Movements {
+@@ -655,9 +789,29 @@
+ 
      this.getMoveDown(node, neighbors)
      this.getMoveUp(node, neighbors)
- 
++    this.getMoveWaterExit(node, neighbors)
++
 +    // Enhanced climbing moves for ladders, vines, and trapdoors
 +    this.getMoveClimbUpThroughTrapdoor(node, neighbors)
 +    this.getMoveClimbTop(node, neighbors)
-+
+ 
      return neighbors
    }
 +
@@ -263,3 +463,63 @@ index a7e3505..84a0841 100644
  }
  
  module.exports = Movements
+--- a/node_modules/mineflayer-pathfinder/lib/goals.js
++++ b/node_modules/mineflayer-pathfinder/lib/goals.js
+@@ -172,7 +172,8 @@
+   }
+ 
+   isEnd (node) {
+-    if (node.distanceTo(this.pos.offset(0, this.entityHeight, 0)) > this.reach) return false
++    // Measure reach from eyes to each visible face (not feet-to-center-shifted), so overhead blocks within range aren't wrongly rejected.
++    const startPos = new Vec3(node.x + 0.5, node.y + this.entityHeight, node.z + 0.5)
+     // Check faces that could be seen from the current position. If the delta is smaller then 0.5 that means the bot cam most likely not see the face as the block is 1 block thick
+     // this could be false for blocks that have a smaller bounding box then 1x1x1
+     const dx = node.x - (this.pos.x + 0.5)
+@@ -191,7 +192,7 @@
+         continue
+       }
+       const targetPos = new Vec3(this.pos.x, this.pos.y, this.pos.z).offset(0.5 + (i === 'x' ? visibleFaces[i] * 0.5 : 0), 0.5 + (i === 'y' ? visibleFaces[i] * 0.5 : 0), 0.5 + (i === 'z' ? visibleFaces[i] * 0.5 : 0))
+-      const startPos = new Vec3(node.x + 0.5, node.y + this.entityHeight, node.z + 0.5)
++      if (startPos.distanceTo(targetPos) > this.reach) continue
+       const rayPos = this.world.raycast(startPos, targetPos.clone().subtract(startPos).normalize(), this.reach)?.position
+       if (rayPos && rayPos.x === this.pos.x && rayPos.y === this.pos.y && rayPos.z === this.pos.z) {
+         validFaces.push({
+@@ -273,7 +274,8 @@
+   }
+ 
+   heuristic (node) {
+-    let max = Number.MIN_VALUE
++    // -Infinity is the correct identity for max-reduction (MIN_VALUE is +5e-324, wrongly clamps negative GoalInvert heuristics to 0).
++    let max = -Infinity
+     for (const i in this.goals) {
+       max = Math.max(max, this.goals[i].heuristic(node))
+     }
+--- a/node_modules/mineflayer-pathfinder/lib/goto.js
++++ b/node_modules/mineflayer-pathfinder/lib/goto.js
+@@ -20,12 +20,12 @@
+     }
+ 
+     function noPathListener (results) {
+-      if (results.path.length === 0) {
+-        cleanup()
+-      } else if (results.status === 'noPath') {
++      if (results.status === 'noPath') {
+         cleanup(error('NoPath', 'No path to the goal!'))
+       } else if (results.status === 'timeout') {
+         cleanup(error('Timeout', 'Took to long to decide path to goal!'))
++      } else if (results.path.length === 0) {
++        cleanup()
+       }
+     }
+ 
+--- a/node_modules/mineflayer-pathfinder/lib/heap.js
++++ b/node_modules/mineflayer-pathfinder/lib/heap.js
+@@ -57,7 +57,7 @@
+     const cost = val.f
+     do {
+       let smallerChildNode = this.heap[smallerChild]
+-      if (smallerChild < size - 1) {
++      if (smallerChild < size) {
+         const rightChildNode = this.heap[smallerChild + 1]
+         if (smallerChildNode.f > rightChildNode.f) {
+           smallerChild++
