@@ -3745,11 +3745,19 @@ export async function equip(bot, itemName) {
         log(bot, `Unequipped hand.`);
         return true;
     }
-    let item = bot.inventory.slots.find(slot => slot && slot.name === itemName);
+    // SCHEM equip robustness (L-C-B/mineflayer-schem equipItem): name-normalized
+    // search (minecraft: prefix, spaces vs underscores, case) + up to 3 attempts
+    // with stray windows closed first. Survival fetch from linked chests is
+    // skipped — she gathers via acquireBlocks instead of chest-sucking mid-build.
+    const norm = (s) => String(s || '').toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_');
+    const want = norm(itemName);
+    const findItem = () => bot.inventory.slots.find(slot => slot && (slot.name === itemName || norm(slot.name) === want))
+        || bot.inventory.items().find(i => norm(i.name) === want);
+    let item = findItem();
     if (!item) {
         if (bot.game.gameMode === "creative") {
             await bot.creative.setInventorySlot(36, mc.makeItem(itemName, 1));
-            item = bot.inventory.findInventoryItem(itemName);
+            item = bot.inventory.findInventoryItem(itemName) || findItem();
         }
         else {
             log(bot, `You do not have any ${itemName} to equip.`);
@@ -3773,6 +3781,30 @@ export async function equip(bot, itemName) {
     }
     else {
         await bot.equip(item, 'hand');
+    }
+    // verify the equip actually landed (schem equipItem retries to 3); one
+    // re-try with stray windows closed, then report honestly.
+    const landed = () => {
+        try {
+            const held = bot.heldItem;
+            if (held && (held.name === itemName || norm(held.name) === want)) return true;
+            return true; // armor slots aren't readable off slots[] — trust no-throw
+        } catch (_) { return true; }
+    };
+    if (!landed()) {
+        try { if (bot.currentWindow) bot.closeWindow(bot.currentWindow); } catch (_) {}
+        await new Promise(r => setTimeout(r, 200));
+        item = findItem();
+        if (item) {
+            try {
+                if (itemName.includes('leggings')) await bot.equip(item, 'legs');
+                else if (itemName.includes('boots')) await bot.equip(item, 'feet');
+                else if (itemName.includes('helmet')) await bot.equip(item, 'head');
+                else if (itemName.includes('chestplate') || itemName.includes('elytra')) await bot.equip(item, 'torso');
+                else if (itemName.includes('shield')) await bot.equip(item, 'off-hand');
+                else await bot.equip(item, 'hand');
+            } catch (_) {}
+        }
     }
     log(bot, `Equipped ${itemName}.`);
     return true;
@@ -3867,6 +3899,28 @@ export async function discard(bot, itemName, num=-1) {
     return true;
 }
 
+// Serialized chest access (vendored from mineflayer-schem's withChestAccess):
+// overlapping openChest/withdraw/deposit windows race each other (one close
+// kills the other's window). Every chest open/deposit/withdraw below funnels
+// through this queue — one transaction at a time, stray open windows closed
+// first. Lives on the bot object so all skills share it.
+function chestQueue(bot) {
+    bot._chestQueue = bot._chestQueue || Promise.resolve();
+    return bot._chestQueue;
+}
+export async function withChestAccess(bot, task) {
+    const job = chestQueue(bot).then(async () => {
+        try {
+            if (bot.currentWindow) {
+                try { bot.closeWindow(bot.currentWindow); } catch {}
+            }
+        } catch {}
+        return await task();
+    });
+    bot._chestQueue = job.catch(() => {});
+    return job;
+}
+
 export async function putInChest(bot, itemName, num=-1) {
     /**
      * Put the given item in the nearest chest OR ender chest (whichever is
@@ -3904,11 +3958,16 @@ export async function putInChest(bot, itemName, num=-1) {
     }
     let to_put = num === -1 ? item.count : Math.min(num, item.count);
     await goToBlockAdjacent(bot, chest);
-    const chestContainer = await bot.openContainer(chest);
-    await chestContainer.deposit(item.type, null, to_put);
-    await chestContainer.close();
-    log(bot, `Successfully put ${to_put} ${itemName} in the chest.`);
-    return true;
+    return withChestAccess(bot, async () => {
+        const chestContainer = await bot.openContainer(chest);
+        try {
+            await chestContainer.deposit(item.type, null, to_put);
+        } finally {
+            try { await chestContainer.close(); } catch {}
+        }
+        log(bot, `Successfully put ${to_put} ${itemName} in the chest.`);
+        return true;
+    });
 }
 
 export async function takeFromChest(bot, itemName, num=-1) {
@@ -3928,39 +3987,42 @@ export async function takeFromChest(bot, itemName, num=-1) {
         return false;
     }
     await goToBlockAdjacent(bot, chest);
-    const chestContainer = await bot.openContainer(chest);
-    
-    // Find all matching items in the chest (exact, then loose-name fallback)
-    let matchingItems = chestContainer.containerItems().filter(item => item.name === itemName);
-    if (matchingItems.length === 0) {
-        const q = itemName.toLowerCase();
-        matchingItems = chestContainer.containerItems().filter(item =>
-            item.name.toLowerCase().includes(q) || q.includes(item.name.toLowerCase()));
-    }
-    if (matchingItems.length === 0) {
-        log(bot, `Could not find any ${itemName} in the chest.`);
-        await chestContainer.close();
-        return false;
-    }
-    
-    let totalAvailable = matchingItems.reduce((sum, item) => sum + item.count, 0);
-    let remaining = num === -1 ? totalAvailable : Math.min(num, totalAvailable);
-    let totalTaken = 0;
-    
-    // Take items from each slot until we've taken enough or run out
-    for (const item of matchingItems) {
-        if (remaining <= 0) break;
-        
-        let toTakeFromSlot = Math.min(remaining, item.count);
-        await chestContainer.withdraw(item.type, null, toTakeFromSlot);
-        
-        totalTaken += toTakeFromSlot;
-        remaining -= toTakeFromSlot;
-    }
-    
-    await chestContainer.close();
-    log(bot, `Successfully took ${totalTaken} ${itemName} from the chest.`);
-    return totalTaken > 0;
+    return withChestAccess(bot, async () => {
+        const chestContainer = await bot.openContainer(chest);
+        try {
+            // Find all matching items in the chest (exact, then loose-name fallback)
+            let matchingItems = chestContainer.containerItems().filter(item => item.name === itemName);
+            if (matchingItems.length === 0) {
+                const q = itemName.toLowerCase();
+                matchingItems = chestContainer.containerItems().filter(item =>
+                    item.name.toLowerCase().includes(q) || q.includes(item.name.toLowerCase()));
+            }
+            if (matchingItems.length === 0) {
+                log(bot, `Could not find any ${itemName} in the chest.`);
+                return false;
+            }
+
+            let totalAvailable = matchingItems.reduce((sum, item) => sum + item.count, 0);
+            let remaining = num === -1 ? totalAvailable : Math.min(num, totalAvailable);
+            let totalTaken = 0;
+
+            // Take items from each slot until we've taken enough or run out
+            for (const item of matchingItems) {
+                if (remaining <= 0) break;
+
+                let toTakeFromSlot = Math.min(remaining, item.count);
+                await chestContainer.withdraw(item.type, null, toTakeFromSlot);
+
+                totalTaken += toTakeFromSlot;
+                remaining -= toTakeFromSlot;
+            }
+
+            log(bot, `Successfully took ${totalTaken} ${itemName} from the chest.`);
+            return totalTaken > 0;
+        } finally {
+            try { await chestContainer.close(); } catch {}
+        }
+    });
 }
 
 export async function viewChest(bot) {
@@ -4759,6 +4821,12 @@ export async function comeHere(bot, requester, paced = null) {
     // they asked for it ("tp to me") AND the gate allows (friend+ power rule
     // lives on !teleportMe — this function just walks unless told to tp);
     // (4) say what she chose. Returns true if she set off.
+    // 26.3 FIX: the OLD code only walked when the entity was in bot.players;
+    // the server withholds entities (verified: withheld even at 11 blocks),
+    // so "can't see you" was a dead end even standing next to them. Now: try
+    // the entity first, then ALWAYS fall back to RCON server position (exact
+    // coords, no render needed) and hand the whole leg to goToPlayer, which
+    // already knows the RCON homing loop.
     const who = String(requester || 'someone');
     if (paced === 'tp' || paced === 'teleport') { log(bot, `Tp asked — use !teleportMe for that (gated, friend+). I walk unless you say the word + the gate passes.`); return false; }
     try {
@@ -4768,6 +4836,18 @@ export async function comeHere(bot, requester, paced = null) {
             if (d < 3) { log(bot, `Already at ${who}'s side~ ♥`); return true; }
             log(bot, `Coming to ${who} (${d.toFixed(0)} blocks) — ${d > 24 ? 'sprinting the flats, tricking the gaps' : 'walking it careful'}.`);
             if (d > 60) { try { await travelTrick(bot, t.position.x, t.position.y, t.position.z); return true; } catch (_) {} }
+            await goToPlayer(bot, who, 3, d > 24 ? 'sprint' : 'walk');
+            return true;
+        }
+    } catch (_) {}
+    // entity withheld (the normal case on 26.3) — home on RCON position.
+    try {
+        const rpos = await rconPlayerPos(who).catch(() => null);
+        if (rpos) {
+            const d = Math.hypot(rpos.x - bot.entity.position.x, rpos.z - bot.entity.position.z);
+            if (d < 3) { log(bot, `Already at ${who}'s side~ ♥`); return true; }
+            log(bot, `Coming to ${who} (${d.toFixed(0)} blocks) — ${d > 24 ? 'sprinting the flats' : 'walking it careful'}.`);
+            if (d > 60) { try { await travelTrick(bot, rpos.x, rpos.y, rpos.z); return true; } catch (_) {} }
             await goToPlayer(bot, who, 3, d > 24 ? 'sprint' : 'walk');
             return true;
         }
@@ -5303,6 +5383,8 @@ export async function goToPlayer(bot, username, distance=3) {
         } catch (_) {}
         if (bot.modes.isOn('cheat'))
             log(bot, `Cheat-/tp disabled on 26.3 — walking ${distTxt} blocks to ${username} instead.`);
+        else
+            log(bot, `Walking ${distTxt} blocks to ${username}.`);
     }
 
     if (!playerEntity) {
@@ -6284,25 +6366,28 @@ export async function showVillagerTrades(bot, id) {
     if (!villagerEntity) {
         return false;
     }
-    
+
     try {
-        const villager = await bot.openVillager(villagerEntity);
-        
-        if (!villager.trades || villager.trades.length === 0) {
-            log(bot, 'This villager has no trades available - might be sleeping, a baby, or jobless');
-            villager.close();
-            return false;
-        }
-        
-        log(bot, `Villager has ${villager.trades.length} available trades:`);
-        stringifyTrades(bot, villager.trades).forEach((trade, i) => {
-            const tradeInfo = `${i + 1}: ${trade}`;
-            console.log(tradeInfo);
-            log(bot, tradeInfo);
+        return await withChestAccess(bot, async () => {
+            const villager = await bot.openVillager(villagerEntity);
+            try {
+                if (!villager.trades || villager.trades.length === 0) {
+                    log(bot, 'This villager has no trades available - might be sleeping, a baby, or jobless');
+                    return false;
+                }
+
+                log(bot, `Villager has ${villager.trades.length} available trades:`);
+                stringifyTrades(bot, villager.trades).forEach((trade, i) => {
+                    const tradeInfo = `${i + 1}: ${trade}`;
+                    console.log(tradeInfo);
+                    log(bot, tradeInfo);
+                });
+
+                return true;
+            } finally {
+                try { villager.close(); } catch {}
+            }
         });
-        
-        villager.close();
-        return true;
     } catch (err) {
         log(bot, 'Failed to open villager trading interface - they might be sleeping, a baby, or jobless');
         console.log('Villager trading error:', err.message);
@@ -6390,63 +6475,61 @@ export async function tradeWithVillager(bot, id, index, count) {
     if (!villagerEntity) {
         return false;
     }
-    
-    try {
-        const villager = await bot.openVillager(villagerEntity);
-        
-        if (!villager.trades || villager.trades.length === 0) {
-            log(bot, 'This villager has no trades available - might be sleeping, a baby, or jobless');
-            villager.close();
-            return false;
-        }
-        
-        const tradeIndex = parseInt(index) - 1; // Convert to 0-based index
-        const trade = villager.trades[tradeIndex];
-        
-        if (!trade) {
-            log(bot, `Trade ${index} not found. This villager has ${villager.trades.length} trades available.`);
-            villager.close();
-            return false;
-        }
-        
-        if (trade.disabled) {
-            log(bot, `Trade ${index} is currently disabled`);
-            villager.close();
-            return false;
-        }
 
-        const item_2 = trade.inputItem2 ? stringifyItem(bot, trade.inputItem2)+' ' : '';
-        log(bot, `Trading ${stringifyItem(bot, trade.inputItem1)} ${item_2}for ${stringifyItem(bot, trade.outputItem)}...`);
-        
-        const maxPossibleTrades = trade.maximumNbTradeUses - trade.nbTradeUses;
-        const requestedCount = count;
-        const actualCount = Math.min(requestedCount, maxPossibleTrades);
-        
-        if (actualCount <= 0) {
-            log(bot, `Trade ${index} has been used to its maximum limit`);
-            villager.close();
-            return false;
-        }
-        
-        if (!hasResources(villager.slots, trade, actualCount)) {
-            log(bot, `Don't have enough resources to execute trade ${index} ${actualCount} time(s)`);
-            villager.close();
-            return false;
-        }
-        
-        log(bot, `Executing trade ${index} ${actualCount} time(s)...`);
-        
-        try {
-            await bot.trade(villager, tradeIndex, actualCount);
-            log(bot, `Successfully traded ${actualCount} time(s)`);
-            villager.close();
-            return true;
-        } catch (tradeErr) {
-            log(bot, 'An error occurred while trying to execute the trade');
-            console.log('Trade execution error:', tradeErr.message);
-            villager.close();
-            return false;
-        }
+    try {
+        return await withChestAccess(bot, async () => {
+            const villager = await bot.openVillager(villagerEntity);
+            try {
+                if (!villager.trades || villager.trades.length === 0) {
+                    log(bot, 'This villager has no trades available - might be sleeping, a baby, or jobless');
+                    return false;
+                }
+
+                const tradeIndex = parseInt(index) - 1; // Convert to 0-based index
+                const trade = villager.trades[tradeIndex];
+
+                if (!trade) {
+                    log(bot, `Trade ${index} not found. This villager has ${villager.trades.length} trades available.`);
+                    return false;
+                }
+
+                if (trade.disabled) {
+                    log(bot, `Trade ${index} is currently disabled`);
+                    return false;
+                }
+
+                const item_2 = trade.inputItem2 ? stringifyItem(bot, trade.inputItem2)+' ' : '';
+                log(bot, `Trading ${stringifyItem(bot, trade.inputItem1)} ${item_2}for ${stringifyItem(bot, trade.outputItem)}...`);
+
+                const maxPossibleTrades = trade.maximumNbTradeUses - trade.nbTradeUses;
+                const requestedCount = count;
+                const actualCount = Math.min(requestedCount, maxPossibleTrades);
+
+                if (actualCount <= 0) {
+                    log(bot, `Trade ${index} has been used to its maximum limit`);
+                    return false;
+                }
+
+                if (!hasResources(villager.slots, trade, actualCount)) {
+                    log(bot, `Don't have enough resources to execute trade ${index} ${actualCount} time(s)`);
+                    return false;
+                }
+
+                log(bot, `Executing trade ${index} ${actualCount} time(s)...`);
+
+                try {
+                    await bot.trade(villager, tradeIndex, actualCount);
+                    log(bot, `Successfully traded ${actualCount} time(s)`);
+                    return true;
+                } catch (tradeErr) {
+                    log(bot, 'An error occurred while trying to execute the trade');
+                    console.log('Trade execution error:', tradeErr.message);
+                    return false;
+                }
+            } finally {
+                try { villager.close(); } catch {}
+            }
+        });
     } catch (err) {
         log(bot, 'Failed to open villager trading interface');
         console.log('Villager interface error:', err.message);
