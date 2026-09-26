@@ -116,6 +116,9 @@ export async function loadSchematic(filePath) {
     }
 
     const buf = readFileSync(filePath);
+    if (ext === '.litematic') {
+        return loadLitematic(buf);
+    }
     if (ext === '.schem' || ext === '.schematic') {
         const { Schematic } = require('prismarine-schematic');
         // pass '26.2' so it maps names->stateIds with the fork's bundled data
@@ -133,7 +136,122 @@ export async function loadSchematic(filePath) {
         return { size: { x: sch.size.x, y: sch.size.y, z: sch.size.z }, blocks };
     }
 
-    throw new Error(`Unsupported schematic format '${ext}' (use .json, .schem or .schematic).`);
+    throw new Error(`Unsupported schematic format '${ext}' (use .json, .schem, .schematic or .litematic).`);
+}
+
+/**
+ * Read a Litematica .litematic file (plain NBT, gzip-compressed).
+ * NOTE: prismarine-nbt 2.8.0 cannot round-trip list-of-compound (its writer
+ * emits a broken container layout: "Unexpected EOF ... still have N bytes"),
+ * so this uses a small self-contained NBT reader for exactly the tags
+ * Litematica files contain (compound/list/string/int/long/longArray), with
+ * longs kept as BigInt so BlockStates bit-unpacking is exact. No new dep.
+ * Layout: root compound { Regions: { <name>: { Size, BlockStatePalette[],
+ * BlockStates[] (long array, bit-packed palette indices) } }, Metadata }.
+ * Takes the FIRST region (multi-region files are rare; extend with Per-region
+ * Position offsets here if one ever shows up).
+ * Palette entries are { Name: 'minecraft:oak_log', Properties: { axis: 'y' } }.
+ * Returns our normalized { size, blocks } with min corner at 0,0,0.
+ */
+export async function loadLitematic(buf) {
+    let raw = buf;
+    try {
+        if (buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b) {
+            const zlib = await import('zlib');
+            raw = zlib.gunzipSync(buf);
+        }
+    } catch (e) { throw new Error(`litematic gunzip failed: ${e.message}`); }
+    let root;
+    try {
+        root = readNbtRoot(raw);
+    } catch (e) { throw new Error(`litematic NBT parse failed: ${e.message}`); }
+    const regions = root && root.Regions;
+    if (!regions || typeof regions !== 'object') throw new Error('litematic has no Regions compound.');
+    const firstName = Object.keys(regions)[0];
+    if (!firstName) throw new Error('litematic Regions compound is empty.');
+    const region = regions[firstName];
+    const size = region.Size || region.size;
+    const sz3 = (o) => o && (o.x !== undefined ? { x: o.x, y: o.y, z: o.z } : o.value ? sz3(o.value) : o);
+    const sN = sz3(size) || {};
+    const sx = Math.abs(sN.x | 0), sy = Math.abs(sN.y | 0), sz = Math.abs(sN.z | 0);
+    if (!sx || !sy || !sz) throw new Error('litematic region has no usable Size.');
+    const palette = region.BlockStatePalette || region.blockStatePalette || [];
+    const states = region.BlockStates || region.blockStates || [];
+    const volume = sx * sy * sz;
+    if (!palette.length) throw new Error('litematic region has an empty BlockStatePalette.');
+    if (!states.length) throw new Error('litematic region has no BlockStates array.');
+    // Bits per entry: smallest b such that palette fits; vanilla pads to >= 2... Actually
+    // Litematica uses max(2, ceil(log2(palette.length))) bits per block.
+    const bpe = Math.max(2, Math.ceil(Math.log2(palette.length)));
+    const perLong = Math.floor(64 / bpe);
+    const mask = (1n << BigInt(bpe)) - 1n;
+    const blocks = [];
+    const idx = (x, y, z) => {
+        const i = (y * sz + z) * sx + x; // Litematica order: (y*sz+z)*sx+x
+        const li = Math.floor(i / perLong);
+        const bit = BigInt((i % perLong) * bpe);
+        if (li >= states.length) return 0;
+        return Number((states[li] >> bit) & mask);
+    };
+    for (let y = 0; y < sy; y++)
+        for (let z = 0; z < sz; z++)
+            for (let x = 0; x < sx; x++) {
+                const pi = idx(x, y, z);
+                const entry = palette[pi];
+                if (!entry) continue;
+                const full = typeof entry === 'string' ? entry : entry.Name;
+                if (!full || full === 'minecraft:air' || full === 'minecraft:cave_air') continue;
+                const name = String(full).replace(/^minecraft:/, '');
+                const props = (entry && entry.Properties) || {};
+                blocks.push({ x, y, z, name, props });
+            }
+    if (!blocks.length) throw new Error('litematic region is all air.');
+    return { size: { x: sx, y: sy, z: sz }, blocks };
+}
+
+// Minimal big-endian NBT reader — just enough for Litematica files:
+// compound, list, string, int, long, longArray (+ skips byte/short/float/
+// double/byteArray/intArray). Longs come back as BigInt (exact). Written
+// because prismarine-nbt 2.8.0's list-of-compound container layout does not
+// round-trip (verified: writer emits 29 bytes the reader rejects with
+// "Unexpected EOF ... still have 15 bytes"). ~70 lines, no dependency.
+function readNbtRoot(buf) {
+    const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf);
+    let off = 0;
+    const u8 = () => b[off++];
+    const i16 = () => { const v = b.readInt16BE(off); off += 2; return v; };
+    const i32 = () => { const v = b.readInt32BE(off); off += 4; return v; };
+    const i64 = () => { const v = b.readBigInt64BE(off); off += 8; return v; };
+    const str = () => { const n = b.readUInt16BE(off); off += 2; const s = b.toString('utf8', off, off + n); off += n; return s; };
+    function payload(type) {
+        switch (type) {
+            case 1: return u8();
+            case 2: { const v = b.readInt16BE(off); off += 2; return v; }
+            case 3: return i32();
+            case 4: return i64();
+            case 5: { const v = b.readFloatBE(off); off += 4; return v; }
+            case 6: { const v = b.readDoubleBE(off); off += 8; return v; }
+            case 7: { const n = i32(); const v = b.subarray(off, off + n); off += n; return v; }
+            case 8: return str();
+            case 9: {
+                const et = u8(), n = i32(), arr = [];
+                for (let i = 0; i < n; i++) arr.push(payload(et));
+                return arr;
+            }
+            case 10: {
+                const o = {};
+                for (;;) { const t = u8(); if (t === 0) break; o[str()] = payload(t); }
+                return o;
+            }
+            case 11: { const n = i32(), arr = []; for (let i = 0; i < n; i++) arr.push(i32()); return arr; }
+            case 12: { const n = i32(), arr = []; for (let i = 0; i < n; i++) arr.push(i64()); return arr; }
+            default: throw new Error(`unsupported NBT tag ${type} at offset ${off - 1}`);
+        }
+    }
+    const rootType = u8();
+    if (rootType !== 10) throw new Error(`NBT root is tag ${rootType}, not compound(10).`);
+    str(); // root name (usually empty)
+    return payload(10);
 }
 
 /**
@@ -180,12 +298,30 @@ export async function captureRegion(bot, p1, p2) {
  * in their default orientation, same as a player who isn't being fussy.
  * Returns the number of blocks actually placed.
  */
-export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
+export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jobName = 'schematic') {
     const steps = ((Math.round(rotationDeg / 90) % 4) + 4) % 4;
     const { x: sx, z: sz } = schematic.size;
     if (schematic.blocks.length > MAX_BLOCKS) {
         throw new Error(`Schematic has ${schematic.blocks.length} blocks (cap ${MAX_BLOCKS}). Split it or use a smaller one.`);
     }
+
+    // schem-style build state: pause/resume/cancel + live progress. !stop sets
+    // bot.interrupt_code (hard abort); bot._buildPause parks the loop mid-build
+    // so she can answer something and continue; bot._buildCancel aborts cleanly
+    // without killing the whole action queue. !buildStatus reads bot._buildJob.
+    bot._buildJob = { name: schematic.name || jobName, total: schematic.blocks.length, placed: 0, failed: 0, done: false, paused: false };
+    bot._buildPause = false;
+    bot._buildCancel = false;
+    const buildTick = () => {
+        bot._buildJob.paused = !!bot._buildPause;
+        if (bot.interrupt_code || bot._buildCancel) return 'abort';
+        return bot._buildPause ? 'wait' : 'go';
+    };
+    const buildWait = async () => {
+        while (bot._buildPause && !bot.interrupt_code && !bot._buildCancel) {
+            await new Promise(r => setTimeout(r, 500));
+        }
+    };
 
     const rotated = schematic.blocks.map((b) => {
         const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
@@ -201,12 +337,17 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
         rotated.sort((a, b) => a.y - b.y);
         let placed = 0;
         for (const b of rotated) {
-            if (bot.interrupt_code) break;
+            if (buildTick() === 'abort') break;
+            if (buildTick() === 'wait') await buildWait();
+            if (buildTick() === 'abort') break;
             const wx = Math.floor(origin.x) + b.x;
             const wy = Math.floor(origin.y) + b.y;
             const wz = Math.floor(origin.z) + b.z;
             if (await skills.placeBlockState(bot, b.name, b.props, wx, wy, wz)) placed++;
+            bot._buildJob.placed = placed;
         }
+        bot._buildJob.done = true;
+        bot._buildJob.failed = rotated.length - placed;
         return placed;
     }
 
@@ -214,7 +355,9 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
     const byName = {};
     for (const b of rotated) (byName[b.name] ||= []).push(b);
     for (const [name, list] of Object.entries(byName)) {
-        if (bot.interrupt_code) break;
+        if (buildTick() === 'abort') break;
+        if (buildTick() === 'wait') await buildWait();
+        if (buildTick() === 'abort') break;
         const have = await skills.acquireBlocks(bot, name, list.length);
         if (have < list.length) {
             skills.log(bot, `Only gathered ${have}/${list.length} ${name} — building with what I have.`);
@@ -231,7 +374,9 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
     let placed = 0;
     const failed = [];
     for (const b of rotated) {
-        if (bot.interrupt_code) break;
+        if (buildTick() === 'abort') break;
+        if (buildTick() === 'wait') await buildWait();
+        if (buildTick() === 'abort') break;
         const wx = Math.floor(origin.x) + b.x;
         const wy = Math.floor(origin.y) + b.y;
         const wz = Math.floor(origin.z) + b.z;
@@ -244,23 +389,37 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0) {
             await new Promise(r => setTimeout(r, 400));
             ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
         }
-        if (ok) placed++;
+        if (ok) { placed++; bot._buildJob.placed = placed; }
         else failed.push(b);
     }
     // Re-visit sweep: walk back over misses now that neighbours exist (many
     // "nothing to place on" failures succeed once adjacent blocks are in).
-    if (failed.length && !bot.interrupt_code) {
+    if (failed.length && buildTick() !== 'abort') {
         skills.log(bot, `Re-visiting ${failed.length} missed blocks...`);
         for (const b of failed) {
-            if (bot.interrupt_code) break;
+            if (buildTick() === 'abort') break;
+            if (buildTick() === 'wait') await buildWait();
+            if (buildTick() === 'abort') break;
             const wx = Math.floor(origin.x) + b.x;
             const wy = Math.floor(origin.y) + b.y;
             const wz = Math.floor(origin.z) + b.z;
-            if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) placed++;
+            if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) { placed++; bot._buildJob.placed = placed; }
         }
     }
+    bot._buildJob.done = true;
+    bot._buildJob.failed = rotated.length - placed;
     return placed;
 }
+
+// !buildStatus / !pauseBuild / !resumeBuild / !cancelBuild back this state.
+export function buildStatus(bot) {
+    const j = bot._buildJob;
+    if (!j) return null;
+    return { name: j.name, placed: j.placed, failed: j.failed, total: j.total, done: !!j.done, paused: !!bot._buildPause };
+}
+export function pauseBuild(bot) { bot._buildPause = true; }
+export function resumeBuild(bot) { bot._buildPause = false; }
+export function cancelBuild(bot) { bot._buildCancel = true; bot._buildPause = false; }
 
 /**
  * Verify a schematic was placed: sample the bottom layer and count how many
@@ -293,17 +452,17 @@ export function saveSchematic(name, schematic) {
 
 export function listSchematics() {
     if (!existsSync(SCHEMATIC_DIR)) return [];
-    return readdirSync(SCHEMATIC_DIR).filter((f) => /\.(json|schem|schematic|nbt)$/i.test(f)).sort();
+    return readdirSync(SCHEMATIC_DIR).filter((f) => /\.(json|schem|schematic|litematic|nbt)$/i.test(f)).sort();
 }
 
-// Download a schematic file from a direct URL (GitHub raw, or any .schem/.schematic/
-// .json link), save it into schematics/, and hand back { name, ext, bytes }. Load it
-// with loadSchematic afterwards. Only Sponge/MCEdit (.schem/.schematic) and our .json
-// are supported — .litematic is Litematica's own format and is NOT readable.
+// Download a schematic file from a direct URL (GitHub raw, or any .schem/
+// .schematic/.litematic/.json link), save it into schematics/, and hand back
+// { name, ext, bytes }. Load it with loadSchematic afterwards: Sponge/MCEdit
+// (.schem/.schematic), Litematica (.litematic, first region), and our .json.
 export async function downloadSchematic(url, name) {
     const cleanPath = url.split(/[?#]/)[0];
-    const m = cleanPath.match(/\.(schematic|schem|json)$/i);
-    if (!m) throw new Error('That URL does not end in .schem, .schematic or .json (direct link required).');
+    const m = cleanPath.match(/\.(schematic|schem|litematic|json)$/i);
+    if (!m) throw new Error('That URL does not end in .schem, .schematic, .litematic or .json (direct link required).');
     const ext = '.' + m[1].toLowerCase();
 
     const ctrl = new AbortController();
