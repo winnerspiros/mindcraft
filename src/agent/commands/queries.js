@@ -731,6 +731,44 @@ export const queryList = [
         }
     },
     {
+        name: '!recipe',
+        description: 'Read-only recipe lookup: ingredients, needs-table vs hand, craftable-now with missing counts. Never touches inventory or tick budgets.',
+        params: {
+            'item': { type: 'string', description: 'The item to look up.' }
+        },
+        perform: function (agent, item) {
+            const name = String(item || '').trim();
+            const recipes = mc.getItemCraftingRecipes(name);
+            if (!recipes) return `${name}: no crafting recipe (mine it, loot it, trade it, or smelt it).`;
+            const tableVerdict = (typeof mc.recipeNeedsTable === 'function') ? mc.recipeNeedsTable(name) : null;
+            const inv = world.getInventoryCounts(agent.bot);
+            const lines = [`## ${name} recipe`, tableVerdict === true ? 'Needs 3x3 crafting table' : (tableVerdict === false ? 'Fits 2x2 hand grid' : '')];
+            recipes.slice(0, 3).forEach(([ing, meta], i) => {
+                lines.push(`Option ${i + 1} (makes ${meta?.craftedCount ?? 1}): ` + Object.entries(ing).map(([k, v]) => {
+                    const have = inv[k] || 0;
+                    return `${k} x${v} (have ${have}${have < v ? `, MISSING ${v - have}` : ''})`;
+                }).join(', '));
+            });
+            return pad(lines.join('\n'));
+        },
+    },
+    {
+        name: '!whereis',
+        description: 'Read-only block finder: nearest positions of a block type within 64m plus move/collect hint. Never moves you.',
+        params: {
+            'block': { type: 'string', description: 'The block to find.' },
+            'distance': { type: 'int', default: 64, description: 'Max search distance (optional).' }
+        },
+        perform: function (agent, block, distance) {
+            const name = String(block || '').trim();
+            const found = world.getNearestBlocks(agent.bot, [name], Math.min(distance ?? 64, 64), 8);
+            if (!found || !found.length) return `No ${name} within ${Math.min(distance ?? 64, 64)}m. Try !scout to roam further.`;
+            const nearest = found[0];
+            const list = found.slice(0, 8).map(b => `${b.position.x},${b.position.y},${b.position.z}`).join(' | ');
+            return `${name}: nearest @ ${nearest.position.x},${nearest.position.y},${nearest.position.z} — !goTo or !collect to reach it. Others: ${list}`;
+        },
+    },
+    {
         name: '!help',
         description: 'Lists all available commands and their descriptions.',
         perform: async function (agent) {
