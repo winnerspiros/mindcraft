@@ -431,6 +431,10 @@ export class Agent {
             console.warn('Received empty message from', source);
             return false;
         }
+        // Stamp inbound time HERE (not at generation entry): a message that
+        // arrives while an older generation is in flight invalidates it, but
+        // starting a generation never invalidates itself.
+        if (this.prompter) this.prompter.most_recent_msg_time = Date.now();
 
         let used_command = false;
         if (max_responses === null) {
@@ -446,6 +450,8 @@ export class Agent {
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
             if (user_command_name) {
+                // The human typing a !command IS the requester for the power gate.
+                this.last_sender = source;
                 if (!commandExists(user_command_name)) {
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
                     return false;
@@ -465,6 +471,8 @@ export class Agent {
         }
 
         if (from_other_bot)
+            this.last_sender = source;
+        else if (!self_prompt)
             this.last_sender = source;
 
         // Now translate the message
@@ -613,6 +621,31 @@ export class Agent {
     }
 
     async openChat(message, whisperTo = null) {
+        // RAW /summon INTERCEPT: the model can emit a bare /summon as chat text
+        // (it has no !command wrapper), which runs as the op bot with NO power
+        // gate and NO count cap — the 200-wither pile went out this way. Catch
+        // any /summon in outbound text and rewrite it into !summon so the trust
+        // gate + caps in executeCommand always apply. Same for /kill @e mass
+        // despawns, which route into !despawn.
+        if (typeof message === 'string') {
+            const summon = message.match(/\/summon\s+(?:minecraft:)?([A-Za-z_]+)(?:\s+(-?\d+))?(?:\s+(-?\d+))?(?:\s+(-?\d+))?/);
+            if (summon) {
+                const entity = summon[1];
+                const hasCoords = summon[2] !== undefined && summon[4] !== undefined;
+                if (!hasCoords) {
+                    message = message.replace(summon[0], `!summon("${entity}", 1)`);
+                } else {
+                    // Coordinates = something else's build script, not her summoning — drop the bypass, keep the words.
+                    message = message.replace(summon[0], `(summon ${entity})`);
+                }
+            }
+            const masskill = message.match(/\/kill\s+@e\[([^\]]*)\]/);
+            if (masskill) {
+                const type = (masskill[1].match(/type=(?:minecraft:)?([A-Za-z_]+)/) || [])[1];
+                if (type && !/^player|item$/i.test(type)) message = message.replace(masskill[0], `!despawn("${type}", 64)`);
+                else message = message.replace(masskill[0], '(mass kill)');
+            }
+        }
         let to_translate = message;
         let remaining = '';
         const cmd_info = getCommandInfo(message);
@@ -627,12 +660,25 @@ export class Agent {
 
         if (settings.only_chat_with.length > 0) {
             for (let username of settings.only_chat_with) {
-                this.bot.whisper(username, message);
+                // 26.3: /tell is op-only on vanilla, so a bot whisper is a
+                // silent no-op for normal recipients (verified 07:47 — zero
+                // server log lines). Public chat reaches everyone, so use it.
+                if (settings.chat_ingame) {this.bot.chat(message);}
+                sendOutputToServer(this.name, message);
             }
         }
         else if (whisperTo) {
-            // a private /msg reply to one player
-            this.bot.whisper(whisperTo, message);
+            // 26.3: /tell is op-only on vanilla — whispers never arrive.
+            // Route as public chat so the reply is actually seen.
+            console.log(this.name, 'whisper->public (26.3 /tell is op-only):', message.slice(0, 120));
+            if (!this.anyHumanOnline()) {
+                console.log(this.name, 'suppressed public chat (no humans online):', message.slice(0, 120));
+                return;
+            }
+            if (settings.speak) {
+                speak(to_translate, this.prompter.profile.speak_model);
+            }
+            if (settings.chat_ingame) {this.bot.chat(message);}
             sendOutputToServer(this.name, message);
         }
         else {
