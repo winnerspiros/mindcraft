@@ -93,6 +93,50 @@ export class Agent {
         this.reliability = new ReliabilityTracker(this);
         this.reliability.reapplyRetired();
 
+        // Learning loop (Mai-xiyu port): per-class error budgets (network /
+        // action / format) with decay-on-success, a recent-action repeat
+        // detector, and last-outcome feedback injected into the next prompt.
+        // Read-only queries never count as actions (no repeat tracking, no
+        // budgets, no success-rate warnings).
+        this.learning = {
+            network_errors: 0, action_errors: 0, format_errors: 0,
+            max_network_errors: 10, max_action_errors: 8, max_format_errors: 5,
+            recent_actions: [], max_same_action_repeat: 3,
+            last_failed: new Set(),
+            last_outcome: null, // { ok, label, text } — consumed by $LAST_OUTCOME
+            isQuery: (label) => ['!recipe', '!whereis', '!help', '!stats', '!inventory', '!entities', '!nearbyBlocks', '!surroundings', '!blockFacts', '!sourcing', '!getCraftingPlan'].includes(label),
+            noteOutcome(label, ok, text) {
+                const L = this;
+                L.last_outcome = { ok, label, text: String(text || '').slice(0, 300) };
+                if (L.isQuery(label)) return; // queries: feedback only, no budgets
+                if (ok) {
+                    L.action_errors = Math.max(0, L.action_errors - 1);
+                    L.format_errors = Math.max(0, L.format_errors - 1);
+                    L.last_failed.delete(label);
+                } else {
+                    L.action_errors++;
+                    L.last_failed.add(label);
+                }
+            },
+            checkPause() {
+                const L = this;
+                if (L.network_errors >= L.max_network_errors) return `network trouble ${L.network_errors}x — check the bot connection before continuing.`;
+                if (L.action_errors >= L.max_action_errors) return `action failures ${L.action_errors}x in a row — something in the world is wrong, stop and reassess instead of retrying.`;
+                if (L.format_errors >= L.max_format_errors) return `malformed replies ${L.format_errors}x — slow down and emit exact !command syntax.`;
+                return null;
+            },
+            trackRepeat(label) {
+                const L = this;
+                if (L.isQuery(label)) return null; // queries never trip repeat detection
+                L.recent_actions.push(label);
+                if (L.recent_actions.length > 10) L.recent_actions.shift();
+                const tail = L.recent_actions.slice(-3);
+                if (tail.length === 3 && tail[0] === label && tail[1] === label && tail[2] === label)
+                    return `you already tried ${label} 3x with no progress — switch strategy instead of repeating it.`;
+                return null;
+            },
+        };
+
         // Psyche: persistent self-mood + self-tuning traits (zero LLM cost).
         this.psyche = new Psyche(this);
 
@@ -549,13 +593,18 @@ export class Agent {
                 used_command = true;
 
                 if (execute_res) {
+                    // Learning loop: record outcome + repeat state, then feed
+                    // back result phrased like the world answering (not a nag).
+                    const ok = !isRetryableError(execute_res);
+                    this.learning?.noteOutcome(command_name, ok, execute_res);
+                    const repeat = this.learning?.trackRepeat(command_name);
                     // Actionable-error retry: when a command fails validation, tell her
                     // what went wrong and that she should correct it, then let the loop
                     // give her another pass (neuro-sdk "success:false -> retry" pattern).
                     if (isRetryableError(execute_res))
-                        this.history.add('system', execute_res + '\nThat command failed. Fix the problem and try again.');
+                        this.history.add('system', execute_res + '\nThat command failed. Fix the problem and try again.' + (repeat ? ' ' + repeat : ''));
                     else
-                        this.history.add('system', execute_res);
+                        this.history.add('system', execute_res + (repeat ? '\n' + repeat : ''));
                 }
                 else
                     break;

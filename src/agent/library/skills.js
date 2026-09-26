@@ -2641,6 +2641,78 @@ export async function attackNearest(bot, mobType, kill=true) {
     return false;
 }
 
+export async function critAttack(bot, entity) {
+    /**
+     * Jump-crit a single entity: close to 5m, look at chest height, jump,
+     * strike mid-air (crit particles = bonus damage), land clean. Ported
+     * from Mai-xiyu jumpAttack (lookAt height*0.8, jump 2 ticks, attack).
+     * @param {MinecraftBot} bot
+     * @param {Entity} entity, the entity to crit.
+     * @returns {Promise<boolean>} true if the strike landed.
+     * @example
+     * await skills.critAttack(bot, enemy);
+     **/
+    bot.modes.pause('cowardice');
+    try {
+        await equipHighestAttack(bot);
+        const dist = bot.entity.position.distanceTo(entity.position);
+        if (dist > 5) {
+            await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, 2);
+        }
+        await bot.lookAt(entity.position.offset(0, (entity.height || 1.8) * 0.8, 0));
+        bot.setControlState('jump', true);
+        await bot.waitForTicks(2);
+        await bot.attack(entity);
+        await bot.waitForTicks(1);
+        bot.setControlState('jump', false);
+        return true;
+    } catch (e) {
+        bot.setControlState('jump', false);
+        log(bot, 'Crit attack failed: ' + e.message);
+        return false;
+    }
+}
+
+export async function scoutExplore(bot, radius=50) {
+    /**
+     * Tolerant explore: pick a random bearing, walk what you can (partial
+     * progress is fine), then report ores/POIs + nearby entities. Ported
+     * from Mai-xiyu explore (random angle, tolerant move, 17^3 scan).
+     * @param {MinecraftBot} bot
+     * @param {number} radius, how far to roam. Defaults to 50.
+     * @returns {Promise<object>} { moved, interestingBlocks, nearbyEntities }
+     * @example
+     * await skills.scoutExplore(bot, 40);
+     **/
+    const pos = bot.entity.position;
+    const angle = Math.random() * 2 * Math.PI;
+    const dist = 10 + Math.random() * Math.max(10, (radius || 50) - 10);
+    let moved = true;
+    try {
+        await goToPosition(bot, Math.floor(pos.x + Math.cos(angle) * dist), Math.floor(pos.y), Math.floor(pos.z + Math.sin(angle) * dist), 3);
+    } catch (_) { moved = false; } // partial progress is fine
+    const INTERESTING = new Set([
+        'diamond_ore','deepslate_diamond_ore','gold_ore','deepslate_gold_ore',
+        'iron_ore','deepslate_iron_ore','coal_ore','deepslate_coal_ore',
+        'lapis_ore','deepslate_lapis_ore','redstone_ore','deepslate_redstone_ore',
+        'emerald_ore','deepslate_emerald_ore','copper_ore','deepslate_copper_ore',
+        'chest','spawner','crafting_table','furnace','anvil',
+        'enchanting_table','brewing_stand','village_bell',
+    ]);
+    const interestingBlocks = [];
+    const cp = bot.entity.position;
+    for (const b of world.getNearestBlocks(bot, [...INTERESTING], 12, 20)) {
+        interestingBlocks.push({ name: b.name, position: { x: b.position.x, y: b.position.y, z: b.position.z } });
+        if (interestingBlocks.length >= 20) break;
+    }
+    const nearbyEntities = world.getNearbyEntities(bot, 16).slice(0, 10).map(e => ({
+        name: e.name || e.username || 'unknown', type: e.type,
+        distance: bot.entity.position.distanceTo(e.position).toFixed(1),
+    }));
+    log(bot, `Scouted ${moved ? 'new ground' : 'nearby only'}: ${interestingBlocks.length} POIs, ${nearbyEntities.length} entities.`);
+    return { moved, interestingBlocks, nearbyEntities, position: { x: cp.x, y: cp.y, z: cp.z } };
+}
+
 export async function attackEntity(bot, entity, kill=true) {
     /**
      * Attack mob of the given type.

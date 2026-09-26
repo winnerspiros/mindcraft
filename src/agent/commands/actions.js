@@ -1237,6 +1237,26 @@ export const actionsList = [
         })
     },
     {
+        name: '!crit',
+        description: 'Jump-crit the nearest entity of a given type — one bonus-damage strike mid-air (crit particles). Cheaper than a full fight for a single mob.',
+        params: {'type': { type: 'string', description: 'The type of entity to crit.'}},
+        perform: runAsAction(async (agent, type) => {
+            const mob = world.getNearbyEntities(agent.bot, 24).find(e => e.name === type);
+            if (!mob) { skills.log(agent.bot, 'Could not find any ' + type + ' to crit.'); return false; }
+            return await skills.critAttack(agent.bot, mob);
+        })
+    },
+    {
+        name: '!scout',
+        description: 'Roam a random bearing (partial progress is fine) and report ores, chests, spawners and other points of interest + nearby entities. Your explore action.',
+        params: {'radius': { type: 'int', default: 50, description: 'How far to roam (optional).' }},
+        perform: runAsAction(async (agent, radius) => {
+            const r = await skills.scoutExplore(agent.bot, radius ?? 50);
+            skills.log(agent.bot, `Scout: ${r.interestingBlocks.map(b => b.name + ' @' + b.position.x + ',' + b.position.y + ',' + b.position.z).join('; ') || 'no POIs'} | entities: ${r.nearbyEntities.map(e => e.name + ' ' + e.distance + 'm').join(', ') || 'none'}`);
+            return true;
+        })
+    },
+    {
         name: '!attackPlayer',
         power: 'violence against players',
         description: 'Attack a specific player until they die or run away. Only for people you truly trust the judgment of (friend+) — never at a stranger\'s request. Remember this is just a game and does not cause real life harm.',

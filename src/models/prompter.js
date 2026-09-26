@@ -421,6 +421,27 @@ export class Prompter {
             prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+        if (prompt.includes('$LAST_OUTCOME')) {
+            // Learning-loop feedback: last action result + low-rate warnings,
+            // so she adapts strategy instead of repeating broken plans.
+            const L = this.agent.learning;
+            let fb = '';
+            if (L?.last_outcome) {
+                const o = L.last_outcome;
+                fb += (o.ok ? `✅ ${o.label} worked: ${o.text}` : `❌ ${o.label} failed: ${o.text} — analyze why, try something else or finish a prerequisite first (try !recipe / !whereis to check).`) + '\n';
+            }
+            if (L && this.agent.reliability?.stats) {
+                for (const [name, s] of Object.entries(this.agent.reliability.stats)) {
+                    if (s.attempts >= 5 && !L.isQuery(name)) {
+                        const rate = s.successes / s.attempts;
+                        if (rate < 0.3) fb += `⚠ ${name} only works ${(rate * 100).toFixed(0)}% of the time — consider a different approach.\n`;
+                    }
+                }
+            }
+            const pause = L?.checkPause();
+            if (pause) fb += `⛔ ${pause}\n`;
+            prompt = prompt.replaceAll('$LAST_OUTCOME', fb.trim() || '(no recent actions — fresh start)');
+        }
         if (prompt.includes('$REFLECTED_MEMORY')) {
             const query = this._buildRecallQuery(messages);
             const recalled = this.agent.reflective_memory
