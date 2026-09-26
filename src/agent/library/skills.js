@@ -5291,6 +5291,10 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
      * Attach a profile to the goal instead of flipping global flags:
      *   goal._moveMode = 'sprint' | 'parkour' — the leg runs that profile;
      *   anything else (or unset) walks. goToPosition(mode) sets this for you.
+     * Discovery's onlyCheckPath, ported: goal._dryRun = true plans both
+     * probes and reports reachability WITHOUT moving a muscle. Returns the
+     * string 'reachable-clean' | 'reachable-dig' | 'unreachable' (truthy
+     * strings — check `=== 'unreachable'`, not falsiness).
      **/
     const _moveMode = (goal && (goal._moveMode === 'sprint' || goal._moveMode === 'parkour')) ? goal._moveMode : 'walk';
 
@@ -5333,6 +5337,18 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     let final_movements = destructiveMovements;
 
     const pathfind_timeout = (goal && Number.isFinite(goal._pathTimeout)) ? goal._pathTimeout : 1000;
+    // Discovery's onlyCheckPath, ported: plan both probes, report, move nothing.
+    if (goal && goal._dryRun === true) {
+        try {
+            if ((await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout)).status === 'success')
+                return 'reachable-clean';
+        } catch (_) {}
+        try {
+            if ((await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout)).status === 'success')
+                return 'reachable-dig';
+        } catch (_) {}
+        return 'unreachable';
+    }
     if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
         final_movements = nonDestructiveMovements;
         log(bot, `Found non-destructive path.`);
@@ -5976,6 +5992,55 @@ export async function moveAway(bot, distance, mode='walk') {
     let new_pos = bot.entity.position;
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);
     return true;
+}
+
+export async function moveProbe(bot, x, y, z, min_distance = 2) {
+    /**
+     * Discovery's onlyCheckPath as a first-class skill: plan the walk to
+     * x,y,z WITHOUT moving (dry-run through goToGoal). Returns
+     * 'reachable-clean' (open ground), 'reachable-dig' (needs dig/place) or
+     * 'unreachable'. Logs the verdict so it shows in action output.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {number} x, target x.
+     * @param {number} y, target y.
+     * @param {number} z, target z.
+     * @param {number} min_distance, goal radius. Defaults to 2.
+     * @returns {Promise<string>} reachability verdict.
+     * @example
+     * const v = await skills.moveProbe(bot, 100, 64, -200);
+     * if (v === 'unreachable') return false; // pick another goal
+     **/
+    const goal = new pf.goals.GoalNear(Math.floor(x), Math.floor(y), Math.floor(z), min_distance);
+    goal._dryRun = true;
+    const verdict = await goToGoal(bot, goal);
+    log(bot, `Path probe to ${Math.floor(x)},${Math.floor(y)},${Math.floor(z)}: ${verdict}.`);
+    return verdict;
+}
+
+export async function escapeStuck(bot) {
+    /**
+     * Discovery's stuck-escape, ported: when the planner reports no path,
+     * don't blind-walk — step to the nearest free space (world helper, solid
+     * ground + headroom) and re-plan from there. One sidestep only, then the
+     * brain retries the real goal. Returns true if the sidestep moved her.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<boolean>} true if she relocated to free space.
+     * @example
+     * await skills.escapeStuck(bot); // then retry the blocked goal
+     **/
+    try {
+        const free = world.getNearestFreeSpace(bot, 1, 8);
+        if (!free) { log(bot, 'No free space nearby to escape to.'); return false; }
+        const before = bot.entity.position.clone();
+        const goal = new pf.goals.GoalNear(free.x, free.y, free.z, 0);
+        await goToGoal(bot, goal, 8000);
+        const moved = bot.entity.position.distanceTo(before) > 1;
+        log(bot, moved ? `Sidestepped to free space at ${free.x},${free.y},${free.z}.` : 'Sidestep failed — still stuck.');
+        return moved;
+    } catch (e) {
+        log(bot, `Escape failed: ${e.message}`);
+        return false;
+    }
 }
 
 export async function moveAwayFromEntity(bot, entity, distance=16, mode='walk') {

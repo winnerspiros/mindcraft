@@ -104,7 +104,7 @@ export class Agent {
             recent_actions: [], max_same_action_repeat: 3,
             last_failed: new Set(),
             last_outcome: null, // { ok, label, text } — consumed by $LAST_OUTCOME
-            isQuery: (label) => ['!recipe', '!whereis', '!help', '!stats', '!inventory', '!entities', '!nearbyBlocks', '!surroundings', '!blockFacts', '!sourcing', '!getCraftingPlan'].includes(label),
+            isQuery: (label) => ['!recipe', '!whereis', '!help', '!stats', '!inventory', '!entities', '!nearbyBlocks', '!surroundings', '!blockFacts', '!sourcing', '!getCraftingPlan', '!skillCode', '!skillList', '!lookDir', '!cameraTo', '!terrainScan', '!recipePlan'].includes(label),
             noteOutcome(label, ok, text) {
                 const L = this;
                 L.last_outcome = { ok, label, text: String(text || '').slice(0, 300) };

@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
+import { rconCommand } from '../utils/rcon.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -430,6 +431,17 @@ export class Prompter {
                 const o = L.last_outcome;
                 fb += (o.ok ? `✅ ${o.label} worked: ${o.text}` : `❌ ${o.label} failed: ${o.text} — analyze why, try something else or finish a prerequisite first (try !recipe / !whereis to check).`) + '\n';
             }
+            // Discovery's execution-history ring (last 5 runs, newest last):
+            // one line each so the next plan sees the recent trajectory, not
+            // just the single last outcome. Skips the last_outcome label to
+            // avoid repeating the line above.
+            if (L?.recent_runs && L.recent_runs.length) {
+                const lastLabel = L?.last_outcome?.label;
+                for (const r of L.recent_runs) {
+                    if (r.label === lastLabel) continue;
+                    fb += `${r.ok ? '✅' : '❌'} ${r.label}: ${r.text}\n`;
+                }
+            }
             if (L && this.agent.reliability?.stats) {
                 for (const [name, s] of Object.entries(this.agent.reliability.stats)) {
                     if (s.attempts >= 5 && !L.isQuery(name)) {
@@ -698,9 +710,14 @@ export class Prompter {
 
     async promptCritic(goal, stateText) {
         await this.checkCooldown();
+        // Discovery's TaskCompletionAgent, ported: judge on FRESH RCON truth,
+        // not the client's (possibly stale/empty-decode) read. RCON Pos +
+        // Inventory + Health ride alongside the cached dumps; if RCON is
+        // unreachable we fall back to client reads and say so in the state.
         if (!stateText) {
             try {
-                stateText = await this._getCachedStats() + '\n' + await this._getCachedInventory();
+                stateText = await this._rconTruthState() + '\n'
+                    + await this._getCachedStats() + '\n' + await this._getCachedInventory();
             } catch (e) { stateText = ''; }
         }
         let prompt = this.profile.critic || DEFAULT_CRITIC_PROMPT;
@@ -721,6 +738,51 @@ export class Prompter {
         if (low.includes('incomplete')) return { verdict: 'incomplete', critique: String(resp) };
         if (low.includes('complete')) return { verdict: 'complete', critique: String(resp) };
         return { verdict: 'incomplete', critique: String(resp) };
+    }
+
+    // Discovery's BotInformationAgent, ported minimal: one fresh RCON snapshot
+    // (Pos / Health / Inventory) for the critic. RCON is the arbiter on 26.3
+    // because client Slot decode can read empty while the server holds a real
+    // kit — a critic judging client reads alone calls "done" on lies. Each
+    // line is independent: one failing query degrades to its client fallback
+    // instead of killing the whole snapshot. Non-fatal by design.
+    async _rconTruthState() {
+        const bot = this.agent && this.agent.bot;
+        const name = this.agent ? this.agent.name : 'UwU';
+        const lines = ['RCON-TRUTH (server-side, fresh):'];
+        try {
+            const pos = await rconCommand(`data get entity ${name} Pos`).catch(() => null);
+            if (pos) {
+                const m = String(pos).match(/\[(-?[\d.]+)d,\s*(-?[\d.]+)d,\s*(-?[\d.]+)d\]/);
+                lines.push(m ? `position: x=${m[1]}, y=${m[2]}, z=${m[3]}` : `position(unparsed): ${String(pos).slice(0, 120)}`);
+            } else if (bot && bot.entity) {
+                const p = bot.entity.position;
+                lines.push(`position(client fallback): x=${p.x.toFixed(1)}, y=${p.y.toFixed(1)}, z=${p.z.toFixed(1)}`);
+            } else lines.push('position: unknown');
+        } catch (_) { lines.push('position: unknown'); }
+        try {
+            const hp = await rconCommand(`data get entity ${name} Health`).catch(() => null);
+            if (hp) {
+                const m = String(hp).match(/([\d.]+)f/);
+                lines.push(m ? `health: ${m[1]} / 20` : `health(unparsed): ${String(hp).slice(0, 80)}`);
+            } else lines.push(`health(client fallback): ${bot ? Math.round(bot.health) : '?'} / 20`);
+        } catch (_) { lines.push('health: unknown'); }
+        try {
+            const inv = await rconCommand(`data get entity ${name} Inventory`).catch(() => null);
+            if (inv) {
+                const ids = [...String(inv).matchAll(/minecraft:([a-z_]+)"/g)].map(m => m[1]);
+                const counts = {};
+                for (const id of ids) counts[id] = (counts[id] || 0) + 1;
+                const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12)
+                    .map(([k, v]) => `${k}x${v}`).join(', ');
+                lines.push(`inventory: ${top || '(empty per server)'}`);
+            } else {
+                const items = (bot && bot.inventory && bot.inventory.items ? bot.inventory.items() : [])
+                    .map(i => `${i.name}x${i.count}`).join(', ');
+                lines.push(`inventory(client fallback): ${items || '(empty)'}`);
+            }
+        } catch (_) { lines.push('inventory: unknown'); }
+        return lines.join('\n');
     }
 
     // Structural design: she "imagines" a build. Returns a parsed {name, layers,
