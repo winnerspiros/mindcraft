@@ -35,6 +35,29 @@ export class Coder {
         let messages = agent_history.getHistory(); 
         messages.push({role: 'system', content: 'Code generation started. Write code in codeblock in your response:'});
 
+        // Discovery's ProcessReviewer, ported cheap: before burning a big LLM
+        // turn on full code-gen, ask the (cheap) chat model ONE question —
+        // "is this plan executable with the skills I actually have?" — using
+        // the compact skill-summary list (names + one-liners, not full docs).
+        // A "no" answer comes back with missing pieces + a concrete fix, which
+        // becomes the code prompt instead of the raw task. No code runs here.
+        try {
+            const task = messages.slice().reverse().find(m =>
+                m && m.role !== 'system' && typeof m.content === 'string' && m.content.includes('!newAction(')
+            )?.content?.match(/!newAction\((.*?)\)/)?.[1]?.replace(/["']/g, '').trim() || '';
+            const review = await this._reviewPlan(task);
+            if (review && review.verdict === 'revise' && review.suggestion) {
+                messages.push({ role: 'system', content:
+                    `Pre-generation review: the plan needs a fix before coding.\n` +
+                    `Reviewer notes: ${review.suggestion}\n` +
+                    `Write code that follows the fix, not the raw task.` });
+            } else if (review && review.verdict === 'impossible') {
+                return `Action failed: plan not executable — ${review.suggestion || 'missing skills or materials'}.`;
+            }
+        } catch (e) {
+            console.warn('plan review failed (non-fatal, coding anyway):', e.message);
+        }
+
         const MAX_ATTEMPTS = 5;
         const MAX_NO_CODE = 3;
 
@@ -127,7 +150,59 @@ export class Coder {
         return `Code generation failed after ${MAX_ATTEMPTS} attempts.`;
     }
     
-    async  _lintCode(code) {
+    // Discovery's ProcessReviewer, ported cheap: one chat-model call against
+    // the compact skill-summary list + live state. Returns
+    // { verdict: 'ok' | 'revise' | 'impossible', suggestion }.
+    // Hard rules, not vibes: exact skill name present = ok; nothing relevant
+    // = impossible; relevant-but-wrong-shape = revise with the fix spelled
+    // out. Parses loosely (JSON preferred, keyword fallback) so a chatty
+    // model can never wedge code-gen. Non-fatal by design — caller catches.
+    async _reviewPlan(task) {
+        if (!task) return { verdict: 'ok', suggestion: '' };
+        const lib = this.agent.prompter && this.agent.prompter.skill_libary;
+        const summaries = (lib && typeof lib.getAllSkillSummaries === 'function')
+            ? lib.getAllSkillSummaries() : [];
+        const skillLines = summaries.map(s => `- ${s.name}: ${s.description}`).join('\n');
+        let inv = '';
+        try {
+            const items = (this.agent.bot?.inventory?.items() || [])
+                .map(i => `${i.name}x${i.count}`).join(', ');
+            inv = items || '(empty)';
+        } catch (_) { inv = '(unknown)'; }
+        const prompt =
+            `You review ONE Minecraft-bot plan before code is written. Be strict but concrete.\n` +
+            `Task: ${task}\n` +
+            `Available skills (name: what it does):\n${skillLines || '(none listed)'}\n` +
+            `Carried inventory: ${inv}\n` +
+            `Rules:\n` +
+            `- verdict "ok" if a listed skill directly does the task (name the skill).\n` +
+            `- verdict "revise" if doable with a listed skill used differently, split into steps, or after a prerequisite (!collectBlocks/!craftRecipe/!smeltItem/!goToCoordinates first). Spell out the fixed plan in "suggestion".\n` +
+            `- verdict "impossible" ONLY if no listed skill can do it even with prerequisites (say what is missing).\n` +
+            `Reply with ONLY JSON: {"verdict": "ok|revise|impossible", "suggestion": "one or two sentences"}`;
+        let resp = '';
+        try {
+            await this.agent.prompter.checkCooldown();
+            resp = await this.agent.prompter.chat_model.sendRequest([], prompt);
+        } catch (e) {
+            console.warn('_reviewPlan LLM call failed:', e.message);
+            return { verdict: 'ok', suggestion: '' };
+        }
+        try {
+            const m = String(resp || '').match(/\{[\s\S]*\}/);
+            if (m) {
+                const p = JSON.parse(m[0]);
+                const v = String(p.verdict || '').toLowerCase();
+                if (v === 'ok' || v === 'revise' || v === 'impossible')
+                    return { verdict: v, suggestion: String(p.suggestion || '').slice(0, 400) };
+            }
+        } catch (_) { /* fall through to keyword parse */ }
+        const low = String(resp || '').toLowerCase();
+        if (low.includes('impossible') || low.includes('cannot') || low.includes('no skill'))
+            return { verdict: 'revise', suggestion: String(resp || '').slice(0, 400) };
+        return { verdict: 'ok', suggestion: '' };
+    }
+
+    async _lintCode(code) {
         let result = '#### CODE ERROR INFO ###\n';
         const codeNoComments = code.replace(/\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
         const skillRegex = /((?:skills|world)\.(.*?))\(/g;

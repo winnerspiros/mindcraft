@@ -137,7 +137,14 @@ export class SelfPrompter {
             // alone she digs/builds/explores instead of yapping.
             const solo = !this._otherPlayersOnline();
             const gear = solo ? this.cooldown_solo : this.cooldown_chatty;
-            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Respond:`;
+            // Discovery's MissionPlanner, ported cheap: every self-prompt turn
+            // restates the goal as ONE verifiable task + its success condition
+            // (what "done" looks like in inventory/position terms), so the
+            // brain plans against a checkable finish instead of vibes.
+            // Success condition is a guess from the goal text (have/reach/build
+            // keywords) — the critic (P3) does the real verdict later.
+            const _sc = this._guessSuccess(this.prompt);
+            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it). Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
             if (!used_command) {
@@ -333,5 +340,36 @@ export class SelfPrompter {
             this.stopLoop();
             // this stops it from responding from the handlemessage loop and the self-prompt loop at the same time
         }
+    }
+
+    // Discovery's MissionPlanner success-condition, ported as a pure guesser:
+    // map goal-text keywords to a checkable "done" sentence. The brain reads
+    // this every self-prompt turn (see startLoop); the critic (P3) verifies.
+    _guessSuccess(goal) {
+        const g = String(goal || '').toLowerCase();
+        if (!g) return 'making progress on the goal';
+        // gather/collect/mine/hunt/fish + item => inventory holds it
+        let m = g.match(/(?:gather|collect|mine|get|fetch|grab|hunt|fish|pick|chop|dig)(?:\s+\w+){0,3}\s+(oak_log|[\w]+)/);
+        if (/(gather|collect|mine|get|fetch|grab|hunt|fish|pick|chop|dig)/.test(g)) {
+            const what = m ? m[1] : 'the wanted items';
+            return `inventory holds ${what} (check !inventory)`;
+        }
+        if (/(build|craft|make|smelt|cook|bake|brew|enchant)/.test(g))
+            return 'the built/crafted thing exists in the world or pack (check !inventory or go look)';
+        if (/(find|visit|go to|stay close|follow|come|meet|seek)/.test(g))
+            return 'standing near the target (check !stats position vs theirs)';
+        if (/(kill|fight|defend|slay|hunt)/.test(g))
+            return 'the hostile is dead and you are alive (check !stats health)';
+        if (/(light|torch)/.test(g))
+            return 'the area reads light 8+ on !surroundings';
+        if (/(farm|plant|sow|till|harvest|breed)/.test(g))
+            return 'crops/animals show the new state (go look)';
+        if (/(give|gift|present)/.test(g))
+            return 'the gift left your pack and the player was near';
+        if (/(sleep|bed|hide|shelter|home)/.test(g))
+            return 'safe indoors through the night (check !stats time + !surroundings)';
+        if (/(explore|scout|wander|adventure|treasure|map)/.test(g))
+            return 'new ground covered (!stats position moved somewhere new)';
+        return 'visible progress toward the goal (say what changed)';
     }
 }
