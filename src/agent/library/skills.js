@@ -2804,6 +2804,92 @@ export async function attackEntity(bot, entity, kill=true) {
     }
 }
 
+export async function rconLocateHostile(bot, names, radius=64) {
+    /**
+     * RCON truth when her eyes fail: locate the nearest hostile of the given
+     * types near her even when 26.3 withholds the entity from bot.entities
+     * (wither snipes from 30+ blocks — past eyes, past visibility).
+     * Read-only `data get` (no broadcast spam, no cheats, no kills).
+     * @param {MinecraftBot} bot, reference to the minecraft bot (must be OP).
+     * @param {string|string[]} names, mob types, e.g. ['wither','ghast'].
+     * @param {number} radius, search distance (default 64).
+     * @returns {{name,pos,dist}|null} nearest match with a real Vec3, or null.
+     **/
+    const list = Array.isArray(names) ? names : [names];
+    let best = null;
+    for (const n of list) {
+        let out = null;
+        try { out = await rconCommand(`execute as ${bot.username} at @s run data get entity @e[type=${n},limit=1,sort=nearest,distance=..${radius}] Pos`); }
+        catch (_) { continue; }
+        const m = String(out || '').match(/\[(-?[\d.]+)d,\s*(-?[\d.]+)d,\s*(-?[\d.]+)d\]/);
+        if (!m) continue;
+        const pos = new Vec3(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+        let d = Infinity;
+        try { d = bot.entity.position.distanceTo(pos); } catch (_) {}
+        if (!best || d < best.dist) best = { name: n, pos, dist: d };
+        if (bot.interrupt_code) break;
+    }
+    return best;
+}
+
+// Things that fly and snipe from past sword range — chasing them on foot is
+// how she dies tired. Bow-only, hold ground, eat between volleys.
+const FLYERS = new Set(['wither', 'ghast', 'phantom', 'blaze', 'ender_dragon']);
+const isFlyer = (n) => FLYERS.has(String(n || ''));
+
+async function fightFlyer(bot, enemy) {
+    try { bot.armorManager.equipAll(); } catch (_) {}
+    const t0 = Date.now();
+    const BUDGET_MS = 90000;   // one fight, then report — never burn the whole quiver
+    const MAX_VOLLEYS = 8;     // 2 arrows each = up to 16 shafts
+    let target = enemy, volleys = 0, fired = 0;
+    while (Date.now() - t0 < BUDGET_MS && volleys < MAX_VOLLEYS) {
+        if (bot.interrupt_code || bot.health <= 0) break;
+        // re-resolve a live handle every volley; fall back to RCON truth.
+        const live = world.getNearestEntityWhere(bot, e => e && e.name === target.name && e.position && Number.isFinite(e.position.x), 64);
+        if (live) {
+            target = live;
+        } else {
+            let r = null;
+            try { r = await rconLocateHostile(bot, [target.name], 64); } catch (_) {}
+            if (r) target = { name: r.name, position: r.pos, velocity: new Vec3(0, 0, 0), height: target.name === 'wither' ? 3.5 : 2.0 };
+            else break; // lost it — report what we did, don't spray arrows blind
+        }
+        let dist = Infinity;
+        try { dist = bot.entity.position.distanceTo(target.position); } catch (_) {}
+        // too close: step back first, shoot second (skulls hurt up close).
+        if (dist < 10) {
+            try { await moveAway(bot, 8, bot.food > 6 ? 'sprint' : 'walk'); } catch (_) {}
+        }
+        // wither effect ticking + low health: kite and eat, don't stand and trade.
+        let withered = false;
+        try {
+            const eff = bot.entity && bot.entity.effects;
+            withered = !!(eff && Object.values(eff).some(e => e && /wither/i.test(e.name || e.displayName || '')));
+        } catch (_) {}
+        if (withered && bot.health < 12) {
+            try { await moveAway(bot, 10, bot.food > 6 ? 'sprint' : 'walk'); } catch (_) {}
+        }
+        if (bot.health < 16 || bot.food < 16) {
+            const snack = FOOD_RANK.find(f => { try { return !!bot.inventory.findInventoryItem(f); } catch (_) { return false; } });
+            if (snack) { try { await consume(bot, snack); } catch (_) {} }
+        }
+        if (bot.interrupt_code) break;
+        let ok = false;
+        try { ok = await shootBow(bot, target, 2, true); } catch (_) { break; }
+        if (!ok) break; // no bow / no arrows / no solution — shootBow already said why
+        volleys++;
+        fired += 2;
+    }
+    try { bot.pvp.stop(); } catch (_) {}
+    if (fired > 0) {
+        log(bot, `Fired ${fired} arrows at the ${target.name} (bow-only — it flies, chasing is suicide).`);
+        return true;
+    }
+    log(bot, `Could not shoot the ${target.name} — ${bot.inventory.items().some(i => i.name === 'bow') ? 'no arrows or no shot.' : 'no bow.'}`);
+    return false;
+}
+
 export async function defendSelf(bot, range=9) {
     /**
      * Defend yourself from all nearby hostile mobs until there are no more.
@@ -2816,6 +2902,34 @@ export async function defendSelf(bot, range=9) {
     bot.modes.pause('self_defense');
     bot.modes.pause('cowardice');
     let attacked = false;
+    // FLYERS FIRST (wither/ghasts/dragons snipe from 30+ blocks — past eyes,
+    // past sword range): a wide 48-block eye scan, then RCON truth when 26.3
+    // withholds the entity. Bow-only, hold ground, never chase.
+    let flyer = world.getNearestEntityWhere(bot, e => e && e.position && Number.isFinite(e.position.x) && isFlyer(e.name), 48);
+    if (!flyer) {
+        const FLYER_TYPES = ['wither', 'ghast', 'phantom', 'blaze', 'ender_dragon'];
+        for (const t of FLYER_TYPES) {
+            let live = null;
+            try { live = world.getNearestEntityWhere(bot, e => e && e.position && Number.isFinite(e.position.x) && e.name === t, 48); } catch (_) {}
+            if (live) { flyer = live; break; }
+        }
+        // RCON fallback is WITHER-ONLY (one read-only `data get`, not five):
+        // other flyers are big/close enough for eyes, and every RCON command
+        // broadcasts to ops — a 5-type sweep on each defendSelf would spam.
+        if (!flyer) {
+            let r = null;
+            try { r = await rconLocateHostile(bot, ['wither'], 64); } catch (_) {}
+            if (r) flyer = { name: r.name, position: r.pos, velocity: new Vec3(0, 0, 0), height: 3.5 };
+        }
+    }
+    if (flyer) {
+        log(bot, `Spotted a ${String(flyer.name).replace(/_/g, ' ')} — bow fight, holding ground.`);
+        const won = await fightFlyer(bot, flyer);
+        if (won) { attacked = true; log(bot, `Successfully defended self.`); }
+        return won;
+    }
+    // No flyer in 48: ground fight as before, but scan the same range the
+    // caller asked for. A RCON flyer sweep already came back empty above.
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
 
     // Opening volley: a couple arrows at a distant enemy ONCE, before closing to
