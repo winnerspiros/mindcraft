@@ -37,6 +37,17 @@ export class SkillLibrary {
         return this.skill_docs;
     }
 
+    // Discovery's skill-summary tool (ported): one line per skill so the
+    // reviewer can scan the whole portfolio without bulky doc bodies.
+    // First line is `skills.name`, second line is the short description.
+    getAllSkillSummaries() {
+        if (!this.skill_docs) return [];
+        return this.skill_docs.map(doc => {
+            const lines = String(doc).split('\n');
+            return { name: (lines[0] || '').trim(), description: (lines[1] || '').trim() };
+        });
+    }
+
     async getRelevantSkillDocs(message, select_num) {
         if(!message) // use filler message if none is provided
             message = '(no message)';

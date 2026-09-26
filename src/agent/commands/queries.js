@@ -775,4 +775,191 @@ export const queryList = [
             return getCommandDocs(agent);
         }
     },
+    {
+        name: '!skillCode',
+        description: 'Read-only source read: exact implementation of ONE skill (Discovery get_skill_code port — docstring stripped, low-level API usage visible). Use before !newAction to copy proven patterns instead of re-deriving them.',
+        params: {
+            'name': { type: 'string', description: 'Skill name with prefix, e.g. "skills.collectBlock" or "world.getTerrainProfile".' }
+        },
+        perform: function (agent, name) {
+            const raw = String(name || '').trim();
+            if (!raw) return pad('Give a skill name (e.g. !skillCode("skills.collectBlock")).');
+            const m = raw.match(/^(skills|world)\.([A-Za-z0-9_]+)$/);
+            if (!m) return pad(`Bad name "${raw}" — use skills.<fn> or world.<fn> (see !help).`);
+            const mod = m[1] === 'skills' ? skills : world;
+            const fn = mod[m[2]];
+            if (typeof fn !== 'function') return pad(`No such skill "${raw}".`);
+            try {
+                let src = fn.toString();
+                // strip the /** */ doc comment so the brain reads code, not docs
+                src = src.replace(/\/\*\*[\s\S]*?\*\//, '').trim();
+                if (src.length > 3000) src = src.slice(0, 3000) + '\n...[truncated]';
+                return pad(`CODE ${raw}\n${src}`);
+            } catch (e) {
+                return pad(`Could not read "${raw}": ${e.message}`);
+            }
+        }
+    },
+    {
+        name: '!skillList',
+        description: 'Read-only skill inventory: every available skills.* / world.* function with its one-line description (Discovery skill-summary port). Use to check WHAT exists before planning — cheaper than guessing and failing.',
+        params: {
+            'filter': { type: 'string', default: null, description: 'Optional substring to filter by (e.g. "portal", "chest").' }
+        },
+        perform: function (agent, filter) {
+            try {
+                const lib = agent.prompter && agent.prompter.skill_libary;
+                const sums = (lib && typeof lib.getAllSkillSummaries === 'function')
+                    ? lib.getAllSkillSummaries() : [];
+                if (!sums.length) return pad('Skill library not initialized yet.');
+                const f = String(filter || '').toLowerCase();
+                const rows = sums
+                    .filter(s => !f || (s.name + ' ' + s.description).toLowerCase().includes(f))
+                    .map(s => `- ${s.name}: ${s.description}`);
+                if (!rows.length) return pad(`No skills match "${filter}".`);
+                return pad(`SKILLS (${rows.length})\n` + rows.join('\n'));
+            } catch (e) {
+                return pad(`Skill list failed: ${e.message}`);
+            }
+        }
+    },
+    {
+        name: '!lookDir',
+        description: 'Turn to face a compass direction (north/south/east/west/up/down) without moving (Discovery look_at_direction port — cheap orientation check before acting on !surroundings).',
+        params: {
+            'direction': { type: 'string', description: 'north, south, east, west, up, or down.' }
+        },
+        perform: async function (agent, direction) {
+            const d = String(direction || '').toLowerCase();
+            const bot = agent.bot;
+            const yawMap = { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2 };
+            try {
+                // 26.3: freeze means TOTAL wire silence — never force a look
+                // while spawn-frozen or inside the post-teleport/post-place
+                // hold; entity angles still update so she turns on unfreeze.
+                const held = bot.physics && typeof bot.physics.shouldSendLook === 'function'
+                    ? !bot.physics.shouldSendLook() : false;
+                if (d === 'up') { await bot.look(bot.entity.yaw, -Math.PI / 2 + 0.05, !held); return pad('Looking up.'); }
+                if (d === 'down') { await bot.look(bot.entity.yaw, Math.PI / 2 - 0.05, !held); return pad('Looking down.'); }
+                if (!(d in yawMap)) return pad(`Bad direction "${direction}" — north/south/east/west/up/down.`);
+                await bot.look(yawMap[d], 0, !held);
+                return pad(`Looking ${d}.`);
+            } catch (e) {
+                return pad(`Look failed: ${e.message}`);
+            }
+        }
+    },
+    {
+        name: '!cameraTo',
+        description: 'Vision snapshot toward a direction or coordinate: turns the head (!lookDir) then returns what the camera sees + center-block read (Discovery capture_bot_view port, text-only — no screenshot file). Needs vision enabled.',
+        params: {
+            'direction': { type: 'string', default: null, description: 'Compass direction (optional if x/y/z given).' },
+            'x': { type: 'float', default: null, description: 'Look-at X (optional).' },
+            'y': { type: 'float', default: null, description: 'Look-at Y (optional).' },
+            'z': { type: 'float', default: null, description: 'Look-at Z (optional).' }
+        },
+        perform: async function (agent, direction, x, y, z) {
+            const vi = agent.vision_interpreter;
+            if (!vi) return pad('No vision interpreter.');
+            try {
+                if (x != null && y != null && z != null)
+                    return pad(await vi.lookAtPosition(Number(x), Number(y), Number(z)));
+                if (direction) {
+                    const d = String(direction).toLowerCase();
+                    const yawMap = { north: 0, east: Math.PI / 2, south: Math.PI, west: -Math.PI / 2, up: 'up', down: 'down' };
+                    if (!(d in yawMap)) return pad(`Bad direction "${direction}".`);
+                    const bot = agent.bot;
+                    if (d === 'up') await bot.look(bot.entity.yaw, -Math.PI / 2 + 0.05, true);
+                    else if (d === 'down') await bot.look(bot.entity.yaw, Math.PI / 2 - 0.05, true);
+                    else await bot.look(yawMap[d], 0, true);
+                    await new Promise(r => setTimeout(r, 800)); // let the view settle
+                    const camera = await vi._getCamera();
+                    const filename = await camera.capture();
+                    return pad(`Looking ${d}\nImage analysis: "${await vi.analyzeImage(filename)}"`);
+                }
+                return pad('Give a direction or x/y/z (e.g. !cameraTo("north") or !cameraTo(10, 64, -5)).');
+            } catch (e) {
+                return pad(`Camera failed: ${e.message}`);
+            }
+        }
+    },
+    {
+        name: '!terrainScan',
+        description: 'Wide-area block census around you with distance-zone sampling (Discovery surrounding-blocks port: near 5m dense, mid 10m every-2, far every-3). Read-only — use to find biome/feature blocks before walking.',
+        params: {
+            'x': { type: 'int', default: 10, description: 'X radius (default 10, max 24).' },
+            'y': { type: 'int', default: 6, description: 'Y radius (default 6, max 12).' },
+            'z': { type: 'int', default: 10, description: 'Z radius (default 10, max 24).' }
+        },
+        perform: function (agent, x, y, z) {
+            const bot = agent.bot;
+            const xd = Math.max(1, Math.min(24, Number(x) || 10));
+            const yd = Math.max(1, Math.min(12, Number(y) || 6));
+            const zd = Math.max(1, Math.min(24, Number(z) || 10));
+            const p = bot.entity.position.floored();
+            const counts = {};
+            const seen = new Set();
+            const total = (2 * xd + 1) * (2 * yd + 1) * (2 * zd + 1);
+            const zone = total > 8000 ? 'zoned (near-dense, far-sparse)' : 'full';
+            const visit = (dx, dy, dz) => {
+                const key = dx + ',' + dy + ',' + dz;
+                if (seen.has(key)) return;
+                seen.add(key);
+                try {
+                    const b = bot.blockAt(p.offset(dx, dy, dz));
+                    if (b && b.name !== 'air') counts[b.name] = (counts[b.name] || 0) + 1;
+                } catch (_) {}
+            };
+            if (total <= 8000) {
+                for (let dx = -xd; dx <= xd; dx++)
+                    for (let dy = -yd; dy <= yd; dy++)
+                        for (let dz = -zd; dz <= zd; dz++) visit(dx, dy, dz);
+            } else {
+                const n = 5, m = 10;
+                for (let dx = -Math.min(n, xd); dx <= Math.min(n, xd); dx++)
+                    for (let dy = -Math.min(n, yd); dy <= Math.min(n, yd); dy++)
+                        for (let dz = -Math.min(n, zd); dz <= Math.min(n, zd); dz++) visit(dx, dy, dz);
+                for (let dx = -Math.min(m, xd); dx <= Math.min(m, xd); dx += 2)
+                    for (let dy = -Math.min(m, yd); dy <= Math.min(m, yd); dy += 2)
+                        for (let dz = -Math.min(m, zd); dz <= Math.min(m, zd); dz += 2)
+                            if (Math.abs(dx) > n || Math.abs(dy) > n || Math.abs(dz) > n) visit(dx, dy, dz);
+                for (let dx = -xd; dx <= xd; dx += 3)
+                    for (let dy = -yd; dy <= yd; dy += 3)
+                        for (let dz = -zd; dz <= zd; dz += 3)
+                            if (Math.abs(dx) > m || Math.abs(dy) > m || Math.abs(dz) > m) visit(dx, dy, dz);
+            }
+            const rows = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20)
+                .map(([k, v]) => `- ${k}: ~${v}`);
+            return pad(`TERRAIN-SCAN ${xd}x${yd}x${zd} (${zone}, air skipped)\n` + (rows.join('\n') || '- nothing but air'));
+        }
+    },
+    {
+        name: '!recipePlan',
+        description: 'Multi-step craft planner: full ingredient tree for a target item with what you carry, what is missing, and the craft order (Discovery craft-chain port — same detail as !getCraftingPlan, shorter name). Read-only.',
+        params: {
+            'item': { type: 'string', description: 'Target item name.' },
+            'num': { type: 'int', default: 1, description: 'How many to make.' }
+        },
+        perform: function (agent, item, num) {
+            const bot = agent.bot;
+            const target_item = String(item || '').trim();
+            if (!target_item) return pad('Give an item (e.g. !recipePlan("chest", 2)).');
+            const quantity = Number(num) || 1;
+            const curr_inventory = world.getInventoryCounts(bot);
+            let existingCount = curr_inventory[target_item] || 0;
+            let prefixMessage = '';
+            if (existingCount > 0) {
+                curr_inventory[target_item] -= existingCount;
+                prefixMessage = `You already have ${existingCount} ${target_item} in your inventory. If you need to craft more,\n`;
+            }
+            try {
+                let craftingPlan = mc.getDetailedCraftingPlan(target_item, quantity, curr_inventory);
+                craftingPlan = prefixMessage + craftingPlan;
+                return pad(`RECIPE-PLAN ${target_item} x${quantity}\n${craftingPlan}`);
+            } catch (error) {
+                console.error('Error generating crafting plan:', error);
+                return `An error occurred while generating the crafting plan: ${error.message}`;
+            }
+        }
+    },
 ];

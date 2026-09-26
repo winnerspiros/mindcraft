@@ -136,6 +136,19 @@ export class ActionManager {
                 this.agent.reliability?.record(relName, timedout ? 'timeout' : 'success');
             }
 
+            // Discovery's execution-history ring, ported: last 5 action
+            // outcomes (label + ok/fail + short output) for the debugger and
+            // the next plan turn. Cap the text so one chatty action can't bloat
+            // the prompt. Non-fatal — never touches the return path.
+            try {
+                const L = this.agent.learning;
+                if (L && relName) {
+                    L.recent_runs = L.recent_runs || [];
+                    L.recent_runs.push({ label: relName, ok: !timedout, text: String(output || '').slice(0, 200), when: Date.now() });
+                    while (L.recent_runs.length > 5) L.recent_runs.shift();
+                }
+            } catch (_) {}
+
             // if not interrupted and not generating, emit idle event
             if (!interrupted) {
                 this.agent.bot.emit('idle');
@@ -168,6 +181,17 @@ export class ActionManager {
             if (relName && !interrupted) {
                 this.agent.reliability?.record(relName, 'failure');
             }
+
+            // Same execution-history ring for the failure path (Discovery's
+            // debugger reads failures first). Cap text, never touch return.
+            try {
+                const L = this.agent.learning;
+                if (L && relName) {
+                    L.recent_runs = L.recent_runs || [];
+                    L.recent_runs.push({ label: relName, ok: false, text: String(err || '').slice(0, 200), when: Date.now() });
+                    while (L.recent_runs.length > 5) L.recent_runs.shift();
+                }
+            } catch (_) {}
 
             if (!interrupted) {
                 this.agent.bot.emit('idle');
