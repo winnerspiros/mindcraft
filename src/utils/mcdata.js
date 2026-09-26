@@ -9,6 +9,17 @@ import { plugin as autoEat } from 'mineflayer-auto-eat';
 import { plugin as tool } from 'mineflayer-tool';
 import plugin from 'mineflayer-armor-manager';
 const armorManager = plugin;
+// 3rd-party bot plugins (develop): CJS-only packages → createRequire so bun ESM can load them.
+// death-event is ESM (named export deathEventPlugin). statemachine is CJS named exports.
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+import { deathEventPlugin } from 'mineflayer-death-event';
+const tpsInit = require('mineflayer-tps'); // factory: init() -> inject(bot)
+const { GuiPlugin } = require('mineflayer-gui/src/plugin'); // class, NOT a plugin fn — vendor pattern: bot.gui = new GuiPlugin(bot)
+const hawkEyeMod = require('minecrafthawkeye'); // { default: plugin } + utils
+const hawkEyePlugin = hawkEyeMod.default || hawkEyeMod;
+const { plugin: movementPlugin } = require('mineflayer-movement');
+const statemachine = require('mineflayer-statemachine');
 let mc_version = null; // resolved lazily — settings are injected via setSettings() AFTER module imports, so reading settings here always yields undefined
 function resolvedVersion() {
     return settings.minecraft_version || mc_version || '26.3';
@@ -153,6 +164,14 @@ export function initBot(username) {
     bot.loadPlugin(autoEat);
     try { bot.loadPlugin(tool); } catch (_) {} // explicit: collectblock pulls it anyway, but direct calls need it registered first
     bot.loadPlugin(armorManager); // auto equip armor
+
+    // ---- 3rd-party bot plugins (all passive/low-CPU; nothing starts loops by itself) ----
+    try { bot.loadPlugin(deathEventPlugin()); } catch (e) { console.warn('[mcdata] death-event load failed:', e.message); } // 'playerDeath' chat event
+    try { bot.loadPlugin(tpsInit()); } catch (e) { console.warn('[mcdata] tps load failed:', e.message); } // bot.getTps()
+    try { bot.gui = new GuiPlugin(bot); } catch (e) { console.warn('[mcdata] gui attach failed:', e.message); } // vendored GUI query (villager trades): bot.gui.Query()
+    try { bot.loadPlugin(hawkEyePlugin); } catch (e) { console.warn('[mcdata] hawkEye load failed:', e.message); } // bot.hawkEye.oneShot/autoAttack ONLY — NEVER startRadar on 1 OCPU
+    try { bot.loadPlugin(movementPlugin); } catch (e) { console.warn('[mcdata] movement load failed:', e.message); } // bot.movement: short-range follow/strafe ONLY, pathfinder stays primary
+    bot.statemachine = statemachine; // NOT a bot plugin — class lib, used on-demand by !guardMode (never auto-started)
     bot.once('resourcePack', () => {
         bot.acceptResourcePack();
     });
