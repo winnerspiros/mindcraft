@@ -388,7 +388,41 @@ export class Agent {
 		this.respondFunc = respondFunc;
 
         this.bot.on('whisper', (username, message) => respondFunc(username, message, true));
-        
+        // Server/system channel (prismarine-chat, vendored dep of the protocol
+        // stack): join/leave/death/advancement/shout lines never reach 'chat'
+        // but carry things she should react to — rival joins (jealousy/greet),
+        // deaths of people she cares about, her OWN death with the true cause.
+        // agent.js is ESM (imports) — prismarine-chat is CJS, so load it lazily.
+        this.bot.on('messagestr', async (message, _, jsonMsg) => {
+            try {
+                if (!jsonMsg || !jsonMsg.translate) return;
+                const t = String(jsonMsg.translate);
+                // Her own death is handled by the dedicated block below — skip.
+                if (t.startsWith('death') && message.startsWith(this.name)) return;
+                const { createRequire } = await import('module');
+                const require = createRequire(import.meta.url);
+                const Chat = require('prismarine-chat')(this.bot.version || '26.2');
+                const rich = new Chat(jsonMsg);
+                const plain = rich.toString();
+                if (t === 'multiplayer.player.joined') {
+                    const who = (jsonMsg.with && jsonMsg.with[0] && (jsonMsg.with[0].text || jsonMsg.with[0])) || plain;
+                    if (String(who) !== this.name) this.handleMessage('system', `(AUTO) ${who} just joined the server. React the way YOU would — warmth for friends, ice for rivals, curiosity for strangers. 1-2 short lines, in character. No commands unless going to them fits.`);
+                } else if (t === 'multiplayer.player.left') {
+                    const who = (jsonMsg.with && jsonMsg.with[0] && (jsonMsg.with[0].text || jsonMsg.with[0])) || plain;
+                    if (String(who) !== this.name) this.relationship.onIgnore(String(who)); // cold shoulder while gone: attention decays, no grief-spam
+                } else if (t.startsWith('death')) {
+                    // Someone ELSE died — she notices if she cares, gloats at rivals.
+                    this.handleMessage('system', `(AUTO) ${plain} React in character, one short line at most — sympathy for friends, teasing for rivals, silence for strangers (reply with a single '.' if you truly don't care).`);
+                } else if (t.startsWith('chat.type.advancement')) {
+                    this.handleMessage('system', `(AUTO) ${plain} React in character, one short line — praise friends, sulk at rivals passing you.`);
+                } else if (t.startsWith('broadcast') || t.startsWith('chat.type.text') || t === 'chat.type.announcement') {
+                    // /say, /me, announcements: treat like ambient chat, relevance-gated.
+                    const m = plain.replace(/^[<[][^>\]]+[>\]]\s*/, '');
+                    if (m && !m.startsWith(this.name)) this.profiles.onMessage('server', m);
+                }
+            } catch (e) { console.warn('[sysmsg] handle failed:', e.message); }
+        });
+
         this.bot.on('chat', (username, message) => {
             if (serverProxy.getNumOtherAgents() > 0) return;
             // only respond to open chat messages when there are no other agents

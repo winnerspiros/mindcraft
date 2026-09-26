@@ -1770,6 +1770,17 @@ export const actionsList = [
         }, false, 10)
     },
     {
+        name: '!pillar',
+        description: 'Pillar straight UP with cheap blocks (dirt/cobble): jump + place beneath each layer, verified per layer. For roofs, towers, reaching high build layers. Bamboo variant is !scaffold.',
+        params: {
+            'block': { type: 'string', default: 'dirt', description: 'Scaffold block (optional).' },
+            'height': { type: 'string', default: '4', description: 'Blocks up (optional, max 12).' }
+        },
+        perform: runAsAction(async (agent, block, height) => {
+            await skills.pillarUp(agent.bot, block || 'dirt', parseInt(height, 10) || 4);
+        }, false, 10)
+    },
+    {
         name: '!scaffold',
         description: 'Fast-travel UP: bamboo scaffold tower (walk INTO the base to climb like a ladder, jump at top for the rim, break the BOTTOM to pop it all). Falls back to a dirt pillar when bamboo/string run dry.',
         params: {

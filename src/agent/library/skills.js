@@ -3333,6 +3333,40 @@ export async function writeSign(bot, text, blockType='oak_sign') {
     }
 }
 
+export async function pillarUp(bot, blockType, height = 4) {
+    /**
+     * Pillar straight UP by jumping + placing a block beneath (schem review:
+     * ensureDirtAtPosition pattern — dirt-family scaffold, sneak-aware, verify
+     * each layer). The move she needs for roofs, towers, and reaching high
+     * build layers. Places `height` blocks max, stops if a layer fails twice.
+     * (Named pillarUp: scaffoldUp already means the bamboo tower variant.)
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} blockType, scaffold block (dirt/cobble/netherrack — cheap).
+     * @param {number} height, blocks to pillar (default 4, cap 12).
+     * @returns {Promise<number>} layers actually gained.
+     * @example
+     * await skills.pillarUp(bot, "dirt", 6);
+     **/
+    height = Math.max(1, Math.min(12, Math.floor(height || 4)));
+    let gained = 0;
+    for (let i = 0; i < height; i++) {
+        if (bot.interrupt_code) break;
+        const feet = bot.entity.position.floored();
+        const below = bot.blockAt(feet.offset(0, -1, 0));
+        if (!below || below.name === 'air') break; // nothing to stand on — abort
+        let ok = await placeBlock(bot, blockType, feet.x, feet.y, feet.z, 'bottom', true);
+        if (!ok && !bot.interrupt_code) {
+            await new Promise(r => setTimeout(r, 400));
+            ok = await placeBlock(bot, blockType, feet.x, feet.y, feet.z, 'bottom', true);
+        }
+        if (!ok) break;
+        gained++;
+        await new Promise(r => setTimeout(r, 250)); // let the layer register
+    }
+    log(bot, gained ? `Pillared up ${gained} block${gained === 1 ? '' : 's'}.` : 'Could not pillar up — no scaffold blocks or no footing.');
+    return gained;
+}
+
 export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false) {
     /**
      * Place the given block type at the given position. It will build off from any adjacent blocks. Will fail if there is a block in the way or nothing to build off of.
