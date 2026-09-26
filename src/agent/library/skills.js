@@ -2773,16 +2773,22 @@ export async function defendSelf(bot, range=9) {
     while (enemy) {
         bot.armorManager.equipAll(); // keep armor on every fight, don't fight naked
         await equipHighestAttack(bot);
-        if (bot.entity.position.distanceTo(enemy.position) >= 4 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
+        // CROWD-CONTROL kiting (vendored pattern from sampritchard03's fork):
+        // hug range shifts with her state — healthy+fed closes to minRange 3,
+        // hurt/hungry backs to maxRange 10 and lets the bow do the work. The
+        // old code stood at one fixed distance and traded hits with the pack.
+        const hurt = bot.health < 14 || bot.food < 16;
+        const wantRange = hurt ? 10 : 3;
+        const dist = bot.entity.position.distanceTo(enemy.position);
+        if (dist > wantRange + 0.5 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
             try {
                 bot.pathfinder.setMovements(new pf.Movements(bot));
-                await goToGoal(bot, new pf.goals.GoalFollow(enemy, 3.5));
+                await goToGoal(bot, new pf.goals.GoalFollow(enemy, wantRange));
             } catch (err) {/* might error if entity dies, ignore */}
-        }
-        if (bot.entity.position.distanceTo(enemy.position) <= 2) {
+        } else if (dist < wantRange - 0.5) {
             try {
                 bot.pathfinder.setMovements(new pf.Movements(bot));
-                let inverted_goal = new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, 2));
+                let inverted_goal = new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, wantRange));
                 await goToGoal(bot, inverted_goal);
             } catch (err) {/* might error if entity dies, ignore */}
         }
