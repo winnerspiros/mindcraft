@@ -6758,7 +6758,33 @@ export async function goToPlayer(bot, username, distance=3) {
                             await ensureBlocks(bot, mat, h);
                             const gained = await pillarUp(bot, mat, h);
                             if (gained > 0) { log(bot, `Pillared up ${gained} — walking over now.`); }
-                        } else log(bot, `Nothing to pillar with — digging the wall for blocks first.`);
+                        } else {
+                            // NO SCAFFOLD IN PACK (2026-09-27): the wall around her IS the
+                            // material. Dig eye-level wall blocks with the real (now-seeing)
+                            // hands, then pillar on what comes out — same turn, no hoping.
+                            log(bot, `Nothing to pillar with — digging the wall for blocks first.`);
+                            try {
+                                const eye = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+                                const faces = [[1,0],[ -1,0],[0,1],[0,-1]].map(([dx,dz]) => { try { return bot.blockAt(eye.position.offset(dx,0,dz)); } catch (_) { return null; } }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava');
+                                let got = 0;
+                                for (const wb of faces.slice(0, 3)) {
+                                    try { await bot.equip(bot.registry.itemsByName['diamond_pickaxe']?.id ? bot.inventory.items().find(i => i.name.includes('pickaxe'))?.type : null, 'hand').catch(() => {}); } catch (_) {}
+                                    try { await bot.tool.equipForBlock(wb).catch(() => {}); } catch (_) {}
+                                    try { await bot.dig(wb, true, 'raycast').catch(() => bot.dig(wb).catch(() => {})); got++; } catch (_) {}
+                                }
+                                try { await bot.waitForTicks(40); } catch (_) {}
+                                const inv2 = (await import('../../utils/rcon.js')).rconInventory;
+                                const c2 = {};
+                                for (const e of ((await inv2(bot.username)) || [])) c2[e.name] = (c2[e.name] || 0) + e.count;
+                                const mat2 = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (c2[n] || 0) > 0);
+                                if (mat2) {
+                                    log(bot, `Dug the wall, pillaring on ${mat2} now.`);
+                                    await ensureBlocks(bot, mat2, h);
+                                    const g2 = await pillarUp(bot, mat2, h);
+                                    if (g2 > 0) log(bot, `Pillared up ${g2} — walking over now.`);
+                                }
+                            } catch (_) {}
+                        }
                     } catch (_) {}
                 }
                 else if (dy < -3) log(bot, `${username} is ${Math.round(-dy)} down — I need to dig down carefully.`);
