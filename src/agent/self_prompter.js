@@ -114,13 +114,26 @@ export class SelfPrompter {
         // restart the loop constantly (zero [curriculum] lines in 2h). Time
         // since the last critic verdict is restart-proof and interruption-
         // proof — rotation happens on schedule no matter how choppy the loop.
-        const CRITIC_MIN_MS = 8 * 60 * 1000; // judge at most every 8 min
+        // STUCK-FUSE (2026-09-27): 8min let one bad goal eat the whole session
+        // (oak logs 38 blocks through walls, 1h+ of search/no-path/moveAway).
+        // 3min bounds the worst case; no-path streaks trip it sooner (below).
+        const CRITIC_MIN_MS = 3 * 60 * 1000; // judge at most every 3 min
         if (!this._lastCriticRun) this._lastCriticRun = 0;
-        const maybeCritic = async () => {
+        // STUCK-FUSE streak (2026-09-27): consecutive navigation failures
+        // (no-path / stuck / timed-out legs with zero Pos change) force an
+        // early critic verdict instead of waiting for the wall clock.
+        // Threshold scales with patience, not a hardcoded count: a handful of
+        // failed legs in a row means the goal is wrong, not the planner.
+        if (!this._navFails) this._navFails = 0;
+        if (!this._lastNavPos) this._lastNavPos = null;
+        const maybeCritic = async (forced = false) => {
             if (settings.curriculum_enabled === false || settings.critic_enabled === false) return;
             if (this.advancing) return;
             const now = Date.now();
-            if (now - this._lastCriticRun < CRITIC_MIN_MS) return;
+            // streak-forced: repeated navigation failure with no progress means
+            // the GOAL is wrong, not the walk. Jump the queue (still one critic
+            // verdict at a time via the advancing guard).
+            if (!forced && now - this._lastCriticRun < CRITIC_MIN_MS) return;
             this._lastCriticRun = now;
             try {
                 const r = await this.advanceGoal();
@@ -181,6 +194,15 @@ export class SelfPrompter {
                     await maybeCritic();
                 }
             }
+            // STUCK-FUSE streak check: enough failed legs in a row forces
+            // the critic NOW instead of waiting for the wall clock.
+            try {
+                if (this._navFails >= 4) {
+                    console.log(`[stuck-fuse] ${this._navFails} failed nav legs in a row — forcing early critic.`);
+                    this._navFails = 0;
+                    await maybeCritic(true);
+                }
+            } catch (_) {}
             // always pause between self-prompt turns — even a chat-only
             // response must not re-fire instantly (it races the in-flight
             // generation and discards it).
@@ -189,6 +211,17 @@ export class SelfPrompter {
         console.log('self prompt loop stopped')
         this.loop_active = false;
         this.interrupt = false;
+    }
+
+    // Called by navigation verbs after each leg: true = reached, false =
+    // failed (no-path / stuck / timeout). 4 failures in a row with no success
+    // resets-by-progress forces an early critic verdict (see loop above).
+    // Success resets the streak; RCON Pos progress also resets it (below).
+    reportNav(ok) {
+        try {
+            if (ok) this._navFails = 0;
+            else this._navFails = (this._navFails || 0) + 1;
+        } catch (_) {}
     }
 
     // Verify the current goal with the critic, then advance to the next goal via
