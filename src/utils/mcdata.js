@@ -27,6 +27,19 @@ function resolvedVersion() {
 let mcdata = null;
 let Item = null;
 
+// Static-data fallback: registry reads need a logged-in bot (initBot sets
+// mcdata on login), but sourcing/planning questions are asked headless too
+// (tests, brain prompts before spawn). Lazily load 1.21.4 static data so
+// recipe/drop/source lookups answer without a connection; initBot's live
+// version replaces it on login.
+function ensureStaticData() {
+    if (mcdata) return mcdata;
+    try {
+        mcdata = minecraftData('1.21.4');
+    } catch (_) {}
+    return mcdata;
+}
+
 /**
  * @typedef {string} ItemName
  * @typedef {string} BlockName
@@ -214,7 +227,9 @@ export function mustCollectManually(blockName) {
 }
 
 export function getItemId(itemName) {
-    let item = mcdata.itemsByName[itemName];
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let item = md.itemsByName[itemName];
     if (item) {
         return item.id;
     }
@@ -222,7 +237,9 @@ export function getItemId(itemName) {
 }
 
 export function getItemName(itemId) {
-    let item = mcdata.items[itemId]
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let item = md.items[itemId]
     if (item) {
         return item.name;
     }
@@ -230,7 +247,9 @@ export function getItemName(itemId) {
 }
 
 export function getBlockId(blockName) {
-    let block = mcdata.blocksByName[blockName];
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let block = md.blocksByName[blockName];
     if (block) {
         return block.id;
     }
@@ -238,7 +257,9 @@ export function getBlockId(blockName) {
 }
 
 export function getBlockName(blockId) {
-    let block = mcdata.blocks[blockId]
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let block = md.blocks[blockId]
     if (block) {
         return block.name;
     }
@@ -246,7 +267,9 @@ export function getBlockName(blockId) {
 }
 
 export function getEntityId(entityName) {
-    let entity = mcdata.entitiesByName[entityName];
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let entity = md.entitiesByName[entityName];
     if (entity) {
         return entity.id;
     }
@@ -298,9 +321,11 @@ export function getAllItems(ignore) {
     if (!ignore) {
         ignore = [];
     }
+    const md = mcdata || ensureStaticData();
+    if (!md) return [];
     let items = []
-    for (const itemId in mcdata.items) {
-        const item = mcdata.items[itemId];
+    for (const itemId in md.items) {
+        const item = md.items[itemId];
         if (!ignore.includes(item.name)) {
             items.push(item);
         }
@@ -321,9 +346,11 @@ export function getAllBlocks(ignore) {
     if (!ignore) {
         ignore = [];
     }
+    const md = mcdata || ensureStaticData();
+    if (!md) return [];
     let blocks = []
-    for (const blockId in mcdata.blocks) {
-        const block = mcdata.blocks[blockId];
+    for (const blockId in md.blocks) {
+        const block = md.blocks[blockId];
         if (!ignore.includes(block.name)) {
             blocks.push(block);
         }
@@ -341,17 +368,19 @@ export function getAllBlockIds(ignore) {
 }
 
 export function getAllBiomes() {
-    return mcdata.biomes;
+    const md = mcdata || ensureStaticData();
+    return md ? md.biomes : null;
 }
 
 export function getItemCraftingRecipes(itemName) {
     let itemId = getItemId(itemName);
-    if (!mcdata.recipes[itemId]) {
+    const md = mcdata || ensureStaticData();
+    if (itemId == null || !md || !md.recipes[itemId]) {
         return null;
     }
 
     let recipes = [];
-    for (let r of mcdata.recipes[itemId]) {
+    for (let r of md.recipes[itemId]) {
         let recipe = {};
         let ingredients = [];
         if (r.ingredients) {
@@ -528,8 +557,88 @@ export function getItemVillagerTrade(itemName) {
 }
 export const VILLAGER_TRADE_KEYS = new Set(Object.keys(VILLAGER_TRADES));
 
+// Mob drops: minecraft-data has NO entity-drop table (entitiesByName carries
+// no drops), so this is hand-maintained: item -> mobs that drop it. This is
+// the mob-drop half of the craftable-vs-drop split — recipes answer "craft",
+// block.drops answers "mine", this answers "hunt". Values are arrays; 'egg'
+// is laid-not-dropped (see LAID_ITEMS below).
+const MOB_DROPS = {
+    rotten_flesh: ['zombie', 'drowned', 'husk', 'zombified_piglin', 'zoglin'],
+    bone: ['skeleton', 'wither_skeleton', 'stray', 'bogged'],
+    arrow: ['skeleton', 'stray', 'bogged', 'pillager'],
+    string: ['spider', 'cave_spider'],
+    spider_eye: ['spider', 'cave_spider', 'witch'],
+    gunpowder: ['creeper', 'ghast', 'witch'],
+    slimeball: ['slime', 'panda'],
+    magma_cream: ['magma_cube'],
+    blaze_rod: ['blaze'],
+    ender_pearl: ['enderman'],
+    ghast_tear: ['ghast'],
+    phantom_membrane: ['phantom'],
+    leather: ['cow', 'horse', 'donkey', 'mule', 'llama', 'hoglin'],
+    feather: ['chicken', 'parrot'],
+    rabbit_hide: ['rabbit'],
+    wool: ['sheep'],
+    raw_beef: ['cow'], raw_porkchop: ['pig', 'hoglin'], raw_chicken: ['chicken'],
+    raw_mutton: ['sheep'], raw_rabbit: ['rabbit'],
+    raw_cod: ['cod'], raw_salmon: ['salmon'], tropical_fish: ['tropical_fish'],
+    pufferfish: ['pufferfish'],
+    ink_sac: ['squid'], glow_ink_sac: ['glow_squid'],
+    prismarine_shard: ['guardian'], prismarine_crystals: ['guardian', 'elder_guardian'],
+    wither_skeleton_skull: ['wither_skeleton'],
+    nether_star: ['wither'],
+    shulker_shell: ['shulker'],
+    totem_of_undying: ['evoker'],
+    emerald: ['vindicator', 'evoker', 'pillager'],
+    saddle: ['ravager'],
+    turtle_scute: ['turtle'], armadillo_scute: ['armadillo'],
+    nautilus_shell: ['drowned'],
+    breeze_rod: ['breeze'], wind_charge: ['breeze'],
+    egg: ['chicken'],
+    honeycomb: ['bee'],
+};
+export function getItemMobDrops(itemName) {
+    const m = MOB_DROPS[String(itemName || '').toLowerCase()];
+    return m ? [...m] : null;
+}
+export const MOB_DROP_KEYS = new Set(Object.keys(MOB_DROPS));
+// Laid/grown, not dropped — hunting the source REDUCES supply. Gather by
+// waiting near the mob, never by killing it.
+const LAID_ITEMS = new Set(['egg']);
+export function isLaidItem(itemName) {
+    return LAID_ITEMS.has(String(itemName || '').toLowerCase());
+}
+
+/**
+ * Source-kind split: exactly one of craft | smelt | mine | hunt | laid |
+ * trade | loot | unknown. The brain calls this (not a pile of maybes) to
+ * decide HOW to get an item: craft/smelt/mine = gather path, hunt = kill
+ * the named mob, laid = wait near the mob, trade/loot = no gather path.
+ */
+export function getItemSourceKind(itemName) {
+    const n = String(itemName || '').toLowerCase();
+    if (!n) return 'unknown';
+    // Order: laid/loot/trade disambiguate BEFORE data lookups; hunt (mob-drop
+    // table) before craft (an item with both a drop and a recipe, e.g. arrows,
+    // is faster hunted than crafted); smelt before craft (raw_iron smelts —
+    // its furnace recipe must not read as 'craft'); mine before animal/trade
+    // fallbacks.
+    if (isLaidItem(n)) return 'laid';
+    if (getItemLootOnly(n)) return 'loot';
+    if (getItemVillagerTrade(n)) return 'trade';
+    const mobs = getItemMobDrops(n);
+    if (mobs) return 'hunt';
+    try { if (getItemSmeltingIngredient(n)) return 'smelt'; } catch (_) {}
+    try {
+        const id = getItemId(n);
+        if (id != null && mcdata.recipes && mcdata.recipes[id]) return 'craft';
+    } catch (_) {}
+    try { if ((getItemBlockSources(n) || []).length) return 'mine'; } catch (_) {}
+    if (getItemAnimalSource(n)) return 'hunt';
+    return 'unknown';
+}
+
 // Loot-only / boss-gated items: no recipe, no mob drop, no villager sells them.
-// minecraft-data can't tell us this (it only knows drops + recipes), so this is
 // a hand-maintained set: full Netherite gear, trims, music discs, boss drops,
 // smithing templates, and structure-exclusive loot.
 const LOOT_ONLY = new Set([
@@ -563,7 +672,9 @@ export function getItemLootOnly(itemName) {
 export const LOOT_ONLY_KEYS = LOOT_ONLY;
 
 export function getBlockTool(blockName) {
-    let block = mcdata.blocksByName[blockName];
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let block = md.blocksByName[blockName];
     if (!block || !block.harvestTools) {
         return null;
     }
@@ -574,7 +685,9 @@ export function getBlockTool(blockName) {
 // "do I have something that can gather this?" rather than "do I have the wooden
 // version specifically".
 export function getBlockHarvestTools(blockName) {
-    let block = mcdata.blocksByName[blockName];
+    const md = mcdata || ensureStaticData();
+    if (!md) return null;
+    let block = md.blocksByName[blockName];
     if (!block || !block.harvestTools) {
         return null;
     }

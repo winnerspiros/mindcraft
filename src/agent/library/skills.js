@@ -1276,6 +1276,28 @@ export async function acquireBlocks(bot, blockType, count, _depth = 0) {
     }
 
     // Not craftable — collect it directly from the world.
+    // Mob-drop check FIRST (craftable-vs-drop split): minecraft-data recipes
+    // can't tell her a gunpowder has no recipe — without this she would try
+    // to craft it and fail. Hunt the named mob via attackNearest instead.
+    try {
+        const mobs = mc.getItemMobDrops ? mc.getItemMobDrops(blockType) : null;
+        const laid = mc.isLaidItem ? mc.isLaidItem(blockType) : false;
+        if (mobs && mobs.length && !laid) {
+            for (const mob of mobs.slice(0, 2)) {
+                if (bot.interrupt_code) break;
+                await attackNearest(bot, mob, true);
+                have = haveCount();
+                if (have >= count) return have;
+            }
+            if (have >= count) return have;
+            log(bot, `Hunted ${mobs.slice(0, 2).join('/')} for ${blockType} (have ${have}, need ${count}).`);
+            return have;
+        }
+        if (laid) {
+            log(bot, `${blockType} is laid by ${mobs[0]}s — waiting near them gathers it, hunting destroys the supply.`);
+            return have;
+        }
+    } catch (_) {}
     await collectBlock(bot, blockType, count - have);
     return haveCount();
 }
@@ -8639,6 +8661,12 @@ export async function sourcingReport(bot, rawName) {
     }
     const animal = safe(() => mc.getItemAnimalSource(name));
     if (animal) chains.push(`from ${animal}s (breed or hunt)`);
+    const mobs = safe(() => (mc.getItemMobDrops ? mc.getItemMobDrops(name) : null));
+    if (mobs && mobs.length) {
+        const laid = safe(() => (mc.isLaidItem ? mc.isLaidItem(name) : false));
+        if (laid) chains.push(`laid by ${mobs[0]}s — wait near them, never hunt them`);
+        else chains.push(`hunt ${mobs.slice(0, 3).join(' / ')}`);
+    }
     const trade = safe(() => mc.getItemVillagerTrade(name));
     if (trade) chains.push(`trade: ${trade.profession} villager (${trade.price})`);
     const loot = safe(() => mc.getItemLootOnly(name));

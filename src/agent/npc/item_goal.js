@@ -240,6 +240,17 @@ class ItemWrapper {
         if (animal_source) {
             this.add_method(new ItemNode(this.manager, this, this.name).setHuntable(animal_source));
         }
+
+        // Mob-drop sources (mcdata MOB_DROPS — minecraft-data has no entity-drop
+        // table, so this is the hunt half of the craftable-vs-drop split).
+        // Laid items (egg) are EXCLUDED — hunting chickens for eggs is backwards.
+        let mob_sources = null;
+        try { mob_sources = mc.getItemMobDrops ? mc.getItemMobDrops(this.name) : null; } catch (_) {}
+        if (mob_sources && mob_sources.length && !(mc.isLaidItem && mc.isLaidItem(this.name))) {
+            for (let mob of mob_sources.slice(0, 3)) {
+                this.add_method(new ItemNode(this.manager, this, this.name).setHuntable(mob));
+            }
+        }
     }
 
     containsCircularDependency() {
