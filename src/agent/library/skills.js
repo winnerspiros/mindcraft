@@ -4018,13 +4018,16 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     // ONE re-approach, not 12 blind steps: if the walk leg stopped
                     // short, re-goal closer (GoalNear radius 2 = dig-adjacent),
                     // then a single 2s nudge. One verdict per block after that.
-                    if (_closestDist(block.position) > 4.5 && !bot.interrupt_code) {
+                    // PANDA/LAC (2026-09-27): breaks past ~3.4 eye-center get
+                    // cancelled server-side ("cannot see block" x518 + LAC reach
+                    // flags), so gate CLOSE (2.8 closest-face) — touch the wall.
+                    if (_closestDist(block.position) > 2.8 && !bot.interrupt_code) {
                         try {
                             const close = new pf.goals.GoalNear(block.position.x, block.position.y, block.position.z, 2);
                             close._pathTimeout = 5000;
                             await goToGoal(bot, close);
                         } catch (_) {}
-                        if (_closestDist(block.position) > 4.5 && !bot.interrupt_code) {
+                        if (_closestDist(block.position) > 2.8 && !bot.interrupt_code) {
                             try {
                                 const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
                                 bot.setControlState('forward', true);
@@ -4043,7 +4046,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // measure (Botcraft): skip only when the nearest face is past
                 // 5.5, not the center.
                 try {
-                    if (_closestDist(block.position) > 5.5) {
+                    if (_closestDist(block.position) > 3.4) {
                         // ADJACENT FALLBACK (2026-09-27): the target is past reach
                         // (usually: pathfinder stopped short in a pit). Before
                         // skipping to a far twin, try the nearest diggable wall
@@ -4057,7 +4060,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                                 try { b = bot.blockAt(eye.clone().offset(dx, dy, dz)); } catch (_) {}
                                 if (!b || b.name === 'air' || b.name === 'water' || b.name === 'lava' || b.name === 'bedrock') continue;
                                 const dd = Math.hypot((b.position.x+0.5)-eye.x, (b.position.y+0.5)-eye.y, (b.position.z+0.5)-eye.z);
-                                if (dd > 5.5) continue;
+                                if (dd > 3.4) continue;
                                 cands.push({ b, same: b.name === block.name, d: dd });
                             }
                             cands.sort((a, b2) => (b2.same - a.same) || (a.d - b2.d));
@@ -4080,9 +4083,37 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // first) and cancels the break. A pre-aim at the closest
                 // point sets her view to a visible face; dig's own lookAt
                 // then only micro-adjusts.
+                // VERIFIED FACING (2026-09-27): Panda canBreak raycasts eye->
+                // target on the SERVER from her look vector; corner pre-aims aim
+                // AWAY from center so the server ray hits a neighbor first. Aim
+                // at center, raycast-verify from live eye, micro-step until the
+                // ray actually lands on this block (max 3 tries), else bail to
+                // the adjacent fallback instead of feeding Panda cancels.
                 try {
-                    const facePt = _digFace(block.position);
-                    if (facePt) { try { await bot.lookAt(facePt, true); } catch (_) {} }
+                    let _aimOk = false;
+                    for (let _a = 0; _a < 4 && !_aimOk && !bot.interrupt_code; _a++) {
+                        try { await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
+                        await new Promise(r => setTimeout(r, 250));
+                        try {
+                            const _ray = bot.blockAtEntityCursor(bot.entity, 4.5);
+                            if (_ray && _ray.position && _ray.position.equals(block.position)) _aimOk = true;
+                            else if (_a < 2) {
+                                // step toward the block, re-aim next loop
+                                const _dx = (block.position.x + 0.5) - bot.entity.position.x;
+                                const _dz = (block.position.z + 0.5) - bot.entity.position.z;
+                                bot.setControlState('forward', true);
+                                try { await bot.look(Math.atan2(-_dx, -_dz), 0); } catch (_) {}
+                                await new Promise(r => setTimeout(r, 600));
+                                try { bot.setControlState('forward', false); } catch (_) {}
+                            }
+                        } catch (_) { break; }
+                    }
+                    if (!_aimOk) {
+                        try {
+                            const _fb = bot.blockAtEntityCursor(bot.entity, 4.5);
+                            if (_fb && _fb.position && !_fb.position.equals(block.position)) block = _fb;
+                        } catch (_) {}
+                    }
                 } catch (_) {}
                 // BOTCRAFT PORT (expected-time dig: Botcraft DigTask computes
                 // client-side mining time and sends FinishDigging AFTER it
@@ -4218,26 +4249,27 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
     if (bot.interrupt_code) return false; // 26.3: never start work while stopping
     let block = bot.blockAt(Vec3(x, y, z));
     if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
-        if (bot.entity.position.distanceTo(block.position) > 4.5) {
+        if (bot.entity.position.distanceTo(block.position) > 3.0) {
             let pos = block.position;
             let movements = moveProfile(bot, 'sprint');
             movements.canPlaceOn = false;
             movements.allow1by1towers = false;
             bot.pathfinder.setMovements(movements);
-            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4), navTimeoutMs);
+            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 2), navTimeoutMs);
             // Same walk-to-dig close-up as collectBlock: the planner stops at
             // path-end which can still be out of eye reach — step in direct.
             try {
+                // PANDA-CLOSE (2026-09-27): eye-center past ~3.4 gets cancelled
+                // ("cannot see block"). One GoalNear-2 already ran above; this
+                // is a single short nudge, not a 12-step grind.
                 const eyeOf = () => bot.entity.position.offset(0, 1.62, 0);
                 const ctr = block.position.offset(0.5, 0.5, 0.5);
-                let tries = 0;
-                while (eyeOf().distanceTo(ctr) > 4.5 && tries < 12 && !bot.interrupt_code) {
-                    tries++;
+                if (eyeOf().distanceTo(ctr) > 2.8 && !bot.interrupt_code) {
                     try {
                         const dx = ctr.x - bot.entity.position.x, dz = ctr.z - bot.entity.position.z;
                         bot.setControlState('forward', true);
                         try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
-                        await new Promise(r => setTimeout(r, 500));
+                        await new Promise(r => setTimeout(r, 1500));
                     } finally {
                         try { bot.setControlState('forward', false); } catch (_) {}
                     }
@@ -4352,6 +4384,20 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         // any identity change on re-read after the dig means the break
         // landed, even if the pre-read name now reads differently.)
         // On timeout stop digging and report failure so the brain moves on.
+        // VERIFIED FACING (2026-09-27, same Panda rule as collectBlock): aim
+        // center, confirm the client ray lands on THIS block, else adopt what
+        // the ray actually hits instead of feeding cancels.
+        try {
+            await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+            await new Promise(r => setTimeout(r, 250));
+            try {
+                const _ray = bot.blockAtEntityCursor(bot.entity, 4.5);
+                if (_ray && _ray.position && !_ray.position.equals(block.position)) {
+                    const _alt = bot.blockAt(_ray.position);
+                    if (_alt && _alt.name !== 'air' && _alt.name !== 'water' && _alt.name !== 'lava') block = _alt;
+                }
+            } catch (_) {}
+        } catch (_) {}
         const _beforeName = block.name;
         try {
             await Promise.race([
@@ -7842,10 +7888,10 @@ export async function tillAndSow(bot, x, y, z, seedType=null) {
         }
     }
     // if distance is too far, move to the block
-    if (bot.entity.position.distanceTo(block.position) > 4.5) {
+    if (bot.entity.position.distanceTo(block.position) > 3.0) {
         let pos = block.position;
         bot.pathfinder.setMovements(new pf.Movements(bot));
-        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 2));
     }
     if (block.name !== 'farmland') {
         let hoe = bot.inventory.items().find(item => item.name.includes('hoe'));
@@ -7908,10 +7954,10 @@ export async function activateNearestBlock(bot, type) {
         log(bot, `Could not find any ${type} to activate.`);
         return false;
     }
-    if (bot.entity.position.distanceTo(block.position) > 4.5) {
+    if (bot.entity.position.distanceTo(block.position) > 3.0) {
         let pos = block.position;
         bot.pathfinder.setMovements(new pf.Movements(bot));
-        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 2));
     }
     await bot.activateBlock(block);
     log(bot, `Activated ${type} at x:${block.position.x.toFixed(1)}, y:${block.position.y.toFixed(1)}, z:${block.position.z.toFixed(1)}.`);
