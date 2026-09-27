@@ -163,7 +163,47 @@ const modes_list = [
         max_stuck_time: 20,
         prev_dig_block: null,
         update: async function (agent) {
-            if (agent.isIdle()) { 
+            if (agent.isIdle()) {
+                // IDLE-STILL WATCH (2026-09-27): the old code reset here, so an
+                // idle bot in a hole never accrued stuck_time and the rescue
+                // below never fired. Track stillness separately: unmoved for a
+                // full window while idle = dig out (eye-level wall, max 3).
+                try {
+                    const bp0 = agent.bot.entity.position;
+                    if (this._idlePrev && this._idlePrev.distanceTo(bp0) < 1.0) {
+                        this._idleStill = (this._idleStill || 0) + 1;
+                    } else {
+                        this._idlePrev = bp0.clone();
+                        this._idleStill = 0;
+                    }
+                    // update() ticks fast; ~20s of stillness trips it. Cooldown
+                    // after each rescue so she digs 3, re-plans, digs 3 more.
+                    if ((this._idleStill || 0) >= 40 && Date.now() - (this._idleRescueAt || 0) > 60000) {
+                        this._idleStill = 0;
+                        this._idleRescueAt = Date.now();
+                        const bot = agent.bot;
+                        execute(this, agent, async () => {
+                            try {
+                                const fp = bot.entity.position.floored();
+                                const cands = [[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dz]) => {
+                                    try { return bot.blockAt(fp.offset(dx, 1, dz)); } catch { return null; }
+                                }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava'
+                                    && !/bedrock|obsidian|command|barrier|portal|chest|furnace|crafting_table|ore|diamond|gold|iron|lapis|redstone|emerald|coal/.test(b.name));
+                                const cheap = (b) => /dirt|grass_block|sand|gravel/.test(b.name) ? 0 : /cobblestone|stone|deepslate|netherrack/.test(b.name) ? 1 : 2;
+                                cands.sort((a,b) => cheap(a) - cheap(b));
+                                let freed = 0;
+                                for (const b of cands.slice(0, 3)) {
+                                    if (bot.interrupt_code) break;
+                                    try {
+                                        const ok = await skills.breakBlockAt(bot, b.position.x, b.position.y, b.position.z, 15000);
+                                        if (ok) freed++;
+                                    } catch (_) {}
+                                }
+                                if (freed > 0) say(agent, `Dug ${freed} block${freed === 1 ? '' : 's'} to get out~`);
+                            } catch (e) { /* rescue is best-effort, never fatal */ }
+                        });
+                    }
+                } catch (_) {}
                 this.prev_location = null;
                 this.stuck_time = 0;
                 return; // don't get stuck when idle
@@ -197,7 +237,8 @@ const modes_list = [
             if (this.stuck_time > max_stuck_time) {
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
-                // 26.3: OBSERVE-ONLY. The old fire-and-forget free-sequence
+                // 26.3: OBSERVE-ONLY while an action runs (idle rescue lives
+                // in the idle branch above). The old fire-and-forget free-sequence
                 // drove pathfinder+dig CONCURRENTLY with the running action —
                 // every 20s it hijacked the goal and aborted the action's dig
                 // (log proof 06:0x: 'free-sequence failed: Digging aborted' on
