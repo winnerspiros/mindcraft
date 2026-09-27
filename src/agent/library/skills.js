@@ -1,7 +1,7 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from './world.js';
 import { canOp } from '../../utils/server_context.js';
-import { rconPlayerPos, rconCommand } from '../../utils/rcon.js';
+import { rconPlayerPos, rconCommand, rconInventory, rconItemCount } from '../../utils/rcon.js';
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
@@ -1009,7 +1009,8 @@ export async function speedBridge(bot, block = null, length = 8) {
         const inv = world.getInventoryCounts(bot);
         mat = ['cobblestone', 'dirt', 'oak_planks', 'stone', 'deepslate'].find(m => (inv[m] || 0) >= length) || 'dirt';
     }
-    const have = await acquireBlocks(bot, mat, length);
+    await ensureBlocks(bot, mat, length);
+    const have = world.getInventoryCounts(bot)[mat] || 0;
     if (have < 2) { log(bot, `Only ${have} ${mat} — need ${length} to bridge.`); return false; }
     // face AWAY from build dir: walk backwards, sneak locked the whole run
     try {
@@ -1298,7 +1299,43 @@ export async function acquireBlocks(bot, blockType, count, _depth = 0) {
             return have;
         }
     } catch (_) {}
+
     await collectBlock(bot, blockType, count - have);
+    return haveCount();
+}
+
+// Blocks-on-hand guard (2026-09-27): every place-heavy verb calls this first.
+// Client items() is blind on 26.3, so the count merges client truth + RCON
+// server truth (max wins — neither reader sees the full picture alone). When
+// short, she FETCHES the gap survival-style (dig dirt/cobble nearby via
+// acquireBlocks) instead of stalling on 'no blocks'. Returns the count now
+// held (client-visible). Never hardcodes amounts — caller passes need.
+export async function ensureBlocks(bot, blockType, count) {
+    count = Math.max(1, Math.floor(count));
+    const haveCount = () => world.getInventoryCounts(bot)[blockType] || 0;
+    let have = haveCount();
+    if (have >= count) return have;
+    // server truth may hold more than the blind client sees
+    let serverHave = 0;
+    try { serverHave = await rconItemCount(bot.username, blockType); } catch (_) {}
+    if (serverHave >= count) return have; // placeBlock's re-sync path handles the equip
+    const gap = count - Math.max(have, 0);
+    log(bot, `Short on ${blockType} (holding ${have}) — fetching ${gap} more first.`);
+    try { await acquireBlocks(bot, blockType, gap); } catch (_) {}
+    have = haveCount();
+    if (have < count) {
+        // fallback chain for generic scaffold: any cheap solid she CAN get
+        const fallbacks = ['dirt', 'cobblestone', 'oak_planks', 'stone', 'deepslate', 'sand', 'gravel'];
+        for (const fb of fallbacks) {
+            if (fb === blockType) continue;
+            if (haveCount() >= count || (world.getInventoryCounts(bot)[fb] || 0) >= count) break;
+            try { await acquireBlocks(bot, fb, count); } catch (_) {}
+            if ((world.getInventoryCounts(bot)[fb] || 0) >= count) {
+                log(bot, `Using ${fb} instead (couldn't fetch enough ${blockType}).`);
+                break;
+            }
+        }
+    }
     return haveCount();
 }
 
@@ -4348,9 +4385,34 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         await bot.creative.setInventorySlot(36, mc.makeItem(item_name, 1)); // 36 is first hotbar slot
         block_item = bot.inventory.findInventoryItem(item_name);
     }
+    // RCON-TRUTH FALLBACK (2026-09-27): client items() is blind on 26.3 (Slot
+    // decode bug) — an empty client read is never proof of empty hands. When
+    // the client sees nothing, ask the server: if IT holds the item, equip by
+    // server-known slot via a client re-sync attempt first, else report the
+    // server count so the brain knows the truth instead of a false refusal.
     if (!block_item) {
-        log(bot, `Don't have any ${item_name} to place.`);
-        return false;
+        let serverCount = 0;
+        try { serverCount = await rconItemCount(bot.username, item_name); } catch (_) {}
+        if (serverCount > 0) {
+            // server holds it, client can't see it: nudge a re-sync (window
+            // click on own inventory slot forces a set_slot round-trip), then
+            // re-check once before giving up for this call.
+            try { await bot.clickWindow(0, 0, 0).catch(() => {}); } catch (_) {}
+            try {
+                await new Promise(r => setTimeout(r, 500));
+                block_item = bot.inventory.findInventoryItem(item_name);
+            } catch (_) {}
+            if (!block_item) {
+                log(bot, `Server holds ${serverCount}x ${item_name} but I can't see it (client inventory blind) — retrying after re-sync, else fetch/gather more.`);
+                return false;
+            }
+        } else {
+            // server truth: genuinely none carried (or RCON unreachable) — and
+            // the one case that matters: nothing to build with means GO GET
+            // SOME. Surface the need so the brain fetches instead of stalling.
+            log(bot, `Don't have any ${item_name} to place.`);
+            return false;
+        }
     }
 
     const targetBlock = bot.blockAt(target_dest);
