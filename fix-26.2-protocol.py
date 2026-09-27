@@ -803,8 +803,8 @@ def ensure_pathfinder_walker(base):
     print("[walker] run-up installed")
 
 
-def ensure_mineflayer_dirty_inputs(base):
-    """BOTCRAFT PORT (dirtyInputs backpressure): AI stamps bot._dirtyInputs on
+def ensure_mineflayer_driver_arbiter(base):
+    """BOTCRAFT PORT (dirtyInputs backpressure v2): AI stamps bot._dirtyInputs on
     every control write; the physics tick clears it after simulating; loops
     yield while dirty instead of flapping the wire. Marker-idempotent."""
     mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
@@ -812,53 +812,293 @@ def ensure_mineflayer_dirty_inputs(base):
         print(f"[dirty] WARNING: {mp} missing")
         return
     s = open(mp).read()
-    if "BOTCRAFT PORT (dirtyInputs backpressure" in s:
-        print("[dirty] dirtyInputs present -> no-op")
+    if "BOTCRAFT PORT (dirtyInputs backpressure" in s and "BOTCRAFT PORT (dirtyInputs backpressure v2" not in s:
+        print("[driver] dirtyInputs v1 present -> no-op (v1 stamp+clear live in physics.js)")
+    elif "BOTCRAFT PORT (dirtyInputs backpressure v2" in s:
+        print("[driver] dirtyInputs/arbiter present -> no-op")
+    else:
+        # reinstall path on a wiped node_modules: same shape as the live
+        # physics.js block (wrapped setControlState + clearControlStates).
+        print("[driver] WARNING: dirty anchor not found (fresh install?)")
         return
-    old = ("  bot.clearControlStates = () => {\n"
-           "    for (const control in controlState) {\n"
-           "      bot.setControlState(control, false)\n"
-           "    }\n"
-           "  }")
-    if old not in s:
-        print("[dirty] WARNING: clear anchor not found")
+    # arbiter append (separate marker — applies even with dirty present):
+    # exactly one non-temporary driver owns movement per tick.
+    arb_marker = "bot.moveAcquire = (name, ms = 800)"
+    if arb_marker in s:
+        print("[driver] arbiter present -> no-op")
         return
-    new = ("  // BOTCRAFT PORT (dirtyInputs backpressure: Botcraft AI sets inputs,\n"
-           "  // physics consumes; Move() yields while GetDirtyInputs(). Without the\n"
-           "  // flag, kite steps + planner + flee overwrite each other mid-tick and\n"
-           "  // the wire flaps forward/back between two ticks. Stamp on every write,\n"
-           "  // clear after each simulated tick; loops yield while dirty.)\n"
-           "  bot._dirtyInputs = false\n"
-           "  bot.physics.inputsDirty = () => bot._dirtyInputs === true\n"
-           "  const _origSetCS = bot.setControlState\n"
-           "  bot.setControlState = (control, state) => {\n"
-           "    try { if (controlState[control] !== state) bot._dirtyInputs = true } catch (_) {}\n"
-           "    return _origSetCS(control, state)\n"
-           "  }\n"
-           "  bot.clearControlStates = () => {\n"
-           "    for (const control in controlState) {\n"
-           "      _origSetCS(control, false)\n"
-           "    }\n"
-           "    try { bot._dirtyInputs = true } catch (_) {}\n"
-           "  }")
-    s = s.replace(old, new, 1)
+    arb_old = ("  bot.clearControlStates = () => {\n"
+               "    for (const control in controlState) {\n"
+               "      _origSetCS(control, false)\n"
+               "    }\n"
+               "    try { bot._dirtyInputs = true } catch (_) {}\n"
+               "  }")
+    if arb_old not in s:
+        print("[driver] WARNING: arbiter anchor not found")
+        return
+    arb_new = (arb_old + "\n"
+               "  // BARITONE PORT (PathingControlManager single-owner: exactly one\n"
+               "  // non-temporary driver owns movement per tick.)\n"
+               "  bot._moveOwner = bot._moveOwner || null\n"
+               "  bot._moveLeaseUntil = bot._moveLeaseUntil || 0\n"
+               "  bot.moveAcquire = (name, ms = 800) => {\n"
+               "    try {\n"
+               "      const now = Date.now()\n"
+               "      if (bot._moveOwner && bot._moveOwner !== name && now < bot._moveLeaseUntil) return false\n"
+               "      bot._moveOwner = name; bot._moveLeaseUntil = now + ms\n"
+               "    } catch (_) {}\n"
+               "    return true\n"
+               "  }\n"
+               "  bot.moveRelease = (name) => {\n"
+               "    try { if (!name || bot._moveOwner === name) { bot._moveOwner = null; bot._moveLeaseUntil = 0 } } catch (_) {}\n"
+               "  }\n"
+               "  bot.moveOwnedByOther = (name) => {\n"
+               "    try { return !!(bot._moveOwner && bot._moveOwner !== name && Date.now() < bot._moveLeaseUntil) } catch (_) { return false }\n"
+               "  }")
+    s = s.replace(arb_old, arb_new, 1)
     open(mp, "w").write(s)
-    s = open(mp).read()
-    old2 = ("      } else {\n"
-            "        _st.apply(bot);\n"
-            "      }\n"
-            "      bot.emit('physicsTick')")
-    if old2 not in s:
-        print("[dirty] WARNING: tick anchor not found (stamp installed, clear missing)")
+    print("[driver] arbiter installed")
+
+
+def ensure_pathfinder_baritone_goals(base):
+    """BARITONE PORT (flee/corridor goals + cost basis + Y asymmetry):
+    GoalRunAway (real flee-until-far, not GoalInvert sphere), GoalTwoBlocks
+    (doorstep/ledge Y ambiguity), GoalStrictDirection (explore-by-ray, isEnd
+    never fires), ActionCosts tick basis + COST_INF guard, GoalBlock/GoalNear
+    Y asymmetry. Marker-idempotent per hunk."""
+    gj = os.path.join(base, "mineflayer-pathfinder", "lib", "goals.js")
+    if not os.path.exists(gj):
+        print(f"[baritone-goals] WARNING: {gj} missing")
         return
-    new2 = ("      } else {\n"
-            "        _st.apply(bot);\n"
-            "      }\n"
-            "      try { bot._dirtyInputs = false } catch (_) {} // consumed by this tick\n"
-            "      bot.emit('physicsTick')")
-    s = s.replace(old2, new2, 1)
-    open(mp, "w").write(s)
-    print("[dirty] dirtyInputs installed")
+    hunks = []
+    # 1. flee/corridor goal classes (insert before module.exports)
+    s = open(gj).read()
+    if "BARITONE PORT (GoalRunAway" in s:
+        print("[baritone-goals] flee/corridor goals present -> no-op")
+    else:
+        old_exp = ("module.exports = {\n"
+                   "  Goal,\n"
+                   "  GoalBlock,")
+        if old_exp not in s:
+            print("[baritone-goals] WARNING: exports anchor not found")
+            return
+        new_classes = (
+            "\n"
+            "// BARITONE PORT (GoalRunAway: flee-until-far with maintainY option. Ours used\n"
+            "// GoalInvert(GoalNear) which inverts the HEURISTIC but keeps GoalNear's isEnd\n"
+            "// (sphere) -- the planner 'arrives' while still close. Real RunAway ends only\n"
+            "// when EVERY threat is beyond distanceSq, optionally pinned to one Y level.)\n"
+            "class GoalRunAway extends Goal {\n"
+            "  constructor (distance, maintainY = null, ...from) {\n"
+            "    super()\n"
+            "    this.distanceSq = distance * distance\n"
+            "    this.maintainY = maintainY\n"
+            "    this.from = from.map(p => ({ x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) }))\n"
+            "  }\n"
+            "\n"
+            "  heuristic (node) {\n"
+            "    // closest-threat XZ distance, negated (farther = better), plus asymmetric\n"
+            "    // Y term when pinned to a level (0.6 weight on XZ, 1.5 on Y per Baritone)\n"
+            "    let min = Infinity\n"
+            "    for (const p of this.from) {\n"
+            "      const h = distanceXZ(p.x - node.x, p.z - node.z)\n"
+            "      if (h < min) min = h\n"
+            "    }\n"
+            "    min = -min\n"
+            "    if (this.maintainY != null) {\n"
+            "      const dy = this.maintainY - node.y\n"
+            "      const yCost = dy > 0 ? dy * BARITONE_FALL2_HALF : -dy * BARITONE_JUMP_COST\n"
+            "      min = min * 0.6 + yCost * 1.5\n"
+            "    }\n"
+            "    return min\n"
+            "  }\n"
+            "\n"
+            "  isEnd (node) {\n"
+            "    if (this.maintainY != null && this.maintainY !== node.y) return false\n"
+            "    for (const p of this.from) {\n"
+            "      const dx = node.x - p.x, dz = node.z - p.z\n"
+            "      if (dx * dx + dz * dz < this.distanceSq) return false\n"
+            "    }\n"
+            "    return true\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "// BARITONE PORT (GoalTwoBlocks: stand on EITHER of two stacked Y levels at\n"
+            "// one XZ -- doorsteps/ledges where the exact foot level is ambiguous. Ends\n"
+            "// at y or y-1, heuristic forgives sub-level starts.)\n"
+            "class GoalTwoBlocks extends Goal {\n"
+            "  constructor (x, y, z) {\n"
+            "    super()\n"
+            "    this.x = Math.floor(x)\n"
+            "    this.y = Math.floor(y)\n"
+            "    this.z = Math.floor(z)\n"
+            "  }\n"
+            "\n"
+            "  heuristic (node) {\n"
+            "    const dx = this.x - node.x\n"
+            "    const dy = this.y - node.y\n"
+            "    const dz = this.z - node.z\n"
+            "    const yAdj = dy < 0 ? dy + 1 : dy\n"
+            "    const yCost = yAdj > 0 ? yAdj * BARITONE_FALL2_HALF : -yAdj * BARITONE_JUMP_COST\n"
+            "    return distanceXZ(dx, dz) + yCost\n"
+            "  }\n"
+            "\n"
+            "  isEnd (node) {\n"
+            "    return node.x === this.x && (node.y === this.y || node.y === this.y - 1) && node.z === this.z\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "// BARITONE PORT (GoalStrictDirection: explore-by-ray -- heuristic DECREASES\n"
+            "// along the chosen direction (-100/block) and punishes drift (+1000/block\n"
+            "// off-axis, +1000/block vertical). isEnd never fires: the planner runs the\n"
+            "// ray until the watchdog/timeout, not until arrival. For corridor sweeps and\n"
+            "// GetToBlock-style wander when the target is unknown.)\n"
+            "class GoalStrictDirection extends Goal {\n"
+            "  constructor (x, y, z, dx, dz) {\n"
+            "    super()\n"
+            "    this.x = Math.floor(x)\n"
+            "    this.y = Math.floor(y)\n"
+            "    this.z = Math.floor(z)\n"
+            "    this.dx = dx\n"
+            "    this.dz = dz\n"
+            "  }\n"
+            "\n"
+            "  heuristic (node) {\n"
+            "    const along = (node.x - this.x) * this.dx + (node.z - this.z) * this.dz\n"
+            "    const off = Math.abs((node.x - this.x) * this.dz) + Math.abs((node.z - this.z) * this.dx)\n"
+            "    const vert = Math.abs(node.y - this.y)\n"
+            "    return -along * 100 + off * 1000 + vert * 1000\n"
+            "  }\n"
+            "\n"
+            "  isEnd (node) {\n"
+            "    return false\n"
+            "  }\n"
+            "}\n"
+            "\n"
+            "module.exports = {\n"
+            "  Goal,\n"
+            "  GoalBlock,\n"
+            "  GoalRunAway,\n"
+            "  GoalTwoBlocks,\n"
+            "  GoalStrictDirection,")
+        s = s.replace(old_exp, new_classes, 1)
+        open(gj, "w").write(s)
+        print("[baritone-goals] flee/corridor goals installed")
+        s = open(gj).read()
+    if "BARITONE PORT (ActionCosts tick basis" in s:
+        print("[baritone-goals] ActionCosts basis present -> no-op")
+    else:
+        old_tc = ("// Goal is a Y coordinate\n"
+                  "class GoalY extends Goal {")
+        if old_tc not in s:
+            print("[baritone-goals] WARNING: cost-basis anchor not found")
+            return
+        new_tc = ("// BARITONE PORT (ActionCosts tick basis: walk 20/4.317, sprint 20/5.612,\n"
+                  "// multiplier 0.769, sneak 20/1.3, ladder up 20/2.35 / down 20/3.0, jump =\n"
+                  "// FALL(1.25)-FALL(0.25) via gravity parabola v(t)=(0.98^t-1)*-3.92.)\n"
+                  "// Clamp helper: Baritone COST_INF=1e6 (never MAX_VALUE -- it gets ADDED).\n"
+                  "function baritoneFallTicks (distance) {\n"
+                  "  if (distance <= 0) return 0\n"
+                  "  let tmp = distance, ticks = 0\n"
+                  "  while (true) {\n"
+                  "    const v = (Math.pow(0.98, ticks) - 1) * -3.92\n"
+                  "    if (tmp <= v) return ticks + tmp / v\n"
+                  "    tmp -= v\n"
+                  "    ticks++\n"
+                  "    if (ticks > 4096) return ticks\n"
+                  "  }\n"
+                  "}\n"
+                  "const BARITONE_JUMP_COST = (() => { try { return baritoneFallTicks(1.25) - baritoneFallTicks(0.25) } catch (_) { return 7 } })()\n"
+                  "const BARITONE_FALL2_HALF = (() => { try { return baritoneFallTicks(2) / 2 } catch (_) { return 2.3 } })()\n"
+                  "\n"
+                  "// Goal is a Y coordinate\n"
+                  "class GoalY extends Goal {")
+        s = s.replace(old_tc, new_tc, 1)
+        open(gj, "w").write(s)
+        print("[baritone-goals] ActionCosts basis installed")
+        s = open(gj).read()
+    if "BARITONE PORT (GoalYLevel.calculate asymmetry" in s:
+        print("[baritone-goals] Y asymmetry present -> no-op")
+        return
+    old_gb = ("    const dy = this.y - node.y\n"
+              "    const dz = this.z - node.z\n"
+              "    return distanceXZ(dx, dz) + Math.abs(dy)\n"
+              "  }\n"
+              "\n"
+              "  isEnd (node) {\n"
+              "    return node.x === this.x && node.y === this.y && node.z === this.z\n"
+              "  }")
+    if old_gb not in s:
+        print("[baritone-goals] WARNING: GoalBlock anchor not found")
+        return
+    new_gb = ("    const dy = this.y - node.y\n"
+              "    const dz = this.z - node.z\n"
+              "    // BARITONE PORT (GoalYLevel.calculate asymmetry: down = FALL[2]/2 per\n"
+              "    // block, up = JUMP per block -- symmetric |dy| mispriced shafts.)\n"
+              "    const yCost = dy > 0 ? dy * BARITONE_FALL2_HALF : -dy * BARITONE_JUMP_COST\n"
+              "    return distanceXZ(dx, dz) + yCost\n"
+              "  }\n"
+              "\n"
+              "  isEnd (node) {\n"
+              "    return node.x === this.x && node.y === this.y && node.z === this.z\n"
+              "  }")
+    s = s.replace(old_gb, new_gb, 1)
+    open(gj, "w").write(s)
+    print("[baritone-goals] GoalBlock Y asymmetry installed")
+
+
+def ensure_pathfinder_baritone_astar(base):
+    """BARITONE PORT (A* hardening): staticCutoff(30, 0.9) anti-overshoot
+    truncation + NaN/non-positive cost edge skip (Baritone throws; live bots
+    skip softer). Marker-idempotent per hunk."""
+    aj = os.path.join(base, "mineflayer-pathfinder", "lib", "astar.js")
+    if not os.path.exists(aj):
+        print(f"[baritone-astar] WARNING: {aj} missing")
+        return
+    s = open(aj).read()
+    if "BARITONE PORT (PathBase.staticCutoff" in s:
+        print("[baritone-astar] staticCutoff present -> no-op")
+    else:
+        old_mr = ("  makeResult (status, node) {\n"
+                  "    let _path = reconstructPath(node)")
+        if old_mr not in s:
+            print("[baritone-astar] WARNING: makeResult anchor not found")
+            return
+        new_mr = ("  makeResult (status, node) {\n"
+                  "    let _path = reconstructPath(node)\n"
+                  "    // BARITONE PORT (PathBase.staticCutoff(30, 0.9): truncate overshoot --\n"
+                  "    // a 200-node path to a goal 40 away walks past the target. Only when\n"
+                  "    // the dest is NOT already in goal.)\n"
+                  "    try {\n"
+                  "      if (_path && _path.length >= 30 && this.goal && !this.goal.isEnd(_path[_path.length - 1])) {\n"
+                  "        const _cut = Math.floor((_path.length - 30) * 0.9 + 30) - 1\n"
+                  "        if (_cut > 0 && _cut < _path.length) _path = _path.slice(0, _cut)\n"
+                  "      }\n"
+                  "    } catch (_) {}")
+        s = s.replace(old_mr, new_mr, 1)
+        open(aj, "w").write(s)
+        print("[baritone-astar] staticCutoff installed")
+        s = open(aj).read()
+    if "BARITONE PORT (AStarPathFinder validation" in s:
+        print("[baritone-astar] cost validation present -> no-op")
+        return
+    old_cv = ("      for (const neighborData of neighbors) {\n"
+              "        if (this.closedDataSet.has(neighborData.hash)) {\n"
+              "          continue // skip closed neighbors\n"
+              "        }")
+    if old_cv not in s:
+        print("[baritone-astar] WARNING: neighbor-loop anchor not found")
+        return
+    new_cv = ("      for (const neighborData of neighbors) {\n"
+              "        if (this.closedDataSet.has(neighborData.hash)) {\n"
+              "          continue // skip closed neighbors\n"
+              "        }\n"
+              "        // BARITONE PORT (AStarPathFinder validation: NaN/<=0 movement\n"
+              "        // costs mean a broken cost model -- skip the edge, never heap it.)\n"
+              "        if (!Number.isFinite(neighborData.cost) || neighborData.cost <= 0) continue")
+    s = s.replace(old_cv, new_cv, 1)
+    open(aj, "w").write(s)
+    print("[baritone-astar] cost validation installed")
 
 
 def ensure_pathfinder_prs(base):
@@ -880,6 +1120,9 @@ def ensure_pathfinder_prs(base):
         ("lib/goals.js", "let max = -Infinity",
          "  heuristic (node) {\n    let max = Number.MIN_VALUE",
          "  heuristic (node) {\n    // -Infinity is the correct identity for max-reduction (MIN_VALUE is +5e-324, wrongly clamps negative GoalInvert heuristics to 0).\n    let max = -Infinity", "#369 GoalCompositeAll sentinel"),
+        ("lib/goals.js", "BARITONE PORT (GoalRunAway",
+         "module.exports = {\n  Goal,\n  GoalBlock,",
+          "THIS_ANCHOR_NEVER_MATCHES_SO_WARN", "#baritone flee goals (ensure_pathfinder_baritone_goals)"),
         ("lib/goals.js", "Measure reach from eyes to each visible face",
          "  isEnd (node) {\n    if (node.distanceTo(this.pos.offset(0, this.entityHeight, 0)) > this.reach) return false",
          "  isEnd (node) {\n    // Measure reach from eyes to each visible face (not feet-to-center-shifted), so overhead blocks within range aren't wrongly rejected.\n    const startPos = new Vec3(node.x + 0.5, node.y + this.entityHeight, node.z + 0.5)",
@@ -947,9 +1190,14 @@ def ensure_pathfinder_prs(base):
         ("const revision = pathRevision\n          bot.emit('path_update', results)\n          if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true", "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
          "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
          "#386 fresh-search guard"),
+        ("/tmp", "BARITONE sentinel no-op", "x-never", "y-never", "placeholder-never-matches"),
     ]
     applied, skipped, warned = 0, 0, 0
     for rel, marker, old, new, label in edits:
+        if old is None:
+            skipped += 1; continue
+        if rel == "/tmp":
+            skipped += 1; continue
         p = os.path.join(pf, rel)
         if not os.path.exists(p):
             print(f"[pf] WARNING: {rel} missing"); warned += 1; continue
@@ -1088,7 +1336,9 @@ def main():
     ensure_physics_fallback(BASE)
     ensure_prismarine_phase_order(BASE)
     ensure_pathfinder_walker(BASE)
-    ensure_mineflayer_dirty_inputs(BASE)
+    ensure_pathfinder_baritone_goals(BASE)
+    ensure_pathfinder_baritone_astar(BASE)
+    ensure_mineflayer_driver_arbiter(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)
