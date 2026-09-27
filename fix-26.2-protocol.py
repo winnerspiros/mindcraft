@@ -861,8 +861,10 @@ def ensure_mineflayer_driver_arbiter(base):
                 "  }\n"
                 "  bot.look = async (yaw, pitch, force) => {")
     s = s.replace(look_old, look_new, 1)
-    # smooth inside bot.look, right after the NaN guard, non-force only
-    nan_guard = ("    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return")
+    # smooth inside bot.look (NOT sendPacketLook: `force` is only in scope
+    # there), right after the bot.look NaN guard, non-force only.
+    nan_guard = ("    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return\n"
+                 "    // this is done to bypass certain anticheat")
     if nan_guard not in s:
         print("[driver] WARNING: look NaN-guard anchor not found (smoothing skipped)")
     else:
