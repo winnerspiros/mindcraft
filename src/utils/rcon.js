@@ -110,10 +110,17 @@ export async function rconPlayerPos(name) {
 // per name — placement checks run mid-leg, not per tick.
 const _invCache = {};
 const INV_CACHE_MS = 4000;
-export async function rconInventory(name) {
+export function rconInventoryBust(name) {
+    try {
+        const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+        if (safe && _invCache[safe]) delete _invCache[safe];
+    } catch (_) {}
+}
+export async function rconInventory(name, bust=false) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     if (!safe) return null;
     const now = Date.now();
+    if (bust && _invCache[safe]) delete _invCache[safe];
     if (_invCache[safe] && now - _invCache[safe].t < INV_CACHE_MS) return _invCache[safe].inv;
     let out;
     try { out = await rconCommand(`data get entity ${safe} Inventory`); }

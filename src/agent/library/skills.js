@@ -4486,8 +4486,12 @@ export async function pillarUp(bot, blockType, height = 4) {
             if (_got > 0) {
                 try { await bot.waitForTicks(40); } catch (_) {}
                 try { await pickupNearbyItems(bot); } catch (_) {}
+                try {
+                    const _bust = (await import('../../utils/rcon.js')).rconInventoryBust;
+                    _bust(bot.username);
+                } catch (_) {}
                 const _c1 = {};
-                for (const e of ((await _ri2(bot.username)) || [])) _c1[e.name] = (_c1[e.name] || 0) + e.count;
+                for (const e of ((await _ri2(bot.username, true)) || [])) _c1[e.name] = (_c1[e.name] || 0) + e.count;
                 const _pref = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'];
                 const _swap = _pref.find(n => (_c1[n] || 0) >= height) || _pref.find(n => (_c1[n] || 0) > (_c1[blockType] || 0));
                 if (_swap && _swap !== blockType && (_c1[_swap] || 0) > 0) {
@@ -6867,9 +6871,11 @@ export async function goToPlayer(bot, username, distance=3) {
                     const h = Math.min(Math.ceil(dy) + 1, 12);
                     log(bot, `${username} is ${Math.round(dy)} up — pillaring ${h}, not walking.`);
                     try {
-                        const inv = (await import('../../utils/rcon.js')).rconInventory;
+                        const invmod0 = (await import('../../utils/rcon.js'));
+                        const inv = invmod0.rconInventory;
+                        try { invmod0.rconInventoryBust(bot.username); } catch (_) {}
                         const counts = {};
-                        for (const e of ((await inv(bot.username)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+                        for (const e of ((await inv(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
                         const mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (counts[n] || 0) > 0);
                         if (mat) {
                             await ensureBlocks(bot, mat, h);
@@ -6890,9 +6896,12 @@ export async function goToPlayer(bot, username, distance=3) {
                                     try { await bot.dig(wb, true, 'raycast').catch(() => bot.dig(wb).catch(() => {})); got++; } catch (_) {}
                                 }
                                 try { await bot.waitForTicks(40); } catch (_) {}
-                                const inv2 = (await import('../../utils/rcon.js')).rconInventory;
+                                try { await pickupNearbyItems(bot); } catch (_) {}
+                                const inv2mod = (await import('../../utils/rcon.js'));
+                                const inv2 = inv2mod.rconInventory;
+                                try { inv2mod.rconInventoryBust(bot.username); } catch (_) {}
                                 const c2 = {};
-                                for (const e of ((await inv2(bot.username)) || [])) c2[e.name] = (c2[e.name] || 0) + e.count;
+                                for (const e of ((await inv2(bot.username, true)) || [])) c2[e.name] = (c2[e.name] || 0) + e.count;
                                 const mat2 = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (c2[n] || 0) > 0);
                                 if (mat2) {
                                     log(bot, `Dug the wall, pillaring on ${mat2} now.`);
