@@ -728,7 +728,7 @@ const modes_list = [
 {
         name: 'sleep_together',
         description: 'When another player goes to bed, follow them and sleep too (occasionally) — with a yandere "sleep together~" opener.',
-        interrupts: ['all'],
+        interrupts: [],
         on: true,
         active: false,
         cooldown: 180000, // min ms between bed follow-ups
@@ -737,6 +737,7 @@ const modes_list = [
             const bot = agent.bot;
             const now = Date.now();
             if (now - agent._sleeper_time > 30000) return; // nobody recently went to bed
+            if (!agent.isIdle()) return; // work-respect: never pull her off a dig/fight for bed
             if (now - this.last_follow < this.cooldown) return;
             const name = agent._last_sleeper;
             if (!name) return;
@@ -774,7 +775,7 @@ const modes_list = [
     {
         name: 'sleep_alone',
         description: 'Sleep through the night when no other players are online, keeping safe from phantoms and hostile mobs.',
-        interrupts: ['all'],
+        interrupts: [],
         on: true,
         active: false,
         cooldown: 60000,
@@ -782,6 +783,7 @@ const modes_list = [
         update: async function (agent) {
             const bot = agent.bot;
             if (!bot.time || bot.time.timeOfDay < 12541 || bot.time.timeOfDay > 23458) return; // night only — the old check (< 12541 return) treated DAWN+DAY as night, so every solo morning fired the bed hunt at 60s cadence, interrupting real actions
+            if (!agent.isIdle()) return; // work-respect: bed hunt never interrupts work
             for (const name of Object.keys(bot.players || {}))
                 if (name !== agent.name) return; // someone online — don't skip their night
             if (bot.isSleeping) return;
@@ -886,7 +888,7 @@ const modes_list = [
     {
         name: 'conversation_starter',
         description: 'Occasionally start a conversation with a nearby player and ask personal/getting-to-know-you questions, in character.',
-        interrupts: ['all'],
+        interrupts: [],
         on: true,
         active: false,
         last_start: 0,
@@ -897,6 +899,11 @@ const modes_list = [
             const bot = agent.bot;
             const now = Date.now();
             if (now < this.next_start) return; // schedule-based: only fire after a random wait
+            // WORK-RESPECT (2026-09-27: this mode interrupted !collectBlocks
+            // mid-dig — "click one block and leave" — because interrupts:['all']
+            // fires whenever she stands near the requester. Chatting never
+            // outranks working: only speak when idle.
+            if (!agent.isIdle()) { this.next_start = now + 30000; return; }
             // need someone near-ish to talk to — 16 blocks (stare/conversation
             // range), NOT 12: at 12 she stays mute to anyone across a room.
             // 26.3 RCON-truth: entities are withheld at range, so an
