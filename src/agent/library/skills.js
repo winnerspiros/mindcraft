@@ -3762,6 +3762,55 @@ export async function crystalPvP(bot, target) {
 }
 
 
+
+// RIGHT-TOOL (2026-09-27, shovel-on-stone fix): mineflayer-tool equipForBlock
+// picks FASTEST, and with requireHarvest unset a fast wrong tool (shovel on
+// stone) wins over the slower right one. This helper picks by HARVEST FIRST:
+// the fastest tool that can actually harvest the block; only if nothing
+// carried can harvest does it fall back to fastest-anything. RCON hand-swap
+// last resort kept at call sites.
+async function equipRightTool(bot, block) {
+    const name = block.name || '';
+    const cls = /log|wood|plank/i.test(name) ? 'axe'
+        : /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i.test(name) ? 'shovel'
+        : /leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(name) ? null
+        : 'pickaxe';
+    try {
+        const seen = bot.inventory.items() || [];
+        let best = null, bestT = Infinity;
+        for (const it of seen) {
+            if (cls && !it.name.includes(cls)) continue;
+            let ok = true;
+            try { ok = block.canHarvest(it.type); } catch (_) { ok = true; }
+            if (!ok) continue;
+            let t = Infinity;
+            try { t = bot.tool && bot.tool.getDigTime ? bot.tool.getDigTime(block, it) : (bot.digTime ? bot.digTime(block) : Infinity); } catch (_) {}
+            if (!Number.isFinite(t)) t = 9999;
+            if (t < bestT) { bestT = t; best = it; }
+        }
+        if (best) {
+            try { await bot.equip(best, 'hand'); } catch (_) {}
+            try {
+                const h = bot.heldItem;
+                if (!h || h.name !== best.name) {
+                    const wantId = best.type;
+                    let slotIdx = -1;
+                    try {
+                        for (let si = 0; si < bot.inventory.slots.length; si++) {
+                            const sl = bot.inventory.slots[si];
+                            if (sl && sl.type === wantId) { slotIdx = si; break; }
+                        }
+                    } catch (_) {}
+                    if (slotIdx >= 36 && slotIdx <= 44) { try { bot.setQuickBarSlot(slotIdx - 36); } catch (_) {} }
+                }
+            } catch (_) {}
+            return true;
+        }
+    } catch (_) {}
+    try { await bot.tool.equipForBlock(block, { requireHarvest: true }).catch(() => {}); } catch (_) {}
+    return false;
+}
+
 export async function collectBlock(bot, blockType, num=1, exclude=null) {
     /**
      * Collect one of the given block type.
@@ -3846,7 +3895,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             blocks = [...blocks].sort((a, b) => a.position.distanceTo(bp0) - b.position.distanceTo(bp0));
         } catch (_) {}
         let block = blocks[0];
-        await bot.tool.equipForBlock(block);
+        await equipRightTool(bot, block);
         // 26.3 FALLBACK (added 21:3x): equipForBlock reads bot.inventory.items()
         // (client Slot decode, often [] even when kitted) and can leave the
         // sword/fist held — then canHarvest fails on ores she HAS the pick for
@@ -4198,7 +4247,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             } catch (_) {}
         }
         if (bot.game.gameMode !== 'creative') {
-            await bot.tool.equipForBlock(block);
+            await equipRightTool(bot, block);
             // BOTCRAFT PORT (best-tool damage margin, same as collectBlock:
             // skip tools about to pop, rank fresh iron over dying diamond.)
             try {
@@ -4412,6 +4461,40 @@ export async function pillarUp(bot, blockType, height = 4) {
         if ((counts[blockType] || 0) > 0) {
             try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
             await new Promise(r => setTimeout(r, 600));
+        }
+    } catch (_) {}
+    // DIG-FIRST (2026-09-27): starting a 8-10 pillar with 2 dirt guarantees
+    // the 2-layer stall. Top up from the adjacent wall BEFORE layer one: dig
+    // up to (height - held) cheap blocks, then climb in one go.
+    try {
+        const { rconInventory: _ri2 } = await import('../../utils/rcon.js');
+        const _c0 = {};
+        for (const e of ((await _ri2(bot.username)) || [])) _c0[e.name] = (_c0[e.name] || 0) + e.count;
+        let _have0 = _c0[blockType] || 0;
+        if (_have0 < height) {
+            const _need = Math.min(height - _have0, 8);
+            const _eye = bot.entity.position.offset(0, 1.62, 0);
+            let _got = 0;
+            for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0],[1,1,0],[-1,1,0],[0,1,1],[0,1,-1]]) {
+                if (_got >= _need || bot.interrupt_code) break;
+                let _wb = null;
+                try { _wb = bot.blockAt(_eye.clone().offset(dx, dy, dz)); } catch (_) {}
+                if (!_wb || _wb.name === 'air' || _wb.name === 'water' || _wb.name === 'lava' || _wb.name === 'bedrock') continue;
+                try { await equipRightTool(bot, _wb).catch(() => {}); } catch (_) {}
+                try { await bot.dig(_wb, true).catch(() => {}); _got++; } catch (_) {}
+            }
+            if (_got > 0) {
+                try { await bot.waitForTicks(40); } catch (_) {}
+                try { await pickupNearbyItems(bot); } catch (_) {}
+                const _c1 = {};
+                for (const e of ((await _ri2(bot.username)) || [])) _c1[e.name] = (_c1[e.name] || 0) + e.count;
+                const _pref = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'];
+                const _swap = _pref.find(n => (_c1[n] || 0) >= height) || _pref.find(n => (_c1[n] || 0) > (_c1[blockType] || 0));
+                if (_swap && _swap !== blockType && (_c1[_swap] || 0) > 0) {
+                    log(bot, `Topped up digging (${_got}) — pillaring on ${_swap} instead.`);
+                    blockType = _swap;
+                } else if (_got > 0) log(bot, `Topped up digging (${_got}) — climbing now.`);
+            }
         }
     } catch (_) {}
     let gained = 0;
@@ -6803,7 +6886,7 @@ export async function goToPlayer(bot, username, distance=3) {
                                 let got = 0;
                                 for (const wb of faces.slice(0, 3)) {
                                     try { await bot.equip(bot.registry.itemsByName['diamond_pickaxe']?.id ? bot.inventory.items().find(i => i.name.includes('pickaxe'))?.type : null, 'hand').catch(() => {}); } catch (_) {}
-                                    try { await bot.tool.equipForBlock(wb).catch(() => {}); } catch (_) {}
+                                    try { await equipRightTool(bot, wb).catch(() => {}); } catch (_) {}
                                     try { await bot.dig(wb, true, 'raycast').catch(() => bot.dig(wb).catch(() => {})); got++; } catch (_) {}
                                 }
                                 try { await bot.waitForTicks(40); } catch (_) {}
