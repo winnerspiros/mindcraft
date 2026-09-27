@@ -362,6 +362,32 @@ def ensure_26_3_data(base):
                 copied += 1
         print(f"[data] 26.3 game-data -> {dest}: {copied} copied, {len(os.listdir(dest))} present"
               if copied else f"[data] 26.3 game-data -> {dest}: all {len(os.listdir(dest))} present -> no-op")
+    # SlotComponent 122-lock (2026-09-27): the 26.3 server jar's DataComponents
+    # class defines 122 types (no map_color/swing_animation). minecraft-data
+    # 3.116.0 shipped 124 switch fields vs a 122 mapper; any item carrying an
+    # orphan id breaks Slot decode -> items() reads 0. Force mapper==switch==122.
+    try:
+        ref = json.load(open(DATA_SRC_263 + "/protocol.json"))
+        ref_map = ref["types"]["SlotComponentType"][1]["mappings"]
+        ref_sw = ref["types"]["SlotComponent"][1][1]["type"][1]["fields"]
+        for proto in [
+            os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+            os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
+                         "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+        ]:
+            try:
+                dd = json.load(open(proto))
+                dd["types"]["SlotComponentType"][1]["mappings"] = ref_map
+                swf = dd["types"]["SlotComponent"][1][1]["type"][1]["fields"]
+                for _o in list(swf.keys()):
+                    if _o not in ref_sw:
+                        swf.pop(_o, None)
+                json.dump(dd, open(proto, "w"), indent=2)
+                print("[slot122] " + proto.split("node_modules/")[-1] + ": mapper==switch==122 locked")
+            except Exception as e:
+                print("[slot122] WARNING: " + str(e))
+    except Exception as e:
+        print("[slot122] WARNING ref unreadable: " + str(e))
     for data_js in [
         os.path.join(base, "minecraft-data", "data.js"),
         os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data", "data.js"),
