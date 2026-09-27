@@ -1170,11 +1170,65 @@ async function equipHighestAttack(bot) {
         await bot.equip(weapon, 'hand');
 }
 
+/**
+ * LITEMATICA PORT (MaterialCache.getStateToItemOverride L196 + overrideStackSize
+ * L258): translate a placed block state to the item that gathers/crafts it.
+ * props come from the schematic cell (half/type/waterlogged/layers/...).
+ * Returns { item } normally, { item, mult } when one block needs N items
+ * (double slab -> 2), or { skip: true } for unobtainables survival can never
+ * hold (piston heads, portals, flowing fluids...). Callers use this BEFORE
+ * counting inventory so a door counts once (lower half) instead of twice.
+ */
+export function mapStateToItem(blockName, props = {}) {
+    const n = String(blockName || '').toLowerCase();
+    const p = props || {};
+    // Unobtainable in survival — ignore, never chase.
+    if (n === 'piston_head' || n === 'moving_piston' || n === 'nether_portal' ||
+        n === 'end_portal' || n === 'end_gateway' || n === 'cave_air' || n === 'void_air' ||
+        n === 'fire' || n === 'soul_fire' || n === 'flowing_water' || n === 'flowing_lava' ||
+        n === 'bubble_column' || n === 'frogspawn') return { skip: true };
+    // UPPER halves of two-block structures come free with the lower — count once.
+    if ((n.endsWith('_door') || n.includes('bed') || n === 'sunflower' || n === 'lilac' ||
+        n === 'rose_bush' || n === 'peony' || n === 'tall_grass' || n === 'large_fern' ||
+        n === 'tall_seagrass' || n === 'pitcher_plant') && String(p.half || '').toLowerCase() === 'upper') {
+        // map to the item via the lower half: doors/beds use their item name.
+        const item = n.includes('bed') ? n : n;
+        return { item, upper: true };
+    }
+    if (n === 'farmland') return { item: 'dirt' };
+    if (n === 'dirt_path') return { item: 'dirt' };
+    if (n === 'water') return { item: 'water_bucket' };
+    if (n === 'lava') return { item: 'lava_bucket' };
+    if (n === 'powder_snow') return { item: 'powder_snow_bucket' };
+    if ((n.endsWith('_slab') || n.endsWith('_stairs')) && String(p.type || '').toLowerCase() === 'double') {
+        return { item: n, mult: 2 }; // double slab = 2 slabs
+    }
+    if (n === 'snow' && p.layers) {
+        const layers = Math.max(1, parseInt(p.layers, 10) || 1);
+        return { item: 'snow', mult: Math.ceil(layers / 1) }; // 1 snow item per layer placed
+    }
+    if ((n === 'turtle_egg' || n === 'sea_pickle' || n.endsWith('_candle')) && p.eggs) {
+        return { item: n, mult: Math.max(1, parseInt(p.eggs, 10) || 1) };
+    }
+    if ((n === 'turtle_egg' || n === 'sea_pickle' || n.endsWith('_candle')) && p.candles) {
+        return { item: n, mult: Math.max(1, parseInt(p.candles, 10) || 1) };
+    }
+    return { item: blockName };
+}
+
 export async function acquireBlocks(bot, blockType, count, _depth = 0) {
     /**
      * Ensure the bot has at least `count` of `blockType` in inventory by gathering
      * raw materials and crafting, survival-style (no /give, no /fill). Returns the
      * number of `blockType` now held (may be less than requested if materials ran out).
+     * LITEMATICA PORT (MaterialCache.getStateToItemOverride L196 +
+     * overrideStackSize L258): block states that don't map 1:1 to their item are
+     * translated BEFORE gathering — door/bed/double-plant UPPER halves count once
+     * (lower only), piston heads / portals / gateways are ignored (uncraftable,
+     * uncollectable), farmland gathers dirt, water/lava source gathers a bucket
+     * (flowing ignored), double slabs need 2, snow/eggs/pickles/candles need the
+     * layer count. Without this the bot over-gathers (2 doors for 1) or chases
+     * ungatherables (piston_head, portals) forever. Returns { have, skipped }.
      * @param {MinecraftBot} bot - the bot.
      * @param {string} blockType - the block/item to acquire, e.g. 'oak_planks'.
      * @param {number} count - how many are wanted.
@@ -1183,6 +1237,16 @@ export async function acquireBlocks(bot, blockType, count, _depth = 0) {
      * await skills.acquireBlocks(bot, 'oak_planks', 64);
      **/
     count = Math.max(1, Math.floor(count));
+    // LITEMATICA PORT (MaterialCache.getStateToItemOverride L196): translate
+    // the requested block state to the item that actually gathers/crafts it.
+    // { skip: true } = unobtainable in survival (ignore, never chase);
+    // { item } = gather this instead; { item, mult } = gather mult per block.
+    const mapped = mapStateToItem(blockType, {});
+    if (mapped.skip) { log(bot, `${blockType} isn't obtainable in survival — skipping.`); return haveCount(); }
+    if (mapped.item !== blockType) {
+        const got = await acquireBlocks(bot, mapped.item, count * (mapped.mult || 1), _depth);
+        return got;
+    }
     const haveCount = () => world.getInventoryCounts(bot)[blockType] || 0;
 
     let have = haveCount();
