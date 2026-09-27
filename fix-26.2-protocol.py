@@ -602,27 +602,85 @@ def ensure_mineflayer_move_diff(base):
     marker = "BOTCRAFT PORT (SendPosition minimal-diff"
     if marker in s:
         print("[movediff] vanilla 4e-8 + heartbeat present -> no-op")
+    else:
+        old = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
+               "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
+               "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
+               "    const moved = (dx + dy + dz) > 0.001")
+        if old not in s:
+            print("[movediff] WARNING: deadband anchor not found")
+            return
+        new = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
+               "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
+               "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
+               "    // BOTCRAFT PORT (SendPosition minimal-diff: vanilla move threshold is\n"
+               "    // (dpos)^2 > 4e-8 (~0.2mm); plus a 20-tick heartbeat so a silent client\n"
+               "    // never looks dead to the server. 1mm deadband was ours; 0.2mm matches\n"
+               "    // the real client and stops micro-move spam one level lower.\n"
+               "    const _movedSq = dx * dx + dy * dy + dz * dz\n"
+               "    bot._moveTickCount = (bot._moveTickCount || 0) + 1\n"
+               "    const _heartbeat = bot._moveTickCount % 20 === 0\n"
+               "    const moved = _movedSq > 4e-8 || _heartbeat")
+        open(mp, "w").write(s.replace(old, new, 1))
+        print("[movediff] vanilla 4e-8 + heartbeat installed")
+        s = open(mp).read()
+    ensure_mineflayer_wire_quiet(base)
+
+
+def ensure_mineflayer_wire_quiet(base):
+    """BOTCRAFT PORT (edge sprint + input-on-change): SendPosition emits
+    Start/StopSprinting on EDGE only and ServerboundPlayerInput on CHANGE
+    only — vanilla holds one edge for minutes. Marker-idempotent per hunk."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
+    if not os.path.exists(mp):
+        print(f"[wirequiet] WARNING: {mp} missing")
         return
-    old = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
-           "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
-           "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
-           "    const moved = (dx + dy + dz) > 0.001")
-    if old not in s:
-        print("[movediff] WARNING: deadband anchor not found")
+    s = open(mp).read()
+    if "BOTCRAFT PORT (edge-triggered sprint" in s:
+        print("[wirequiet] edge-triggered sprint present -> no-op")
+    else:
+        old = ("    } else if (control === 'sprint') {\n"
+               "      bot._client.write('entity_action', {")
+        if old not in s:
+            print("[wirequiet] WARNING: sprint anchor not found")
+        else:
+            new = ("    } else if (control === 'sprint') {\n"
+                   "      // BOTCRAFT PORT (edge-triggered sprint: Botcraft SendPosition sends\n"
+                   "      // Start/StopSprinting as PlayerCommand on sprint-flag EDGE only, never\n"
+                   "      // per-tick spam — vanilla holds one edge for minutes. Mineflayer\n"
+                   "      // already early-returns on same-state, but legs/ticks/flees re-assert\n"
+                   "      // and stall replays batch those into bursts the AC reads as toggling.\n"
+                   "      // Suppress same-edge re-emits within 500ms; real flips always pass.)\n"
+                   "      bot._lastSprintEmit = bot._lastSprintEmit || { state: null, ms: 0 };\n"
+                   "      try {\n"
+                   "        const nowMs = Date.now();\n"
+                   "        if (bot._lastSprintEmit.state === state && nowMs - bot._lastSprintEmit.ms < 500) return;\n"
+                   "        bot._lastSprintEmit = { state, ms: nowMs };\n"
+                   "      } catch (_) {}\n"
+                   "      bot._client.write('entity_action', {")
+            s = s.replace(old, new, 1)
+            open(mp, "w").write(s)
+            print("[wirequiet] edge-triggered sprint installed")
+            s = open(mp).read()
+    if "BOTCRAFT PORT (input-on-CHANGE" in s:
+        print("[wirequiet] input-on-change present -> no-op")
         return
-    new = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
-           "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
-           "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
-           "    // BOTCRAFT PORT (SendPosition minimal-diff: vanilla move threshold is\n"
-           "    // (dpos)^2 > 4e-8 (~0.2mm); plus a 20-tick heartbeat so a silent client\n"
-           "    // never looks dead to the server. 1mm deadband was ours; 0.2mm matches\n"
-           "    // the real client and stops micro-move spam one level lower.\n"
-           "    const _movedSq = dx * dx + dy * dy + dz * dz\n"
-           "    bot._moveTickCount = (bot._moveTickCount || 0) + 1\n"
-           "    const _heartbeat = bot._moveTickCount % 20 === 0\n"
-           "    const moved = _movedSq > 4e-8 || _heartbeat")
-    open(mp, "w").write(s.replace(old, new, 1))
-    print("[movediff] vanilla 4e-8 + heartbeat installed")
+    old2 = ("      if (!cs.forward && !cs.backward && !cs.left && !cs.right && !cs.jump && !cs.shift && !cs.sprint) return; // all-false = server default, skip the write\n"
+            "      bot._client.write('player_input', { inputs: cs });")
+    if old2 not in s:
+        print("[wirequiet] WARNING: input anchor not found")
+        return
+    new2 = ("      if (!cs.forward && !cs.backward && !cs.left && !cs.right && !cs.jump && !cs.shift && !cs.sprint) return; // all-false = server default, skip the write\n"
+            "      try {\n"
+            "        const l = bot._lastSentInput;\n"
+            "        if (l && l.forward === cs.forward && l.backward === cs.backward && l.left === cs.left\n"
+            "            && l.right === cs.right && l.jump === cs.jump && l.shift === cs.shift && l.sprint === cs.sprint) return; // unchanged: skip\n"
+            "      } catch (_) {}\n"
+            "      bot._lastSentInput = { ...cs };\n"
+            "      bot._client.write('player_input', { inputs: cs });")
+    s = s.replace(old2, new2, 1)
+    open(mp, "w").write(s)
+    print("[wirequiet] input-on-change installed")
 
 
 def ensure_pathfinder_prs(base):
