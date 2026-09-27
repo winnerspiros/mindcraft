@@ -390,41 +390,31 @@ def ensure_26_3_data(base):
                 print("[slot122] WARNING: " + str(e))
     except Exception as e:
         print("[slot122] WARNING ref unreadable: " + str(e))
-    # AdvEntry/AdvDisplay defs (2026-09-27): the shipped 26.3 protocol.json
-    # references AdvEntry but never defines it -> advancement sync payload
-    # fails (PartialReadError at boot). Define both from the server jar
-    # (DisplayInfo.fromNetwork bytecode order). Idempotent.
+    # Advancements inline (2026-09-27): the shipped 26.3 packet_advancements
+    # references an undefined AdvEntry type -> sync payload PartialReadError at
+    # boot. Adopt the 26.1 inline def (wire format unchanged per server jar).
+    # Idempotent.
     try:
-        _chat = 'anonymousNbt'
-        _adv_display = ['container', [
-            {'name': 'title', 'type': _chat},
-            {'name': 'description', 'type': _chat},
-            {'name': 'icon', 'type': 'Slot'},
-            {'name': 'frameType', 'type': 'varint'},
-            {'name': 'flags', 'type': 'i32'},
-            {'name': 'background', 'type': ['option', 'string']},
-            {'name': 'xCoord', 'type': 'f32'},
-            {'name': 'yCoord', 'type': 'f32'}]]
-        _adv_entry = ['container', [
-            {'name': 'key', 'type': 'string'},
-            {'name': 'display', 'type': ['option', {'type': 'AdvDisplay', 'anonymous': False}]},
-            {'name': 'requirements', 'type': ['array', {'countType': 'varint', 'type': ['array', {'countType': 'varint', 'type': 'string'}]}]},
-            {'name': 'sendsTelemetryEvent', 'type': 'bool'}]]
+        b261 = json.load(open(os.path.join(base, 'minecraft-data', 'minecraft-data',
+                                           'data', 'pc', '26.1', 'protocol.json')))
+        adv261 = b261['play']['toClient']['types']['packet_advancements']
         for proto in [
-            os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3", "protocol.json"),
-            os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
-                         "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+            os.path.join(base, 'minecraft-data', 'minecraft-data', 'data', 'pc', '26.3', 'protocol.json'),
+            os.path.join(base, 'minecraft-protocol', 'node_modules', 'minecraft-data',
+                         'minecraft-data', 'data', 'pc', '26.3', 'protocol.json'),
         ]:
             try:
                 dd = json.load(open(proto))
                 ttc = dd['play']['toClient']['types']
-                if 'AdvEntry' not in ttc or 'AdvDisplay' not in ttc:
-                    ttc['AdvEntry'] = _adv_entry
-                    ttc['AdvDisplay'] = _adv_display
+                cur = json.dumps(ttc.get('packet_advancements'))
+                if 'AdvEntry' in cur or len(cur) < 1000:
+                    ttc['packet_advancements'] = adv261
+                    for _o in ['AdvEntry', 'AdvDisplay']:
+                        ttc.pop(_o, None)
                     json.dump(dd, open(proto, 'w'), indent=2)
-                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': AdvEntry/AdvDisplay defined')
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': inline 26.1 shape adopted')
                 else:
-                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': present -> no-op')
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': inline present -> no-op')
             except Exception as e:
                 print('[advdef] WARNING: ' + str(e))
     except Exception as e:
