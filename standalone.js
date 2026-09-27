@@ -44,6 +44,16 @@ settings.profile = profile_json;
 // This is what the mindserver's `get-settings` socket handler used to do.
 setSettings(settings);
 
+// Per-server context (servers.json, UWU_SERVER env wins): rewrites
+// settings.host/port/auth/minecraft_version BEFORE the bot connects, so one
+// checkout can join home (OP) or any survival server. Logs the context line.
+try {
+    const { serverContext } = await import('./src/utils/server_context.js');
+    serverContext();
+} catch (e) {
+    console.warn('[server] context load failed, home defaults:', e.message);
+}
+
 const load_memory = settings.load_memory || false;
 const init_message = settings.init_message || null;
 

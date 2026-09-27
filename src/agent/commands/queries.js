@@ -293,7 +293,7 @@ export const queryList = [
     },
     {
         name: "!seed",
-        description: "Seed + map card: the world seed, whether YOUR chunk is slime (slimes below y40 at any light), what the seed unlocks vs its honest no-far-seeing limit. Usage: !seed (card), !seed slime [chunks-radius] (nearest slime-farm chunks with coords to walk to).",
+        description: "Seed + map card: the world seed, whether YOUR chunk is slime (slimes below y40 at any light), what the seed unlocks vs its honest no-far-seeing limit. On servers with unknown seed the card says UNKNOWN and slime math is disabled (never computed on a foreign seed). Usage: !seed (card), !seed slime [chunks-radius] (nearest slime-farm chunks with coords to walk to).",
         params: {
             'job': { type: 'string', default: 'card', description: 'card, or slime.' },
             'arg': { type: 'string', default: null, description: 'Search radius in chunks for slime (optional).' }
@@ -301,12 +301,14 @@ export const queryList = [
         perform: function (agent, job, arg) {
             job = String(job || 'card').toLowerCase();
             if (job === 'slime') {
+                const seed = world.activeSeed();
+                if (!seed) return pad('SEED slime: seed UNKNOWN on this server — slime math disabled, not guessed. Farm swamp surface at night, or ask an op for the seed.');
                 const r = Math.max(1, Math.min(12, parseInt(arg) || 4));
                 const found = world.findSlimeChunks(agent.bot, r, 8);
                 if (!found.length) return pad(`SEED slime: no slime chunk within ${r} chunks — try a wider radius (!seed slime 8), or farm swamp surface at night.`);
-                let res = `SEED slime (seed ${world.WORLD_SEED} — slimes below y40 at ANY light):`;
-                for (const c of found) res += `\n- chunk ${c.cx},${c.cz} → stand at ${c.x},?,${c.z} (!goToCoordinates ${c.x} 60 ${c.z})`;
-                return pad(res + '\n- farm shape: 3-high hollow room below y30, light it (slimes ignore light), AFK 24-44m away.');
+                let sres = `SEED slime (seed ${seed} — slimes below y40 at ANY light):`;
+                for (const c of found) sres += `\n- chunk ${c.cx},${c.cz} → stand at ${c.x},?,${c.z} (!goToCoordinates ${c.x} 60 ${c.z})`;
+                return pad(sres + '\n- farm shape: 3-high hollow room below y30, light it (slimes ignore light), AFK 24-44m away.');
             }
             let res = 'SEED';
             for (const line of world.getSeedInfo(agent.bot)) {
