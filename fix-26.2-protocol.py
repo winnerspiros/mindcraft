@@ -683,6 +683,184 @@ def ensure_mineflayer_wire_quiet(base):
     print("[wirequiet] input-on-change installed")
 
 
+def ensure_prismarine_phase_order(base):
+    """BOTCRAFT PORT (vanilla aiStep phase order): sneak-in-water sink before
+    jump handling + 1.21.5+ squared-norm XZ velocity floor. Marker-idempotent
+    per hunk."""
+    pj = os.path.join(base, "prismarine-physics", "index.js")
+    if not os.path.exists(pj):
+        print(f"[phaseorder] WARNING: {pj} missing")
+        return
+    s = open(pj).read()
+    if "BOTCRAFT PORT (phase order" in s:
+        print("[phaseorder] sneak-sink present -> no-op")
+    else:
+        old = ("    entity.jumpQueued = false\n\n    let strafe = (entity.control.right - entity.control.left) * 0.98")
+        if old not in s:
+            print("[phaseorder] WARNING: sink anchor not found")
+        else:
+            new = ("    entity.jumpQueued = false\n\n"
+                   "    // BOTCRAFT PORT (phase order: vanilla aiStep sinks sneak-in-water BEFORE\n"
+                   "    // jump handling — sneak + water + no jump = downward speed. Mineflayer\n"
+                   "    // had no sink at all, so descending water columns never worked.)\n"
+                   "    if (entity.isInWater && entity.control.sneak && !entity.control.jump) {\n"
+                   "      vel.y -= 0.04\n"
+                   "    }\n\n"
+                   "    let strafe = (entity.control.right - entity.control.left) * 0.98")
+            s = s.replace(old, new, 1)
+            open(pj, "w").write(s)
+            print("[phaseorder] sneak-sink installed")
+            s = open(pj).read()
+    if "BOTCRAFT PORT (1.21.5+ parity" in s:
+        print("[phaseorder] squared-floor present -> no-op")
+        return
+    old2 = ("    // Reset velocity component if it falls under the threshold\n"
+            "    if (Math.abs(vel.x) < physics.negligeableVelocity) vel.x = 0\n"
+            "    if (Math.abs(vel.y) < physics.negligeableVelocity) vel.y = 0\n"
+            "    if (Math.abs(vel.z) < physics.negligeableVelocity) vel.z = 0")
+    if old2 not in s:
+        print("[phaseorder] WARNING: floor anchor not found")
+        return
+    new2 = ("    // Reset velocity component if it falls under the threshold\n"
+            "    // BOTCRAFT PORT (1.21.5+ parity: XZ zeroes on SQUARED norm < 9e-6, i.e.\n"
+            "    // the vector dies as a whole — per-axis 0.003 kept diagonal creep alive.)\n"
+            "    if (vel.x * vel.x + vel.z * vel.z < 9e-6) { vel.x = 0; vel.z = 0 }\n"
+            "    if (Math.abs(vel.y) < physics.negligeableVelocity) vel.y = 0")
+    s = s.replace(old2, new2, 1)
+    open(pj, "w").write(s)
+    print("[phaseorder] squared-floor installed")
+
+
+def ensure_pathfinder_walker(base):
+    """BOTCRAFT PORT (Move walker): anti-overshoot braking on descents +
+    gap-jump run-up from block center. Marker-idempotent per hunk."""
+    ix = os.path.join(base, "mineflayer-pathfinder", "index.js")
+    if not os.path.exists(ix):
+        print(f"[walker] WARNING: {ix} missing")
+        return
+    s = open(ix).read()
+    if "BOTCRAFT PORT (anti-overshoot braking" in s:
+        print("[walker] braking present -> no-op")
+    else:
+        old = ("    bot.look(Math.atan2(-dx, -dz), 0)\n"
+               "    bot.setControlState('forward', true)\n"
+               "    bot.setControlState('jump', false)")
+        if old not in s:
+            print("[walker] WARNING: brake anchor not found")
+        else:
+            new = ("    bot.look(Math.atan2(-dx, -dz), 0)\n"
+                   "    // BOTCRAFT PORT (anti-overshoot braking: Botcraft Move() kills forward\n"
+                   "    // accel while falling onto a lower node — full speed into a dropshoot\n"
+                   "    // overshoots the landing and clips walls. Back off at speed > 0.12,\n"
+                   "    // coast at 0.06-0.12, full ahead only when slow.)\n"
+                   "    let _brakeFwd = true\n"
+                   "    try {\n"
+                   "      const _dyy = (nextPoint.y ?? 0) - p.y\n"
+                   "      if (_dyy < -0.5) {\n"
+                   "        const _sp = Math.max(Math.abs(bot.entity.velocity?.x || 0), Math.abs(bot.entity.velocity?.z || 0))\n"
+                   "        if (_sp > 0.12) { bot.setControlState('forward', false); bot.setControlState('back', true); _brakeFwd = false }\n"
+                   "        else if (_sp > 0.06) { bot.setControlState('forward', false); bot.setControlState('back', false); _brakeFwd = false }\n"
+                   "      }\n"
+                   "    } catch (_) {}\n"
+                   "    if (_brakeFwd) bot.setControlState('forward', true)\n"
+                   "    try { if (!_brakeFwd) setTimeout(() => { try { bot.setControlState('back', false) } catch (_) {} }, 250) } catch (_) {}\n"
+                   "    bot.setControlState('jump', false)")
+            s = s.replace(old, new, 1)
+            open(ix, "w").write(s)
+            print("[walker] braking installed")
+            s = open(ix).read()
+    if "BOTCRAFT PORT (gap-jump run-up" in s:
+        print("[walker] run-up present -> no-op")
+        return
+    old2 = ("    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {\n"
+            "      bot.setControlState('jump', true)\n"
+            "      bot.setControlState('sprint', true)")
+    if old2 not in s:
+        print("[walker] WARNING: run-up anchor not found")
+        return
+    new2 = ("    } else if (stateMovements.allowSprinting && physics.canSprintJump(path)) {\n"
+            "      // BOTCRAFT PORT (gap-jump run-up: Botcraft Move() strafes to the\n"
+            "      // current block CENTER first to build speed, then jumps. Jumping from\n"
+            "      // the block edge with no run-up lands short. Center first (< 0.15 =\n"
+            "      // centered enough), jump after.)\n"
+            "      try {\n"
+            "        const _cx = Math.floor(p.x) + 0.5, _cz = Math.floor(p.z) + 0.5\n"
+            "        const _off = Math.hypot(p.x - _cx, p.z - _cz)\n"
+            "        if (_off > 0.15 && bot.entity.onGround) {\n"
+            "          bot.setControlState('forward', true)\n"
+            "          bot.setControlState('sprint', true)\n"
+            "          bot.setControlState('jump', false)\n"
+            "        } else {\n"
+            "          bot.setControlState('jump', true)\n"
+            "          bot.setControlState('sprint', true)\n"
+            "        }\n"
+            "      } catch (_) {\n"
+            "        bot.setControlState('jump', true)\n"
+            "        bot.setControlState('sprint', true)\n"
+            "      }")
+    s = s.replace(old2, new2, 1)
+    open(ix, "w").write(s)
+    print("[walker] run-up installed")
+
+
+def ensure_mineflayer_dirty_inputs(base):
+    """BOTCRAFT PORT (dirtyInputs backpressure): AI stamps bot._dirtyInputs on
+    every control write; the physics tick clears it after simulating; loops
+    yield while dirty instead of flapping the wire. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
+    if not os.path.exists(mp):
+        print(f"[dirty] WARNING: {mp} missing")
+        return
+    s = open(mp).read()
+    if "BOTCRAFT PORT (dirtyInputs backpressure" in s:
+        print("[dirty] dirtyInputs present -> no-op")
+        return
+    old = ("  bot.clearControlStates = () => {\n"
+           "    for (const control in controlState) {\n"
+           "      bot.setControlState(control, false)\n"
+           "    }\n"
+           "  }")
+    if old not in s:
+        print("[dirty] WARNING: clear anchor not found")
+        return
+    new = ("  // BOTCRAFT PORT (dirtyInputs backpressure: Botcraft AI sets inputs,\n"
+           "  // physics consumes; Move() yields while GetDirtyInputs(). Without the\n"
+           "  // flag, kite steps + planner + flee overwrite each other mid-tick and\n"
+           "  // the wire flaps forward/back between two ticks. Stamp on every write,\n"
+           "  // clear after each simulated tick; loops yield while dirty.)\n"
+           "  bot._dirtyInputs = false\n"
+           "  bot.physics.inputsDirty = () => bot._dirtyInputs === true\n"
+           "  const _origSetCS = bot.setControlState\n"
+           "  bot.setControlState = (control, state) => {\n"
+           "    try { if (controlState[control] !== state) bot._dirtyInputs = true } catch (_) {}\n"
+           "    return _origSetCS(control, state)\n"
+           "  }\n"
+           "  bot.clearControlStates = () => {\n"
+           "    for (const control in controlState) {\n"
+           "      _origSetCS(control, false)\n"
+           "    }\n"
+           "    try { bot._dirtyInputs = true } catch (_) {}\n"
+           "  }")
+    s = s.replace(old, new, 1)
+    open(mp, "w").write(s)
+    s = open(mp).read()
+    old2 = ("      } else {\n"
+            "        _st.apply(bot);\n"
+            "      }\n"
+            "      bot.emit('physicsTick')")
+    if old2 not in s:
+        print("[dirty] WARNING: tick anchor not found (stamp installed, clear missing)")
+        return
+    new2 = ("      } else {\n"
+            "        _st.apply(bot);\n"
+            "      }\n"
+            "      try { bot._dirtyInputs = false } catch (_) {} // consumed by this tick\n"
+            "      bot.emit('physicsTick')")
+    s = s.replace(old2, new2, 1)
+    open(mp, "w").write(s)
+    print("[dirty] dirtyInputs installed")
+
+
 def ensure_pathfinder_prs(base):
     """Adopt 8 upstream pathfinder PRs + 3 gated fixes (df0324e) into
     node_modules/mineflayer-pathfinder. Marker-idempotent per hunk: each
@@ -908,6 +1086,9 @@ def main():
     ensure_chunk_26_3(BASE)
     ensure_anvil_26_3(BASE)
     ensure_physics_fallback(BASE)
+    ensure_prismarine_phase_order(BASE)
+    ensure_pathfinder_walker(BASE)
+    ensure_mineflayer_dirty_inputs(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)
