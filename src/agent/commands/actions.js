@@ -1832,7 +1832,7 @@ export const actionsList = [
     },
     {
         name: '!parkour',
-        description: 'Do a parkour trick with precise inputs: edge (crouch to the very edge and hold — the launch stance), jump (max-distance sprint-jump), strafe45 (diagonal 45-degree jump, left/right), neo (sprint-jump AROUND a pillar with no run-up, left/right), backward (momentum jump landing backwards), clutch (MLG a block under you mid-fall), ladder (slap a ladder on a wall mid-fall and grab it), bridge (speed-bridge forward placing under your feet). Needs food; refuses over void.',
+        description: 'Do a parkour trick with precise inputs: edge (crouch to the very edge and hold — the launch stance), jump (max-distance sprint-jump), strafe45 (diagonal 45-degree jump, left/right), neo (sprint-jump AROUND a pillar with no run-up, left/right), backward (momentum jump landing backwards), clutch (MLG a block under you mid-fall), ladder (slap a ladder on a wall mid-fall and grab it), place (jump a gap with NO landing by placing the landing block mid-flight — needs a block + something to place against, refuses unsafe), bridge (speed-bridge forward placing under your feet). Needs food; refuses over void.',
         params: {
             'technique': { type: 'string', default: 'jump', description: 'edge, jump, strafe45, neo, backward, clutch, ladder, bridge.' },
             'arg': { type: 'string', default: null, description: 'Side (left/right) for strafe45/neo, block for clutch/bridge, or "block length" for bridge.' }
