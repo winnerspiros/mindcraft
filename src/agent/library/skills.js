@@ -4051,16 +4051,32 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     if (Number.isFinite(dt) && dt >= 0) _expectedMs = Math.min(20000, Math.max(1500, dt + 3000));
                 } catch (_) {}
                 try {
-                    await Promise.race([
+                    // FINISH-THE-SWING (2026-09-27): competing actions set interrupt_code
+                    // mid-dig (log: collectBlocks interrupting collectBlocks) and the old
+                    // race bailed instantly -> click-stop-retry spam, block never breaks.
+                    // Now: on interrupt, re-issue the dig ONCE on the same block if it
+                    // is still there (the interrupter already lost its turn — the action
+                    // manager serializes, so finishing this swing can't overlap it).
+                    const _digOnce = () => Promise.race([
                         bot.dig(block, true),
                         new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), _expectedMs)),
-                        new Promise((_, rej) => {
-                            const t = setInterval(() => {
-                                if (bot.interrupt_code) { clearInterval(t); rej(new Error('interrupted')); }
-                            }, 200);
-                            setTimeout(() => { clearInterval(t); }, _expectedMs + 1000);
-                        }),
                     ]);
+                    try {
+                        await _digOnce();
+                    } catch (e1) {
+                        if (String((e1 && e1.message) || e1).includes('interrupted') || bot.interrupt_code) {
+                            try { bot.interrupt_code = false; } catch (_) {}
+                            try {
+                                const still = bot.blockAt(block.position);
+                                if (still && still.name === block.name) {
+                                    await _digOnce();
+                                }
+                            } catch (_) {}
+                        } else throw e1;
+                    }
+                    // hard interrupt watcher: only bails the OUTER action, never
+                    // mid-swing (the swing above already had its second chance).
+                    if (bot.interrupt_code) throw new Error('interrupted');
                 } catch (e) {
                     try { bot.stopDigging(); } catch (_) {}
                     if (bot.interrupt_code) return false; // stopped: out fast, no chatter

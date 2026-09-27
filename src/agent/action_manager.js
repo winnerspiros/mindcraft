@@ -94,9 +94,19 @@ export class ActionManager {
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
             if (this.executing) {
-                console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}"`);
-            }
-            await this.stop();
+                console.log(`action "${actionLabel}" trying to interrupt current action "${this.currentActionLabel}`);
+                // SAME-ACTION CHAIN (2026-09-27): re-issuing the running dig action
+                // (collectBlocks->collectBlocks in the log) killed the swing via
+                // stopDigging. Instead wait for it to finish, then run fresh.
+                if (actionLabel === this.currentActionLabel) {
+                    const t0 = Date.now();
+                    while (this.executing && Date.now() - t0 < 15000) {
+                        await new Promise(r => setTimeout(r, 300));
+                    }
+                    if (!this.executing) { this.agent.clearBotLogs(); }
+                    else await this.stop();
+                } else await this.stop();
+            } else await this.stop();
 
             // clear bot logs and reset interrupt code
             this.agent.clearBotLogs();
