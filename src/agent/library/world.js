@@ -1,5 +1,8 @@
 import pf from 'mineflayer-pathfinder';
 import * as mc from '../../utils/mcdata.js';
+import { worldSeed } from '../../utils/server_context.js';
+
+export function activeSeed() { return worldSeed(); }
 
 
 export function getNearestFreeSpace(bot, size=1, distance=8) {
@@ -336,14 +339,16 @@ function _javaRandomNextInt10(seedLong) {
     }
 }
 
-export function isSlimeChunk(cx, cz, seedStr = WORLD_SEED) {
+export function isSlimeChunk(cx, cz, seedStr = null) {
     /**
      * Slime-chunk test (Java formula): mix the world seed with the chunk
      * coords, run java.util.Random, nextInt(10) == 0 means slimes spawn
      * below y 40 even at ANY light. Swamps spawn slimes on the surface at
      * night regardless — this test is for the underground farm chunks.
+     * seedStr null = this context's seed (servers.json, else home default).
      * @returns {boolean} true if this chunk grows slimes underground.
      **/
+    seedStr = seedStr || activeSeed();
     try {
         const seed = BigInt(seedStr);
         const x = BigInt(cx), z = BigInt(cz);
@@ -367,10 +372,19 @@ export function getSeedInfo(bot) {
     const lines = [];
     try {
         const p = bot.entity.position;
+        const seed = activeSeed();
+        const known = (() => { try { return !!worldSeed(); } catch (_) { return true; } })();
         const cx = Math.floor(p.x / 16), cz = Math.floor(p.z / 16);
-        lines.push(`seed: ${WORLD_SEED} (this world's DNA — terrain, biomes, structures all derive from it)`);
-        lines.push(`this chunk ${cx},${cz}: ${isSlimeChunk(cx, cz) ? 'SLIME chunk — slimes spawn below y 40 at any light (dig the farm here)' : 'not slime (swamp surface at night still works; !seed slime r finds farm chunks)'}`);
+        lines.push(known
+            ? `seed: ${seed} (this world's DNA — terrain, biomes, structures all derive from it)`
+            : `seed: UNKNOWN on this server (owner hasn't stored it in servers.json — crack it client-side and paste it in). slime math below is DISABLED, not guessed`);
+        if (known) {
+        lines.push(`this chunk ${cx},${cz}: ${isSlimeChunk(cx, cz, seed) ? 'SLIME chunk — slimes spawn below y 40 at any light (dig the farm here)' : 'not slime (swamp surface at night still works; !seed slime r finds farm chunks)'}`);
         lines.push('seed unlocks: slime test (computed), biome↔resource reasoning (!surroundings biome + seed bands = where to walk), structure hunting via /locate output read in chat');
+        } else {
+        lines.push(`this chunk ${cx},${cz}: can't test slime without the seed — farm swamp surface at night instead`);
+        lines.push('ask an op for the seed (or have the owner crack it) and !seed wakes up fully');
+        }
         lines.push('honest limit: no far-seeing — unknown land needs walking, !map (21x21 live), or a player/OP /locate readout as waypoint');
     } catch (_) { /* headless — skip */ }
     return lines;

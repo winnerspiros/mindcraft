@@ -554,6 +554,13 @@ export class Prompter {
             }
 
             let prompt = this.profile.conversing;
+            // Per-server personality overlay (servers.json "personality":
+            // yandere = base prompt, nothing to add; normal = Elena-style
+            // direct-drop persona section appended last, so it wins ties).
+            try {
+                const { personalityOverlay } = await import('../utils/server_context.js');
+                if (typeof personalityOverlay === 'function') prompt += personalityOverlay();
+            } catch (_) {}
             prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
             let generation;
 

@@ -1,6 +1,7 @@
 import * as mc from "../../utils/mcdata.js";
-import * as world from "./world.js";
-import { rconPlayerPos, rconCommand } from "../../utils/rcon.js";
+import * as world from './world.js';
+import { canOp } from '../../utils/server_context.js';
+import { rconPlayerPos, rconCommand } from '../../utils/rcon.js';
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
@@ -52,7 +53,27 @@ function powerRefused(agent, playerName, what) {
 export { powerRank, powerRefused };
 
 function silentGive(bot, username, itemType, num) {
+    if (!canOp()) return false;
     bot.chat(`/give ${username} ${itemType} ${num}`);
+    return true;
+}
+
+// Every bot.chat('/<op command>...') in this file routes through opChat:
+// on a survival server (op=false) it refuses instead of firing a command
+// the server would reject — callers fall through to their honest path.
+export function opChat(bot, msg) {
+    if (!canOp()) { log(bot, `No operator powers on this server — doing it the honest survival way instead.`); return false; }
+    try { bot.chat(msg); return true; } catch (e) { log(bot, `Command failed: ${e.message}`); return false; }
+}
+
+// Every RCON call in this file routes through opRcon: with rcon disabled it
+// fails fast (ok:false) so callers take their survival path instead of
+// hanging on a console that isn't there.
+async function opRcon(cmd) {
+    const { rconConfig } = await import('../../utils/server_context.js');
+    const rc = rconConfig();
+    if (!rc.enabled || !canOp()) return null;
+    try { return await rconCommand(cmd); } catch (_) { return null; }
 }
 
 // ============================================================================
@@ -2817,6 +2838,7 @@ export async function rconLocateHostile(bot, names, radius=64) {
      **/
     const list = Array.isArray(names) ? names : [names];
     let best = null;
+    if (!canOp()) return null; // survival server: no console — eyes only
     for (const n of list) {
         let out = null;
         try { out = await rconCommand(`execute as ${bot.username} at @s run data get entity @e[type=${n},limit=1,sort=nearest,distance=..${radius}] Pos`); }
@@ -4397,6 +4419,8 @@ export async function viewChest(bot) {
         }
     }
     // Fallback: /data no-touch read — zero interaction packets, same info.
+    // survival server: no /data either — say so, the gated openContainer above stays the read.
+    if (!canOp()) { log(bot, `No /data powers on this server — open the chest by hand when close.`); return false; }
     try {
         const p = chest.position;
         bot.chat(`/data get block ${p.x} ${p.y} ${p.z} Items`);
@@ -5116,6 +5140,7 @@ export async function pointAtPosition(bot, x, y, z, what = 'there') {
 }
 
 export async function teleportPlayer(bot, playerName) {
+    if (!canOp()) { log(bot, `No teleport powers on this server — they walk, I walk.`); return `No teleport powers here.`; }
     const p = bot.entity.position;
     bot.chat(`/tp ${playerName} ${Math.floor(p.x)} ${Math.floor(p.y)} ${Math.floor(p.z)}`);
     log(bot, `Teleported ${playerName} to you.`);
@@ -5135,6 +5160,9 @@ export async function teleportSelf(bot, x, y, z) {
     // op. The old \"Invalid move\" belief came from walk-death-era stale-state
     // echoes, not from teleports themselves. So: tp via quiet RCON (no
     // chat-log spam), then re-sync her client pos to the echo.
+    // Survival server: op=false here, so !teleportMe (power-gated in the
+    // command layer) never reaches this far — this guard is the second lock.
+    if (!canOp()) { log(bot, `No teleport powers on this server — I'll walk there like a player.`); return false; }
     x = Math.floor(Number(x)); y = Math.floor(Number(y)); z = Math.floor(Number(z));
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { log(bot, '!teleportMe needs x y z — where to?'); return false; }
     if (y < -64 || y > 320) { log(bot, `Y=${y} is outside the world — refusing the tp.`); return false; }
@@ -5149,6 +5177,42 @@ export async function teleportSelf(bot, x, y, z) {
         log(bot, `Tp'd myself to ${x} ${y} ${z} — the fast road, used sparingly.`);
         return true;
     }
+}
+
+export async function tpaRequest(bot, playerName) {
+    // Consensual teleport that needs NO operator powers: sends a TPA request
+    // the other side accepts (/tpaccept) or ignores. Command names come from
+    // servers.json teleports (EssentialsX + SimpleTPA share /tprequest).
+    // Disabled context (teleports.enabled=false) = walk instead, said aloud.
+    let cfg = null;
+    try { const sc = await import('../../utils/server_context.js'); cfg = sc.teleportConfig(); }
+    catch (_) { cfg = null; }
+    const send = (cfg && cfg.send) || '/tprequest';
+    const who = String(playerName || '').trim();
+    if (!who) { log(bot, `TPA needs a name — who should I ask?`); return `No name given.`; }
+    if (cfg && cfg.enabled === false) {
+        log(bot, `No TPA on this server — walking to ${who} like a player instead.`);
+        try { await goToPlayer(bot, who, 3); return true; } catch (_) { return false; }
+    }
+    try { bot.chat(`${send} ${who}`); } catch (e) { log(bot, `TPA send failed: ${e.message}`); return false; }
+    log(bot, `Sent ${who} a teleport request — they accept if they want me there.`);
+    return `TPA request sent to ${who}.`;
+}
+
+export async function tpaRespond(bot, playerName, accept) {
+    // Answer an incoming TPA request: /tpaccept (yes) or /tpdeny (no).
+    // Null name = newest request (both plugins accept a bare command).
+    // Never gated on rank here — the BRAIN decides (these are plain commands,
+    // not power: ones); this just speaks the plugin syntax correctly.
+    let cfg = null;
+    try { const sc = await import('../../utils/server_context.js'); cfg = sc.teleportConfig(); }
+    catch (_) { cfg = null; }
+    if (cfg && cfg.enabled === false) { log(bot, `No TPA on this server — ignoring the request.`); return `TPA disabled here.`; }
+    const cmd = accept ? ((cfg && cfg.accept) || '/tpaccept') : ((cfg && cfg.deny) || '/tpdeny');
+    const who = String(playerName || '').trim();
+    try { bot.chat(who ? `${cmd} ${who}` : cmd); } catch (e) { log(bot, `TPA reply failed: ${e.message}`); return false; }
+    log(bot, `${accept ? 'Accepted' : 'Declined'}${who ? ' ' + who + `'s` : ''} teleport request.`);
+    return `${accept ? 'Accepted' : 'Declined'}${who ? ' ' + who : ''}.`;
 }
 
 export async function comeHere(bot, requester, paced = null) {
@@ -5221,10 +5285,11 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     // the "Gave X N item" feedback to HER chat (visible), and log() below
     // narrates it to public chat too. The gift itself is silent server-side;
     // only her cute narration should be heard, never the command echo.
-    if (bot.modes.isOn('cheat')) {
-        silentGive(bot, username, itemType, num);
-        return true;
+    // survival server: no /give at all — skip straight to the walk-and-toss path.
+    if (canOp() && bot.modes.isOn('cheat')) {
+        if (silentGive(bot, username, itemType, num)) return true;
     }
+    if (!canOp()) log(bot, `No /give on this server — walking it over like a player~ ♥`);
     let player = bot.players[username].entity
     if (!player) {
         log(bot, `Could not find ${username}.`);
@@ -5812,7 +5877,7 @@ export async function goToPlayer(bot, username, distance=3) {
                     log(bot, `Leg blocked — one retry toward fresh position.`);
                     ok = await goToPosition(bot, Math.floor(rt.x), Math.floor(rt.y), Math.floor(rt.z), Math.max(distance, 2));
                     if (!ok) {
-                        log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside, or say "!teleportMe" and I'll tp.`);
+                        log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside${canOp() ? ', or say "!teleportMe" and I\'ll tp' : ''}.`);
                         break;
                     }
                 }
@@ -7604,6 +7669,7 @@ export async function summonMob(bot, entityType, count = 1) {
     const p = bot.entity.position;
     let ok = 0;
     for (let i = 0; i < count; i++) {
+        if (!canOp()) { log(bot, `No /summon on this server — going to find a ${resolved} the honest way instead (walk, lure, trap).`); return ok > 0 ? `Summoned ${ok} ${resolved}.` : false; }
         const a = (i / Math.max(1, count)) * Math.PI * 2;
         const r = 3 + (i % 3);
         const x = Math.floor(p.x + Math.cos(a) * r), y = Math.floor(p.y), z = Math.floor(p.z + Math.sin(a) * r);
@@ -7625,7 +7691,9 @@ export async function despawnEntities(bot, entityType, radius = 64) {
         log(bot, msg);
         return msg;
     }
-    try { bot.chat(`/kill @e[type=minecraft:${resolved},distance=..${radius}]`); }
+    try {
+        if (!canOp()) { log(bot, `No /kill powers here — leaving the ${resolved} alone.`); return false; }
+        bot.chat(`/kill @e[type=minecraft:${resolved},distance=..${radius}]`); }
     catch (e) { const msg = `Despawn failed: ${e.message}`; log(bot, msg); return msg; }
     const msg = `Removed ${resolved} within ${radius} blocks.`;
     log(bot, msg);
