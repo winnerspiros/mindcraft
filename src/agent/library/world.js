@@ -587,6 +587,27 @@ export function getTerrainProfile(bot, range = 24) {
     } catch (_) { /* skip */ }
     const below = bot.blockAt(pos.offset(0, -1, 0));
     lines.push(`standing on ${below ? below.name : 'air'}`);
+    // PIT + ESCAPE SENSE (2026-09-27): she sat in a hole re-walking dead lines
+    // because nothing told her she was IN one. Walled on 3+ sides at head level
+    // = pit: say so + name the way out (water to swim, dirt underfoot to pillar).
+    try {
+        const atHead = (dx, dz) => { try { const b = bot.blockAt(pos.offset(dx, 1, dz)); return b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air' && b.name !== 'water'; } catch { return false; } };
+        const walls = [[1,0],[-1,0],[0,1],[0,-1]].filter(([dx,dz]) => atHead(dx,dz)).length;
+        if (walls >= 3) {
+            let out = [];
+            try {
+                const waters = bot.findBlocks({ matching: (b) => b && b.name === 'water', maxDistance: 8, count: 4 }) || [];
+                if (waters.length) out.push(`water ${Math.round(pos.distanceTo(waters[0]))}m — swim up it (!searchForBlock water)`);
+            } catch (_) {}
+            try {
+                const inv = getInventoryCounts(bot);
+                const dig = ['dirt','cobblestone','stone','deepslate','sand','gravel','oak_planks'].find(m => (inv[m]||0) > 0);
+                if (dig) out.push(`pillar on ${dig} (!pillar ${dig} 7)`);
+                else out.push('no blocks carried — dig the wall (!digDown 3) or break out sideways');
+            } catch (_) {}
+            lines.push(`PIT: walled on ${walls}/4 sides — climb out, don't walk out${out.length ? ' (' + out.join('; ') + ')' : ''}`);
+        }
+    } catch (_) { /* skip */ }
 
     for (const [label, dx, dz] of DIRS) {
         let hit = null;

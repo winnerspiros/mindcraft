@@ -6589,11 +6589,33 @@ export async function goToPlayer(bot, username, distance=3) {
         // there; this probe was only to decide whether they're truly gone).
         log(bot, `Cheat-/tp disabled on 26.3 — walking to ${username} by server position instead.`);
     } else if (playerEntity) {
-        let distTxt = '?';
+        let distTxt = '?', _blind = false;
         try {
             const dist = bot.entity.position.distanceTo(playerEntity.position);
             distTxt = Number.isFinite(dist) ? dist.toFixed(1) : '?';
-        } catch (_) {}
+            if (!Number.isFinite(dist)) _blind = true; // NaN = ghost handle (entity blindness): RCON decides below
+        } catch (_) { _blind = true; }
+        if (_blind) {
+            // GHOST ENTITY (2026-09-27): handle renders but position is NaN —
+            // walking it plans NaN nodes forever. Drop to the RCON walker.
+            const rpos = await rconPlayerPos(username).catch(() => null);
+            if (!rpos) { log(bot, `Could not find ${username}.`); return false; }
+            log(bot, `${username} is near but I can't see them clearly — walking to where they are.`);
+            const lg = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
+            lg._pathTimeout = 4000;
+            const okg = await goToGoal(bot, lg);
+            try {
+                const d = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
+                if (d <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+            } catch (_) {}
+            // vertical gap left (they're above/below)? say so with the fix.
+            try {
+                const dy = rpos.y - bot.entity.position.y;
+                if (dy > 3) log(bot, `${username} is ${Math.round(dy)} up — I need to pillar (${Math.ceil(dy)+1} high), not walk.`);
+                else if (dy < -3) log(bot, `${username} is ${Math.round(-dy)} down — I need to dig down carefully.`);
+            } catch (_) {}
+            return okg;
+        }
         if (bot.modes.isOn('cheat'))
             log(bot, `Cheat-/tp disabled on 26.3 — walking ${distTxt} blocks to ${username} instead.`);
         else
