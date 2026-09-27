@@ -3000,6 +3000,64 @@ export async function defendSelf(bot, range=9) {
     return attacked;
 }
 
+// BLIND FIGHT (entity-withholding fallback): eyes see nothing but server
+// truth says she's taking damage. Locates the nearest hostile via RCON
+// (read-only `data get`, any common hostile type), walks to its live
+// position, and swings — re-resolving the handle every tick, blind-swinging
+// at the RCON position when no handle renders. Survival-safe: RCON locate
+// fails fast off-home (canOp false) and the whole thing becomes eyes-only.
+// Stops when HP stabilizes (threat dead) or interrupt arrives.
+const BLIND_FIGHT_TYPES = ['zombie', 'skeleton', 'spider', 'creeper', 'enderman',
+    'witch', 'pillager', 'vindicator', 'evoker', 'ravager', 'phantom', 'drowned',
+    'husk', 'stray', 'bogged', 'breeze', 'slime', 'cave_spider', 'silverfish'];
+export async function defendBlind(bot, range = 16) {
+    bot.modes.pause('self_defense');
+    bot.modes.pause('cowardice');
+    try { await equipHighestAttack(bot); } catch (_) {}
+    try { bot.armorManager.equipAll(); } catch (_) {}
+    log(bot, `Something is hurting me but I can't see it — fighting server truth.`);
+    const t0 = Date.now(), BUDGET = 30000;
+    let swung = false;
+    while (Date.now() - t0 < BUDGET) {
+        if (bot.interrupt_code || bot.health <= 0) break;
+        // live handle first (it may render mid-fight)
+        let foe = null;
+        try {
+            foe = world.getNearestEntityWhere(bot,
+                e => e?.position && Number.isFinite(e.position.x) && mc.isHostile(e), range);
+        } catch (_) {}
+        if (foe) { // eyes recovered — normal fight takes over from here
+            try {
+                if (bot.entity.position.distanceTo(foe.position) > 3.5)
+                    await goToPosition(bot, foe.position.x, foe.position.y, foe.position.z, 2);
+                await bot.attack(foe);
+                swung = true;
+            } catch (_) {}
+            await new Promise(r => setTimeout(r, 600));
+            continue;
+        }
+        // still blind: RCON truth (fails fast to null off-home)
+        let r = null;
+        try { r = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
+        if (!r) { await new Promise(r2 => setTimeout(r2, 1500)); continue; }
+        try {
+            const d = bot.entity.position.distanceTo(r.pos);
+            if (d > 3.5) await goToPosition(bot, r.pos.x, r.pos.y, r.pos.z, 2);
+        } catch (_) {}
+        // blind swing at the RCON position: face it, punch the air — vanilla
+        // resolves the hit server-side by reach, no handle needed.
+        try {
+            await bot.lookAt(new Vec3(r.pos.x, r.pos.y + 1.4, r.pos.z));
+            bot.swingArm('right');
+            swung = true;
+        } catch (_) {}
+        await new Promise(r2 => setTimeout(r2, 700));
+    }
+    try { bot.pvp.stop(); } catch (_) {}
+    log(bot, swung ? `Blind fight done — threat should be down.` : `Blind fight: never found the attacker.`);
+    return swung;
+}
+
 // GUARD MODE (mineflayer-statemachine, on-demand — never auto-started):
 // follow a player and fight anything hostile near THEM (not just her).
 // Built on the real statemachine lib (BehaviorFollowEntity + Idle +
@@ -5184,16 +5242,40 @@ export async function tpaRequest(bot, playerName) {
     // the other side accepts (/tpaccept) or ignores. Command names come from
     // servers.json teleports (EssentialsX + SimpleTPA share /tprequest).
     // Disabled context (teleports.enabled=false) = walk instead, said aloud.
+    // SPAM RULE: she never sends unless the brain has a concrete reason
+    // (asked to come somewhere unreachable counts). One pending request per
+    // player per 5 min — a second call inside the window is refused with a
+    // message instead of re-sending. Server without TPA (probe says no) =
+    // refuse + walk, never unknown-command noise into chat.
     let cfg = null;
     try { const sc = await import('../../utils/server_context.js'); cfg = sc.teleportConfig(); }
     catch (_) { cfg = null; }
     const send = (cfg && cfg.send) || '/tprequest';
     const who = String(playerName || '').trim();
     if (!who) { log(bot, `TPA needs a name — who should I ask?`); return `No name given.`; }
+    // No TPA capability = no send, ever. Probe (agent.js inbox) sets this;
+    // home is true by config, guest stays false until tab-complete proves it.
+    let tpaOk = true;
+    try { const sc2 = await import('../../utils/server_context.js'); tpaOk = sc2.isTeleportsAvailable(); }
+    catch (_) { tpaOk = true; }
     if (cfg && cfg.enabled === false) {
         log(bot, `No TPA on this server — walking to ${who} like a player instead.`);
         try { await goToPlayer(bot, who, 3); return true; } catch (_) { return false; }
     }
+    if (!tpaOk) {
+        log(bot, `This server has no teleport commands that I can see — walking to ${who} like a player.`);
+        try { await goToPlayer(bot, who, 3); return true; } catch (_) { return false; }
+    }
+    // Dedupe: one pending request per player per 5 min, no re-send spam.
+    try {
+        bot._tpaSent = bot._tpaSent || new Map();
+        const last = bot._tpaSent.get(who.toLowerCase()) || 0;
+        if (Date.now() - last < 5 * 60 * 1000) {
+            log(bot, `I already asked ${who} a moment ago — waiting for their answer, no spam.`);
+            return `Already asked ${who} — waiting.`;
+        }
+        bot._tpaSent.set(who.toLowerCase(), Date.now());
+    } catch (_) {}
     try { bot.chat(`${send} ${who}`); } catch (e) { log(bot, `TPA send failed: ${e.message}`); return false; }
     log(bot, `Sent ${who} a teleport request — they accept if they want me there.`);
     return `TPA request sent to ${who}.`;
@@ -5208,6 +5290,12 @@ export async function tpaRespond(bot, playerName, accept) {
     try { const sc = await import('../../utils/server_context.js'); cfg = sc.teleportConfig(); }
     catch (_) { cfg = null; }
     if (cfg && cfg.enabled === false) { log(bot, `No TPA on this server — ignoring the request.`); return `TPA disabled here.`; }
+    // No TPA capability = the request line can't be real plugin text; ignore
+    // silently instead of answering with a command the server doesn't have.
+    try {
+        const sc3 = await import('../../utils/server_context.js');
+        if (!sc3.isTeleportsAvailable()) { console.log('[tpa] ignoring request text — no TPA capability on this server.'); return `TPA not available here.`; }
+    } catch (_) {}
     const cmd = accept ? ((cfg && cfg.accept) || '/tpaccept') : ((cfg && cfg.deny) || '/tpdeny');
     const who = String(playerName || '').trim();
     try { bot.chat(who ? `${cmd} ${who}` : cmd); } catch (e) { log(bot, `TPA reply failed: ${e.message}`); return false; }
@@ -5217,12 +5305,12 @@ export async function tpaRespond(bot, playerName, accept) {
 
 export async function comeHere(bot, requester, paced = null) {
     // "COME HERE / GO TO X" brain: someone asks her to come somewhere.
-    // Order: (1) trusted voice or beloved = go NOW, no debate; (2) pick the
-    // honest road by distance+ground (walk near, sprint far flat, boat water
-    // legs, !glitch travel far+healthy, !tidy bridge gaps); (3) tp ONLY if
-    // they asked for it ("tp to me") AND the gate allows (friend+ power rule
-    // lives on !teleportMe — this function just walks unless told to tp);
-    // (4) say what she chose. Returns true if she set off.
+    // Order: (1) trusted voice or beloved = go NOW, no debate; (2) WALK —
+    // always the honest road first (walk near, sprint far flat, boat water
+    // legs, !glitch travel far+healthy, !tidy bridge gaps); (3) NEVER offer
+    // tp herself ("tp to me" / !teleportMe are hers to RECEIVE, not to
+    // advertise — she comes on foot and only tps when THEY explicitly ask
+    // for a tp AND the gate allows); (4) say what she chose.
     // 26.3 FIX: the OLD code only walked when the entity was in bot.players;
     // the server withholds entities (verified: withheld even at 11 blocks),
     // so "can't see you" was a dead end even standing next to them. Now: try
@@ -5254,7 +5342,7 @@ export async function comeHere(bot, requester, paced = null) {
             return true;
         }
     } catch (_) {}
-    log(bot, `Can't see ${who} yet — give me coords or a !teleportMe and I'm there.`);
+    log(bot, `Can't see ${who} yet — walking blind isn't safe, send me coords and I'll walk over.`);
     return false;
 }
 
@@ -5877,7 +5965,7 @@ export async function goToPlayer(bot, username, distance=3) {
                     log(bot, `Leg blocked — one retry toward fresh position.`);
                     ok = await goToPosition(bot, Math.floor(rt.x), Math.floor(rt.y), Math.floor(rt.z), Math.max(distance, 2));
                     if (!ok) {
-                        log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside${canOp() ? ', or say "!teleportMe" and I\'ll tp' : ''}.`);
+                        log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside and I'll walk right over.`);
                         break;
                     }
                 }
@@ -5897,7 +5985,7 @@ export async function goToPlayer(bot, username, distance=3) {
                 return true;
             }
             const shortBy = Number.isFinite(endD) ? endD.toFixed(0) : '?';
-            log(bot, `I walked toward ${username} but I'm still ${shortBy} blocks short (no path through) — say "tp to me" (!teleportMe) and I'll pop over.`);
+            log(bot, `I walked toward ${username} but I'm still ${shortBy} blocks short — no path through. If they step somewhere open I'll walk right over.`);
             return false;
         }
         log(bot, `Could not find ${username}.`);

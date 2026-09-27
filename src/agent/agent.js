@@ -19,7 +19,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig } from '../utils/server_context.js';
+import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable } from '../utils/server_context.js';
 import { ModerationWatcher } from './moderation.js';
 import { PlayerActivityWatcher } from './player_activity.js';
 import { RelationshipManager } from './relationship.js';
@@ -1273,12 +1273,18 @@ export class Agent {
                 const matches = await bot.tabComplete('/tprequest ', false, false, 4000).catch(() => null);
                 if (!matches || !matches.length) {
                     console.log('[tpa] no /tprequest on this server (tab-complete empty) — TPA inbox off.');
+                    try { setTeleportsAvailable(false); } catch (_) {}
                     return;
                 }
+                try { setTeleportsAvailable(true); } catch (_) {}
                 console.log(`[tpa] probe ok (${matches.length} matches) — inbox armed.`);
             } catch (e) {
                 console.log('[tpa] probe failed, inbox armed anyway:', e.message);
+                try { setTeleportsAvailable(true); } catch (_) {}
             }
+        } else {
+            // No probe asked = home-style entry, SimpleTPA known present.
+            try { setTeleportsAvailable(true); } catch (_) {}
         }
         const seen = new Map(); // name -> last auto/route time (5min dedupe)
         const onTpaMsg = async (jsonMsg) => {
