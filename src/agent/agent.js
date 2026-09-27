@@ -313,6 +313,17 @@ export class Agent {
 
         const respondFunc = async (username, message, isWhisper=false) => {
             if (message === "") return;
+            // Junk-message filter (2026-09-27: 197x 'W' in one second each earned a
+            // reply + a love point). Single chars and emoji-only carry no meaning —
+            // skip them before they touch relationships, mood, or the LLM.
+            // Replies are earned by real words, not noise. (No length cap on real
+            // messages — only content-free ones are dropped.)
+            try {
+                const _t = String(message).trim();
+                const _words = _t.replace(/[^\p{L}\p{N}]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
+                const _hasWord = _words.some(w => /[\p{L}\p{N}]{2,}/u.test(w));
+                if (!_hasWord) { console.log(this.name, 'junk msg skipped from', username, ':', JSON.stringify(String(message).slice(0, 40))); return; }
+            } catch (_) {}
             if (username === this.name) return;
             if (settings.only_chat_with.length > 0 && !settings.only_chat_with.includes(username)) return;
             try {
@@ -370,6 +381,9 @@ export class Agent {
 
                 this.shut_up = false;
 
+                // RCON/system consoles are not people: no relationship record, no love
+                // economy, never beloved. (2026-09-27: console spam hit beloved via +1/message.)
+                if (/^(rcon|server|console)$/i.test(username)) return;
                 console.log(this.name, 'received message from', username, ':', message);
                 this.relationship.onMessage(username, message);
                 this.psyche.onMessage(message);
