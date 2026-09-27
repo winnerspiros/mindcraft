@@ -1228,6 +1228,30 @@ def ensure_uwu_swim(base):
                 open(mp, "w").write(t.replace(old, new, 1))
                 print("[uwu-swim] in-water legs installed")
     # 3. digger kickoff while treading water + scaffold fallback
+    # 3b. WIDE planner set (2026-09-27): stock planner only offers dirt/cobble, so
+    # water-exit/bridge legs die at execution with stone/dirt-family visible.
+    # Widen scafoldingBlocks to the full cheap-solid set. Marker-idempotent.
+    mp = os.path.join(pf, "lib", "movements.js")
+    if os.path.exists(mp):
+        t = open(mp).read()
+        if "scafoldingBlocks-WIDE" in t or "for (const sn of ['dirt','cobblestone','stone'" in t:
+            print("[uwu-swim] scaffold-wide present -> no-op")
+        else:
+            old = ("    this.scafoldingBlocks = []\n"
+                   "    this.scafoldingBlocks.push(registry.itemsByName.dirt.id)\n"
+                   "    this.scafoldingBlocks.push(registry.itemsByName.cobblestone.id)")
+            new = ("    this.scafoldingBlocks = []\n"
+                   "    for (const sn of ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks','grass_block']) {\n"
+                   "      try {\n"
+                   "        const sid = registry.itemsByName[sn] && registry.itemsByName[sn].id\n"
+                   "        if (sid !== undefined) this.scafoldingBlocks.push(sid)\n"
+                   "      } catch (e) {}\n"
+                   "    }")
+            if old not in t:
+                print("[uwu-swim] WARNING: scaffold-wide anchor moved, skipped")
+            else:
+                open(mp, "w").write(t.replace(old, new, 1))
+                print("[uwu-swim] scaffold-wide installed")
     if os.path.exists(ix):
         t = open(ix).read()
         if "UWU-SWIM (2026-09-27): the old onGround-only kickoff" in t:
