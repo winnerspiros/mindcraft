@@ -4203,19 +4203,57 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                         || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe/.test(n)) : null)
                         || (/dirt|sand|gravel/i.test(block.name) ? names.find(n => /shovel/.test(n)) : null);
                     if (pick) {
-                        // force it into hand: direct slot search on the client may
-                        // still fail blind, so try client equip by name first.
+                        // force it into hand. Client is blind (items() empty) so
+                        // name search fails — equip by numeric id via a manual
+                        // window drag: find the slot holding that id, click it.
                         try {
                             const it = bot.inventory.items().find(i => i.name === pick);
                             if (it) await bot.equip(it, 'hand');
-                            else { await bot.equip(bot.registry.itemsByName[pick].id, 'hand').catch(() => {}); }
+                            else {
+                                const wantId = bot.registry.itemsByName[pick]?.id;
+                                if (wantId) {
+                                    let slotIdx = -1;
+                                    try {
+                                        for (let si = 0; si < bot.inventory.slots.length; si++) {
+                                            const sl = bot.inventory.slots[si];
+                                            if (sl && sl.type === wantId) { slotIdx = si; break; }
+                                        }
+                                    } catch (_) {}
+                                    if (slotIdx >= 0) {
+                                        // hotbar slots are 36-44: select directly
+                                        if (slotIdx >= 36 && slotIdx <= 44) {
+                                            try { bot.setQuickBarSlot(slotIdx - 36); } catch (_) {}
+                                        } else {
+                                            try { await bot.clickWindow(slotIdx, 0, 0); } catch (_) {}
+                                        }
+                                        await new Promise(r => setTimeout(r, 500));
+                                    }
+                                }
+                            }
                         } catch (_) {}
                         itemId = bot.heldItem ? bot.heldItem.type : null;
                     }
                 } catch (_) {}
                 if (!block.canHarvest(itemId)) {
-                    log(bot, `Don't have right tools to break ${block.name}.`);
-                    return false;
+                    // LAST RESORT (home OP only): server holds the right tool but
+                    // the client is fully blind (slots null too) — hand it over
+                    // via RCON item replace (silent to public chat), then dig.
+                    try {
+                        const { rconCommand, rconInventory } = await import('../../utils/rcon.js');
+                        const inv = await rconInventory(bot.username);
+                        const names = (inv || []).map(e => e.name);
+                        const pick = names.find(n => /pickaxe/.test(n) && /diamond|iron|stone|netherite/.test(n))
+                            || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe/.test(n)) : null);
+                        if (pick) {
+                            await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
+                            await new Promise(r => setTimeout(r, 800));
+                            itemId = bot.registry.itemsByName[pick]?.id ?? itemId;
+                        }
+                    } catch (_) {}
+                    if (!block.canHarvest(itemId)) {
+                        log(bot, `Don't have right tools to break ${block.name}.`);
+                        return false;
+                    }
                 }
             }
         }
