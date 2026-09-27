@@ -5,6 +5,7 @@ import Vec3 from 'vec3';
 import settings from './settings.js'
 import convoManager from './conversation.js';
 import { canOp, combatConfig, modeOverrides } from '../utils/server_context.js';
+import { personality } from '../utils/server_context.js';
 
 async function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
@@ -230,6 +231,18 @@ const modes_list = [
         active: false,
         update: async function (agent) {
             // Fight only when calm/brave; at/above the threshold cowardice flees.
+            //
+            // ENTITY-BLINDNESS FIX (2026-09-27: pillagers nearby = nothing, a
+            // zombie chewed her to death while self_defense never fired): the
+            // 26.3 server withholds entities from bot.entities, so the eye
+            // scan alone returns null on a live threat. When eyes fail, ask
+            // RCON where the nearest hostile is (read-only data get, no
+            // cheats) and FIGHT THE RCON TRUTH: walk the live position and
+            // swing — bot.attack needs a handle, so re-resolve each tick and
+            // fall back to a blind swing at the RCON position when no handle
+            // renders. Throttled: at most one RCON locate per 5s per mode tick
+            // (update() must stay <100ms — the locate runs async inside
+            // execute, never inline here).
             if ((agent.psyche?.mood?.fear ?? 0) >= FEAR_FLEE_THRESHOLD) return;
             // FLYERS FIRST (wither snipes from 30+ blocks — past the 14-block
             // ground scan): a wide sync eye-scan only, no RCON here (update
@@ -249,16 +262,36 @@ const modes_list = [
             }
             const enemy = world.getNearestEntityWhere(agent.bot,
                 entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 14);
-            if (!enemy) return;
-            // 26.3: close-range bypass (see cowardice) — within 5 blocks just
-            // fight; the strict no-dig path check sat out real attacks.
-            const close = enemy.position.distanceTo(agent.bot.entity.position) <= 5;
-            if ((close || await world.isClearPath(agent.bot, enemy))) {
-                say(agent, `Fighting ${enemy.name}!`);
-                execute(this, agent, async () => {
-                    await skills.defendSelf(agent.bot, 14);
-                });
+            if (enemy) {
+                // 26.3: close-range bypass (see cowardice) — within 5 blocks just
+                // fight; the strict no-dig path check sat out real attacks.
+                const close = enemy.position.distanceTo(agent.bot.entity.position) <= 5;
+                if ((close || await world.isClearPath(agent.bot, enemy))) {
+                    say(agent, `Fighting ${enemy.name}!`);
+                    execute(this, agent, async () => {
+                        await skills.defendSelf(agent.bot, 14);
+                    });
+                }
+                return;
             }
+            // EYES EMPTY but she may still be in danger (entity withheld):
+            // two server-truth fallbacks, both throttled (5s) so the tick stays
+            // fast. (a) recent damage with no visible cause = something IS
+            // hitting her — fight the nearest RCON hostile. (b) hurt sound
+            // without damage yet (mob winding up) — same answer.
+            const now2 = Date.now();
+            if (now2 - (this._blindCheck || 0) < 5000) return;
+            let hurtRecent = false;
+            try {
+                hurtRecent = (Date.now() - agent.bot.lastDamageTime < 8000) ||
+                    ((agent.bot.health ?? 20) < (this._blindLastHp ?? 20));
+            } catch (_) {}
+            try { this._blindLastHp = agent.bot.health; } catch (_) {}
+            if (!hurtRecent) return;
+            this._blindCheck = now2;
+            execute(this, agent, async () => {
+                await skills.defendBlind(agent.bot, 16);
+            });
         }
     },
     {
