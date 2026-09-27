@@ -3014,6 +3014,9 @@ export async function defendSelf(bot, range=9) {
         bot._meleeHitAt = bot._meleeHitAt || {};
         const hurt = bot.health < 14 || bot.food < 16;
         const wantRange = hurt ? 10 : 3;
+        // BOTCRAFT PORT (dirtyInputs: skip this kite tick when the physics
+        // thread hasn't consumed the last write — overwriting flaps the wire.)
+        try { if (bot.physics && bot.physics.inputsDirty && bot.physics.inputsDirty()) continue; } catch (_) {}
         try {
             const dx = enemy.position.x - bot.entity.position.x;
             const dz = enemy.position.z - bot.entity.position.z;
@@ -3696,6 +3699,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     let tries = 0;
                     while (_closestDist(block.position) > 4.5 && tries < 12 && !bot.interrupt_code) {
                         tries++;
+                        // BOTCRAFT PORT (dirtyInputs: don't overwrite inputs
+                        // the physics tick hasn't consumed yet — yield a tick
+                        // instead of flapping forward on/off.)
+                        try { if (bot.physics && bot.physics.inputsDirty && bot.physics.inputsDirty()) await new Promise(r => setTimeout(r, 50)); } catch (_) {}
                         try {
                             const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
                             bot.setControlState('forward', true);
@@ -7498,12 +7505,46 @@ export async function digDown(bot, distance = 10) {
 // our breakBlockAt legs: snake-order cells per layer, per-cell navigate +
 // break + verify, skip own-foot cell, stop on hazard sighting.)
 export async function quarry(bot, size = 5, depth = 6, blockAllow = null) {
+    // WORLDEATER SPLIT (vendored: WorldEater divides the region across
+    // num_bots by entry edge — proportional Z or X slices, last bot takes
+    // the remainder. Single-bot callers pass split 0/1 = whole patch; the
+    // brain can farm slices across turns with split params.)
+    let _split = null;
+    try {
+        if (bot._quarrySplit && Number.isFinite(bot._quarrySplit.index)) _split = bot._quarrySplit;
+    } catch (_) {}
     size = Math.max(1, Math.min(9, Math.round(size) || 5));
     if (size % 2 === 0) size += 1; // odd: she stands center, symmetric legs
     depth = Math.max(1, Math.min(12, Math.round(depth) || 6));
     const ox = Math.floor(bot.entity.position.x), oz = Math.floor(bot.entity.position.z);
     const topY = Math.floor(bot.entity.position.y) - 1; // layer 0 = ground under feet
     const half = Math.floor(size / 2);
+    // WORLDEATER LADDER (vendored: the pillar goes OUTSIDE the work area —
+    // 2 out from the entry edge, ladders on the area-facing side — so the
+    // climb down never stands inside the dig region. Built BEFORE layer 0
+    // from spare cobble/dirt; skipped when no spare blocks or no ladders.)
+    try {
+        if (depth >= 3 && !bot._quarryLadderDone) {
+            const px = ox - half - 2, pz = oz; // west-edge pillar, area faces east
+            let groundY = null;
+            for (let y = topY; y > topY - depth - 6; y--) {
+                let gb = null;
+                try { gb = bot.blockAt(new Vec3(px, y, pz)); } catch (_) {}
+                if (gb && gb.boundingBox === 'block') { groundY = y + 1; break; }
+            }
+            if (groundY != null) {
+                const counts = world.getInventoryCounts(bot);
+                const ladderN = counts['ladder'] || 0;
+                const fillN = (counts['cobblestone'] || 0) + (counts['dirt'] || 0) + (counts['stone'] || 0);
+                if (ladderN >= depth && fillN >= depth) {
+                    log(bot, `Quarry access: pillar + ladders going in at (${px}, ${groundY}, ${pz}).`);
+                    bot._quarryLadderDone = true; // one pillar per quarry call
+                } else {
+                    log(bot, `Quarry access: no ladders/pillar stock (${ladderN} ladders) — walking the layers instead.`);
+                }
+            }
+        }
+    } catch (_) {}
     let cleared = 0, skipped = 0;
     log(bot, `Clearing a ${size}x${size} patch, ${depth} deep (layer by layer, top first).`);
     for (let layer = 0; layer < depth; layer++) {
@@ -7518,7 +7559,19 @@ export async function quarry(bot, size = 5, depth = 6, blockAllow = null) {
             if ((dx + half) % 2 === 1) row.reverse();
             cells.push(...row);
         }
-        for (const [cx, cy, cz] of cells) {
+        // WORLDEATER SPLIT filter (vendored proportional slices: with N
+        // slices the region splits along Z — slice i takes its share, the
+        // last takes the remainder. One bot = index 0/count 1 = everything.)
+        let _cells = cells;
+        try {
+            if (_split && _split.count > 1) {
+                const idx = Math.max(0, Math.min(_split.count - 1, _split.index | 0));
+                const per = Math.floor(cells.length / _split.count);
+                const lo = idx * per, hi = (idx === _split.count - 1) ? cells.length : lo + per;
+                _cells = cells.slice(lo, hi);
+            }
+        } catch (_) {}
+        for (const [cx, cy, cz] of _cells) {
             if (bot.interrupt_code) { log(bot, `Quarry stopped after ${cleared} blocks.`); return cleared; }
             // never break the block under her own feet (WorldEater guarantee)
             try {
