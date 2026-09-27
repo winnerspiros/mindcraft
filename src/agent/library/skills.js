@@ -3554,8 +3554,35 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 success = await useToolOnBlock(bot, 'bucket', block);
             }
             else {
+                // WALK-TO-DIG (fixes the "brief click then walks away" loop):
+                // goToPosition(mode='walk') returns when the PATH is done, but
+                // the 26.3 movement planner often stops her at path-end that is
+                // still 4-6 blocks eye-to-block from the target (goal radius +
+                // planner caution) — past the old code that meant a reach check
+                // fail, "too far", skip to the NEXT tree, walk, same fail...
+                // forever. Now: step the last meters directly (sprint-walk
+                // toward the block until inside 4.5 eye reach or 6s), THEN dig.
+                // If she genuinely can't close (wall/door/void between), say
+                // so once and let the brain pick another tree.
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
+                try {
+                    const eyeOf = () => bot.entity.position.offset(0, 1.62, 0);
+                    const ctr = block.position.offset(0.5, 0.5, 0.5);
+                    let tries = 0;
+                    while (eyeOf().distanceTo(ctr) > 4.5 && tries < 12 && !bot.interrupt_code) {
+                        tries++;
+                        try {
+                            const dx = ctr.x - bot.entity.position.x, dz = ctr.z - bot.entity.position.z;
+                            bot.setControlState('forward', true);
+                            try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
+                            await new Promise(r => setTimeout(r, 500));
+                        } finally {
+                            try { bot.setControlState('forward', false); } catch (_) {}
+                        }
+                    }
+                } catch (_) {}
+                if (bot.interrupt_code) return false;
                 // 26.3: reach check BEFORE the dig — goToPosition stops 3 out
                 // with WALK-ONLY legs, and bot.dig on an out-of-reach block
                 // either throws or no-ops into the 25s timeout. Skip and let
@@ -3676,6 +3703,24 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             movements.allow1by1towers = false;
             bot.pathfinder.setMovements(movements);
             await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4), navTimeoutMs);
+            // Same walk-to-dig close-up as collectBlock: the planner stops at
+            // path-end which can still be out of eye reach — step in direct.
+            try {
+                const eyeOf = () => bot.entity.position.offset(0, 1.62, 0);
+                const ctr = block.position.offset(0.5, 0.5, 0.5);
+                let tries = 0;
+                while (eyeOf().distanceTo(ctr) > 4.5 && tries < 12 && !bot.interrupt_code) {
+                    tries++;
+                    try {
+                        const dx = ctr.x - bot.entity.position.x, dz = ctr.z - bot.entity.position.z;
+                        bot.setControlState('forward', true);
+                        try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
+                        await new Promise(r => setTimeout(r, 500));
+                    } finally {
+                        try { bot.setControlState('forward', false); } catch (_) {}
+                    }
+                }
+            } catch (_) {}
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
