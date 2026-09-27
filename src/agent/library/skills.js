@@ -4022,6 +4022,28 @@ export async function pillarUp(bot, blockType, height = 4) {
         const feet = bot.entity.position.floored();
         const below = bot.blockAt(feet.offset(0, -1, 0));
         if (!below || below.name === 'air') break; // nothing to stand on — abort
+        // BARITONE PORT (MovementPillar 0.17-centering + sneak-click gating:
+        // center within 0.17 of the column middle first (sneak limit is 0.2 —
+        // 0.17 stays inside it), jump ONLY while below dest, right-click ONLY
+        // while sneaking + looking at the target + above dest+0.1. Drifting
+        // pillars place against the wrong face or miss the click window.)
+        try {
+            const cx = feet.x + 0.5, cz = feet.z + 0.5;
+            const off = Math.hypot(bot.entity.position.x - cx, bot.entity.position.z - cz);
+            if (off > 0.17) {
+                const dx = cx - bot.entity.position.x, dz = cz - bot.entity.position.z;
+                try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
+                bot.setControlState('sneak', true);
+                bot.setControlState('forward', true);
+                await waitForCond(async () =>
+                    Math.hypot(bot.entity.position.x - cx, bot.entity.position.z - cz) <= 0.17,
+                    2000, 100);
+                bot.setControlState('forward', false);
+                bot.setControlState('sneak', false);
+            }
+        } catch (_) {
+            try { bot.setControlState('forward', false); bot.setControlState('sneak', false); } catch (_) {}
+        }
         let ok = await placeBlock(bot, blockType, feet.x, feet.y, feet.z, 'bottom', true);
         if (!ok && !bot.interrupt_code) {
             await new Promise(r => setTimeout(r, 400));
@@ -5859,8 +5881,8 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
             if (bot.pathfinder.isMoving()) break;
             await new Promise(r => setTimeout(r, 200));
         }
-        // BARITONE PORT (stuck budgets, see above): fail fast when the leg
-        // walks away or makes zero progress — don't burn the full watchdog.
+        // BARITONE PORT (stuck budgets: off-path >2 blocks for >200 ticks
+        // cancels, >3 blocks cancels instantly; zero progress 10s fails.)
         let _startDist = Infinity, _offSamples = 0, _lastProg = Date.now(), _bestDist = Infinity;
         try { _startDist = _bestDist = bot.entity.position.distanceTo(new Vec3(goal.x ?? goal.target?.x ?? 0, goal.y ?? goal.target?.y ?? 0, goal.z ?? goal.target?.z ?? 0)); } catch (_) {}
         let _stuckFail = null;
@@ -6417,15 +6439,16 @@ export async function moveAway(bot, distance, mode='walk') {
      * await skills.moveAway(bot, 16, 'sprint'); // run for it
      **/
     const pos = bot.entity.position;
-    let goal = new pf.goals.GoalNear(pos.x, pos.y, pos.z, distance);
-    let inverted_goal = new pf.goals.GoalInvert(goal);
+    // BARITONE PORT (GoalRunAway: real flee-until-far — GoalInvert(GoalNear)
+    // kept the sphere isEnd so the planner 'arrived' while still close.)
+    let goal = new pf.goals.GoalRunAway(distance, null, { x: pos.x, y: pos.y, z: pos.z });
     if (mode === 'sprint' && bot.food > 6) {
-        inverted_goal._moveMode = 'sprint';
+        goal._moveMode = 'sprint';
         log(bot, `Sprinting away (${distance} blocks).`);
     } else {
         if (mode === 'sprint') log(bot, `Too hungry to sprint (food ${bot.food}) — walking away instead.`);
     }
-    const mv = moveProfile(bot, inverted_goal._moveMode === 'sprint' ? 'sprint' : 'walk');
+    const mv = moveProfile(bot, goal._moveMode === 'sprint' ? 'sprint' : 'walk');
     bot.pathfinder.setMovements(mv);
 
     if (bot.modes.isOn('cheat')) {
@@ -6434,7 +6457,7 @@ export async function moveAway(bot, distance, mode='walk') {
         log(bot, 'Cheat-/tp disabled on 26.3, walking instead.');
     }
 
-    await goToGoal(bot, inverted_goal);
+    await goToGoal(bot, goal);
     let new_pos = bot.entity.position;
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);
     return true;
@@ -6498,16 +6521,16 @@ export async function moveAwayFromEntity(bot, entity, distance=16, mode='walk') 
      * @param {string} mode, movement profile: 'walk' (default) or 'sprint' (flee fast — needs food > 6).
      * @returns {Promise<boolean>} true if the bot moved away, false otherwise.
      **/
-    let goal = new pf.goals.GoalFollow(entity, distance);
-    let inverted_goal = new pf.goals.GoalInvert(goal);
+    let goal = new pf.goals.GoalRunAway(distance, null,
+        { x: entity.position.x, y: entity.position.y, z: entity.position.z });
     if (mode === 'sprint' && bot.food > 6) {
-        inverted_goal._moveMode = 'sprint';
+        goal._moveMode = 'sprint';
         log(bot, `Sprinting away from ${entity.name || 'it'}.`);
     }
-    const mvFE = moveProfile(bot, inverted_goal._moveMode === 'sprint' ? 'sprint' : 'walk');
+    const mvFE = moveProfile(bot, goal._moveMode === 'sprint' ? 'sprint' : 'walk');
     bot.pathfinder.setMovements(mvFE);
     // 26.3: same watchdog as goToGoal — raw goto() never times out.
-    await goToGoal(bot, inverted_goal);
+    await goToGoal(bot, goal);
     return true;
 }
 
@@ -7954,7 +7977,12 @@ export async function writeBook(bot, title, pages) {
     }
 }
 
-const MATURE_CROP_AGE = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3 };
+// BARITONE PORT (FarmProcess crop table: max-age predicates per crop —
+// wheat/carrots/potatoes 7, beetroot 3, nether_wart 3, cocoa 2, pumpkin/
+// melon always; sugarcane/bamboo/cactus = "block above base" only when
+// replanting (else the base too). Ours only knew 4 crops.)
+const MATURE_CROP_AGE = { wheat: 7, carrots: 7, potatoes: 7, beetroots: 3, beetroot: 3, nether_wart: 3, cocoa: 2, pumpkin: 0, melon: 0 };
+const STALK_CROPS = new Set(['sugar_cane', 'bamboo', 'cactus']);
 function _cropAge(block) {
     if (!block) return -1;
     const props = typeof block.getProperties === 'function' ? block.getProperties() : null;
@@ -7972,11 +8000,24 @@ export async function harvestCrops(bot, maxDistance=16) {
      * @example await skills.harvestCrops(bot);
      **/
     let harvested = 0;
+    // BARITONE PORT (stalk rule: sugarcane/bamboo/cactus harvest the block
+    // ABOVE the base, never the base itself — breaking the base kills the
+    // farm. Pumpkin/melon (age 0) harvest the fruit, never stems.)
     for (const crop of Object.keys(MATURE_CROP_AGE)) {
         const maxAge = MATURE_CROP_AGE[crop];
         const mature = world.getNearestBlocksWhere(
             bot,
-            (b) => b && b.name === crop && _cropAge(b) >= maxAge,
+            (b) => {
+                if (!b || b.name !== crop) return false;
+                if (STALK_CROPS.has(crop)) {
+                    // above-base only: the block below must be the same crop
+                    try {
+                        const below = bot.blockAt(b.position.offset(0, -1, 0));
+                        return below && below.name === crop;
+                    } catch (_) { return false; }
+                }
+                return _cropAge(b) >= maxAge;
+            },
             maxDistance,
             10000
         );
