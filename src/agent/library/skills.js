@@ -3838,7 +3838,14 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 log(bot, `No more ${blockType} nearby to collect.`);
             break;
         }
-        const block = blocks[0];
+        // NEAREST-FIRST (2026-09-27): sort by distance so the adjacent wall
+        // block wins over far twins — stops the walk-far/skip ping-pong when
+        // the pathfinder stops short in a pit.
+        try {
+            const bp0 = bot.entity.position;
+            blocks = [...blocks].sort((a, b) => a.position.distanceTo(bp0) - b.position.distanceTo(bp0));
+        } catch (_) {}
+        let block = blocks[0];
         await bot.tool.equipForBlock(block);
         // 26.3 FALLBACK (added 21:3x): equipForBlock reads bot.inventory.items()
         // (client Slot decode, often [] even when kitted) and can leave the
@@ -3960,20 +3967,24 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
                 try {
-                    let tries = 0;
-                    while (_closestDist(block.position) > 4.5 && tries < 12 && !bot.interrupt_code) {
-                        tries++;
-                        // BOTCRAFT PORT (dirtyInputs: don't overwrite inputs
-                        // the physics tick hasn't consumed yet — yield a tick
-                        // instead of flapping forward on/off.)
-                        try { if (bot.physics && bot.physics.inputsDirty && bot.physics.inputsDirty()) await new Promise(r => setTimeout(r, 50)); } catch (_) {}
+                    // ONE re-approach, not 12 blind steps: if the walk leg stopped
+                    // short, re-goal closer (GoalNear radius 2 = dig-adjacent),
+                    // then a single 2s nudge. One verdict per block after that.
+                    if (_closestDist(block.position) > 4.5 && !bot.interrupt_code) {
                         try {
-                            const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
-                            bot.setControlState('forward', true);
-                            try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
-                            await new Promise(r => setTimeout(r, 500));
-                        } finally {
-                            try { bot.setControlState('forward', false); } catch (_) {}
+                            const close = new pf.goals.GoalNear(block.position.x, block.position.y, block.position.z, 2);
+                            close._pathTimeout = 5000;
+                            await goToGoal(bot, close);
+                        } catch (_) {}
+                        if (_closestDist(block.position) > 4.5 && !bot.interrupt_code) {
+                            try {
+                                const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
+                                bot.setControlState('forward', true);
+                                try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
+                                await new Promise(r => setTimeout(r, 2000));
+                            } finally {
+                                try { bot.setControlState('forward', false); } catch (_) {}
+                            }
                         }
                     }
                 } catch (_) {}
@@ -3985,8 +3996,26 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // 5.5, not the center.
                 try {
                     if (_closestDist(block.position) > 5.5) {
-                        log(bot, `Too far to dig ${block.name} from here, moving on.`);
-                        return false;
+                        // ADJACENT FALLBACK (2026-09-27): the target is past reach
+                        // (usually: pathfinder stopped short in a pit). Before
+                        // skipping to a far twin, try the nearest diggable wall
+                        // block within reach — a closer twin of the same type
+                        // first, else any adjacent solid. One quiet switch.
+                        try {
+                            const eye = bot.entity.position.offset(0, 1.62, 0);
+                            const cands = [];
+                            for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,-1,0],[0,0,-1],[0,1,0],[1,1,0],[-1,1,0],[0,1,1],[0,1,-1]]) {
+                                let b = null;
+                                try { b = bot.blockAt(eye.clone().offset(dx, dy, dz)); } catch (_) {}
+                                if (!b || b.name === 'air' || b.name === 'water' || b.name === 'lava' || b.name === 'bedrock') continue;
+                                const dd = Math.hypot((b.position.x+0.5)-eye.x, (b.position.y+0.5)-eye.y, (b.position.z+0.5)-eye.z);
+                                if (dd > 5.5) continue;
+                                cands.push({ b, same: b.name === block.name, d: dd });
+                            }
+                            cands.sort((a, b2) => (b2.same - a.same) || (a.d - b2.d));
+                            if (cands.length) { block = cands[0].b; }
+                            else { log(bot, `Too far to dig ${block.name} from here, moving on.`); return false; }
+                        } catch (_) { log(bot, `Too far to dig ${block.name} from here, moving on.`); return false; }
                     }
                 } catch (_) {}
                 // 26.3: dig-timeout race — bot.dig() awaits a server ack that
@@ -4094,21 +4123,17 @@ export async function pickupNearbyItems(bot) {
     const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
     let nearestItem = getNearestItem(bot);
     let pickedUp = 0;
-    while (nearestItem) {
-        let movements = new pf.Movements(bot);
-    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
-        movements.canDig = false;
-        bot.pathfinder.setMovements(movements);
-        await goToGoal(bot, new pf.goals.GoalFollow(nearestItem, 1));
-        await new Promise(resolve => setTimeout(resolve, 200));
-        let prev = nearestItem;
-        nearestItem = getNearestItem(bot);
-        if (prev === nearestItem) {
-            break;
-        }
-        pickedUp++;
+    // QUIET VACUUM (2026-09-27): one walk to the nearest stack, short loiter
+    // for magnet pickup — no per-item GoalFollow spam, no chatter. Drops land
+    // within 2 blocks of a dug wall; walking over once collects them.
+    if (nearestItem) {
+        try {
+            await goToGoal(bot, new pf.goals.GoalNear(nearestItem.position.x, nearestItem.position.y, nearestItem.position.z, 1));
+        } catch (_) {}
+        try { await new Promise(resolve => setTimeout(resolve, 800)); } catch (_) {}
+        const after = getNearestItem(bot);
+        if (!after) pickedUp = 1;
     }
-    log(bot, `Picked up ${pickedUp} items.`);
     return true;
 }
 
