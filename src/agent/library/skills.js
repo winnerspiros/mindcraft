@@ -1052,14 +1052,94 @@ export async function parkour(bot, technique = 'jump', arg = null) {
     if (technique === 'backward' || technique === 'bw' || technique === 'momentum') return await backwardJump(bot);
     if (technique === 'clutch' || technique === 'mlg') return await blockClutch(bot, arg);
     if (technique === 'ladder') return await ladderClutch(bot);
+    if (technique === 'place' || technique === 'parkourplace' || technique === 'jumpplace') {
+        const parts = String(arg || '').split(/\s+/).filter(Boolean);
+        const mat = parts[0] || null;
+        const len = parts[1] ? parseInt(parts[1], 10) : 3;
+        return await parkourPlace(bot, mat, Number.isFinite(len) ? len : 3);
+    }
     if (technique === 'bridge') {
         const parts = String(arg || '').split(/\s+/).filter(Boolean);
         const mat = parts[0] || null;
         const len = parts[1] ? parseInt(parts[1], 10) : 8;
         return await speedBridge(bot, mat, Number.isFinite(len) ? len : 8);
     }
-    log(bot, `Unknown trick "${technique}" — try edge, jump, strafe45, neo, backward, clutch, ladder, bridge.`);
+    log(bot, `Unknown trick "${technique}" — try edge, jump, strafe45, neo, backward, clutch, ladder, place, bridge.`);
     return false;
+}
+
+// BARITONE PORT (MovementParkour parkour-place: sprint-jump a gap whose
+// LANDING IS AIR by placing a block at the dest feet mid-flight. Baritone
+// prices it as jump-cost + place-cost, checks largest-to-smallest landings,
+// requires a replaceable dest + a place-against neighbour (never the block
+// she launched from — can't turn around that fast) + overshoot safety on
+// the two blocks past the landing. Same checks here, executed live:
+// survey before launch (no mat / no neighbour / no safety = refuse, don't
+// splat), place mid-air at the apex window, land on her own block.)
+export async function parkourPlace(bot, block = null, dist = 3) {
+    if (bot.food <= 6) { log(bot, 'Too hungry to jump-place — feed me first.'); return false; }
+    dist = Math.max(2, Math.min(4, Math.floor(dist || 3)));
+    let mat = block;
+    if (!mat) {
+        const inv = world.getInventoryCounts(bot);
+        mat = ['cobblestone', 'dirt', 'oak_planks', 'stone', 'deepslate'].find(m => (inv[m] || 0) >= 1) || null;
+    }
+    if (!mat) { log(bot, 'No placeable block for the landing — bring dirt/cobble first.'); return false; }
+    const yaw = bot.entity.yaw || 0;
+    const dx = -Math.sin(yaw), dz = -Math.cos(yaw);
+    const p = bot.entity.position.floored();
+    const lx = p.x + Math.round(dx * dist), lz = p.z + Math.round(dz * dist), ly = p.y;
+    // survey: dest feet must be replaceable, landing support placeable
+    let destFeet = null, destHead = null;
+    try {
+        destFeet = bot.blockAt(new Vec3(lx, ly, lz));
+        destHead = bot.blockAt(new Vec3(lx, ly + 1, lz));
+    } catch (_) { log(bot, 'Landing out of loaded range — walk closer first.'); return false; }
+    const airLike = (b) => !b || b.name === 'air' || b.boundingBox === 'empty';
+    if (!airLike(destFeet) || !airLike(destHead)) { log(bot, 'Landing is solid already — plain jump it instead.'); return false; }
+    // place-against neighbour: any solid around the dest feet except the
+    // launch block (can't turn around mid-air to click behind).
+    const sx = p.x, sz = p.z;
+    const cands = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0]];
+    let against = null;
+    for (const [ox, oy, oz] of cands) {
+        const ax = lx + ox, ay = ly + oy, az = lz + oz;
+        if (ax === sx && az === sz && ay <= p.y) continue; // launch block: skip
+        let b = null;
+        try { b = bot.blockAt(new Vec3(ax, ay, az)); } catch (_) { continue; }
+        if (b && !airLike(b)) { against = b; break; }
+    }
+    if (!against) { log(bot, 'Nothing to place the landing against — bridge it instead.'); return false; }
+    // overshoot safety: the two blocks past the landing must not be hazards
+    const hazard = (b) => b && ['lava', 'water', 'cactus', 'magma_block', 'powder_snow'].includes(b.name);
+    for (let k = 1; k <= 2; k++) {
+        let b1 = null, b2 = null;
+        try {
+            b1 = bot.blockAt(new Vec3(lx + Math.round(dx * k), ly, lz + Math.round(dz * k)));
+            b2 = bot.blockAt(new Vec3(lx + Math.round(dx * k), ly + 1, lz + Math.round(dz * k)));
+        } catch (_) { break; }
+        if (hazard(b1) || hazard(b2)) { log(bot, 'Overshoot past the landing is nasty — bridge it instead.'); return false; }
+    }
+    // launch: edge-sneak, sprint-jump straight at the landing
+    await edgeSneak(bot, 4000);
+    if (bot.interrupt_code) { _parkStop(bot); return false; }
+    try {
+        bot.setControlState('sneak', false);
+        bot.setControlState('forward', true);
+        bot.setControlState('sprint', true);
+        await new Promise(r => setTimeout(r, 120));
+        bot.setControlState('jump', true);
+        await new Promise(r => setTimeout(r, 350));
+        bot.setControlState('jump', false);
+        // apex window: place the landing block mid-flight, then ride it down
+        await new Promise(r => setTimeout(r, 150));
+        const ok = await placeBlock(bot, mat, lx, ly, lz, 'bottom', true);
+        if (!ok) { log(bot, 'Missed the mid-air place — bailing the landing.'); }
+    } catch (_) {}
+    const landed = await _parkWaitLand(bot);
+    _parkStop(bot);
+    log(bot, landed ? `Jump-placed the landing and stuck it~ ♥` : 'Placed mid-air but missed the landing — shorter gap next time.');
+    return landed;
 }
 
 async function autoLight(bot) {
@@ -1248,8 +1328,21 @@ export async function placeBlockList(bot, block, positions) {
     }
 
     let placed = 0;
+    // BARITONE PORT (BuilderProcess per-tick order: break-wrong -> place
+    // (onGround-gated, sneak while placing, verify look) -> path. Same here
+    // per block: clear a wrong block first, place only while on ground,
+    // verify the placement landed before walking on.
     for (const [x, y, z] of positions) {
         if (bot.interrupt_code) break;
+        try {
+            const cur = bot.blockAt(new Vec3(x, y, z));
+            if (cur && cur.name !== 'air' && cur.name !== block && cur.name !== 'water' && cur.name !== 'lava') {
+                await breakBlockAt(bot, x, y, z);
+            }
+        } catch (_) {}
+        if (!bot.entity.onGround) {
+            try { await waitForCond(async () => bot.entity.onGround, 1500, 100); } catch (_) {}
+        }
         if (await placeBlock(bot, block, x, y, z, 'bottom', true)) placed++;
     }
     log(bot, `Placed ${placed}/${positions.length} ${block} blocks.`);
@@ -2770,8 +2863,26 @@ export async function scoutExplore(bot, radius=50) {
     const angle = Math.random() * 2 * Math.PI;
     const dist = 10 + Math.random() * Math.max(10, (radius || 50) - 10);
     let moved = true;
+    // BARITONE PORT (ExploreProcess batch: 10-chunk batches with a maintain-Y
+    // band — random bearings drift her into caves/ravines she then has to
+    // climb out of. Pin the leg to her current Y ±6 so batches stay on the
+    // same stratum, and record the chunk so repeats spread out.)
+    const _exY = Math.floor(pos.y);
+    bot._exploreSeenChunks = bot._exploreSeenChunks || new Set();
+    const _chunkKey = (x, z) => `${Math.floor(x / 16)},${Math.floor(z / 16)}`;
+    let _tx = Math.floor(pos.x + Math.cos(angle) * dist), _tz = Math.floor(pos.z + Math.sin(angle) * dist);
+    for (let _try = 0; _try < 8 && bot._exploreSeenChunks.has(_chunkKey(_tx, _tz)); _try++) {
+        const a2 = Math.random() * 2 * Math.PI, d2 = 10 + Math.random() * Math.max(10, (radius || 50) - 10);
+        _tx = Math.floor(pos.x + Math.cos(a2) * d2); _tz = Math.floor(pos.z + Math.sin(a2) * d2);
+    }
+    bot._exploreSeenChunks.add(_chunkKey(_tx, _tz));
+    if (bot._exploreSeenChunks.size > 200) {
+        const first = bot._exploreSeenChunks.values().next().value;
+        bot._exploreSeenChunks.delete(first);
+    }
     try {
-        await goToPosition(bot, Math.floor(pos.x + Math.cos(angle) * dist), Math.floor(pos.y), Math.floor(pos.z + Math.sin(angle) * dist), 3);
+        const _ty = Math.max(_exY - 6, Math.min(_exY + 6, Math.floor(pos.y)));
+        await goToPosition(bot, _tx, _ty, _tz, 3);
     } catch (_) { moved = false; } // partial progress is fine
     const INTERESTING = new Set([
         'diamond_ore','deepslate_diamond_ore','gold_ore','deepslate_gold_ore',
@@ -5767,6 +5878,9 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     }
 
     let final_movements = destructiveMovements;
+    // BARITONE PORT (PathExecutor estimate: baseline plan cost + path for
+    // cost-increase backoff and 5-move lookahead validation below.)
+    let _planCost = null, _planPath = null;
 
     const pathfind_timeout = (goal && Number.isFinite(goal._pathTimeout)) ? goal._pathTimeout : 1000;
     // Discovery's onlyCheckPath, ported: plan both probes, report, move nothing.
@@ -5781,14 +5895,24 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
         } catch (_) {}
         return 'unreachable';
     }
-    if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
+    // BARITONE PORT (plan-cost baseline: getPathTo's result carries .cost +
+    // .path — snapshot both from whichever probe wins so the watchdog below
+    // can run cost-increase backoff + 5-move lookahead on the live world.)
+    let _plan = null;
+    try { _plan = await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout); } catch (_) {}
+    if (_plan && _plan.status === 'success') {
         final_movements = nonDestructiveMovements;
+        _planCost = _plan.cost; _planPath = _plan.path;
         log(bot, `Found non-destructive path.`);
     }
-    else if (await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status === 'success') {
-        log(bot, `Found destructive path.`);
-    }
     else {
+        try { _plan = await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout); } catch (_) { _plan = null; }
+        if (_plan && _plan.status === 'success') {
+            _planCost = _plan.cost; _planPath = _plan.path;
+            log(bot, `Found destructive path.`);
+        }
+    }
+    if (!((_plan && _plan.status === 'success'))) {
         // BARITONE-STYLE RETRY (26.3): one "no path" is a planning miss, not
         // proof — Baritone re-plans with backoff. Retry the dig+place probe
         // with a longer budget (doors/stairs/load-chunks resolve on 2nd try),
@@ -5886,6 +6010,31 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
         let _startDist = Infinity, _offSamples = 0, _lastProg = Date.now(), _bestDist = Infinity;
         try { _startDist = _bestDist = bot.entity.position.distanceTo(new Vec3(goal.x ?? goal.target?.x ?? 0, goal.y ?? goal.target?.y ?? 0, goal.z ?? goal.target?.z ?? 0)); } catch (_) {}
         let _stuckFail = null;
+        // BARITONE PORT (PathExecutor guards, folded into this 500ms sample
+        // loop so no extra timer is needed):
+        // (a) 5-move lookahead — every sample, re-validate the 5 path nodes
+        // nearest her feet against the LIVE world (standable: feet+head
+        // clear, solid support below). A door shut / block placed / floor dug
+        // since planning turns the next steps into a wall-walk; fail fast
+        // instead of grinding into it for the rest of the budget.
+        // (b) cost-increase backoff — past the halfway mark, re-plan once
+        // from HERE and compare against the baseline plan cost: if the fresh
+        // cost exceeds baseline + 10 (Baritone maxCostIncrease), the world
+        // changed under the plan — fail fast so the caller re-plans instead
+        // of walking a stale route. One re-plan per leg, never a loop.
+        // (c) plan-ahead splice — with <7.5s of budget left and still moving,
+        // re-plan from here once: if the fresh plan is strictly cheaper, hand
+        // the walker the new tail instead of finishing a stale one.
+        let _replanned = false, _spliced = false;
+        const _goalPos = (() => { try { return new Vec3(goal.x ?? goal.target?.x ?? 0, goal.y ?? goal.target?.y ?? 0, goal.z ?? goal.target?.z ?? 0); } catch (_) { return null; } })();
+        const _standableAt = (x, y, z) => {
+            try {
+                const airLike = (b) => !b || b.name === 'air' || b.boundingBox === 'empty';
+                const feet = bot.blockAt(new Vec3(x, y, z)), head = bot.blockAt(new Vec3(x, y + 1, z)),
+                    below = bot.blockAt(new Vec3(x, y - 1, z));
+                return airLike(feet) && airLike(head) && below && !airLike(below);
+            } catch (_) { return true; } // unknown chunk: don't condemn the path
+        };
         while (Date.now() - t0 < navTimeoutMs) {
             if (bot.interrupt_code || navDone) break;
             await new Promise(r => setTimeout(r, 500));
@@ -5895,6 +6044,51 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
                 else if (_d > _startDist + 3) { if (++_offSamples >= 3) { _stuckFail = 'walked away from the path'; break; } }
                 else _offSamples = 0;
                 if (Date.now() - _lastProg > 10000 && bot.pathfinder.isMoving()) { _stuckFail = 'no progress for 10s'; break; }
+                // (a) lookahead: nearest 5 planned nodes to her feet
+                if (Array.isArray(_planPath) && _planPath.length) {
+                    const fp = bot.entity.position.floored();
+                    let _near = null;
+                    try {
+                        _near = _planPath.map((n, i) => ({ n, i, d: Math.abs(n.x - fp.x) + Math.abs(n.y - fp.y) + Math.abs(n.z - fp.z) }))
+                            .sort((a, b) => a.d - b.d)[0];
+                    } catch (_) { _near = null; }
+                    if (_near) {
+                        let _bad = 0;
+                        for (let k = _near.i; k < Math.min(_near.i + 5, _planPath.length); k++) {
+                            const n = _planPath[k];
+                            if (!n) continue;
+                            if (!_standableAt(n.x, n.y, n.z)) _bad++;
+                        }
+                        if (_bad >= 3) { _stuckFail = 'path ahead changed (lookahead)'; break; }
+                    }
+                }
+                const _elapsed = Date.now() - t0;
+                // (b) cost backoff: one re-plan past halfway
+                if (!_replanned && _planCost != null && _elapsed > navTimeoutMs / 2 && bot.pathfinder.isMoving()) {
+                    _replanned = true;
+                    try {
+                        const _fresh = await bot.pathfinder.getPathTo(final_movements, goal, Math.min(pathfind_timeout, 4000));
+                        if (_fresh && _fresh.status === 'success' && Number.isFinite(_fresh.cost) && _fresh.cost > _planCost + 10) {
+                            _stuckFail = 'world changed under plan (cost backoff)'; break;
+                        }
+                        if (_fresh && _fresh.status === 'success' && Array.isArray(_fresh.path)) { _planPath = _fresh.path; _planCost = _fresh.cost; }
+                    } catch (_) {}
+                }
+                // (c) plan-ahead splice: fresh tail when the budget runs low
+                if (!_spliced && navTimeoutMs - _elapsed < 7500 && _elapsed > 3000 && bot.pathfinder.isMoving() && _goalPos) {
+                    _spliced = true;
+                    try {
+                        const _fresh2 = await bot.pathfinder.getPathTo(final_movements, goal, Math.min(pathfind_timeout, 4000));
+                        if (_fresh2 && _fresh2.status === 'success' && Number.isFinite(_fresh2.cost)
+                            && _planCost != null && _fresh2.cost < _planCost - 2 && Array.isArray(_fresh2.path) && _fresh2.path.length) {
+                            _planPath = _fresh2.path; _planCost = _fresh2.cost;
+                            try { bot.pathfinder.setGoal(null); } catch (_) {}
+                            try { bot.pathfinder.setMovements(final_movements); } catch (_) {}
+                            try { bot.pathfinder.setGoal(goal); } catch (_) {}
+                            log(bot, `Plan-ahead: spliced a cheaper tail (${Math.round(_fresh2.cost)} < ${Math.round(_planCost)}).`);
+                        }
+                    } catch (_) {}
+                }
             } catch (_) {}
             if (Date.now() - t0 >= navTimeoutMs) break;
         }
@@ -6656,13 +6850,18 @@ export async function getAirborne(bot, height = 10) {
 }
 
 export async function takeOff(bot) {
-    // Deploy the elytra and start gliding. Preferred launch is the vanilla
-    // rocket-hop (no teleport): hop, look up, then use a firework rocket to launch
-    // and auto-deploy the wings. Falls back to a teleport-up + explicit deploy when
-    // there are no rockets or the rocket-hop doesn't engage.
+    // BARITONE PORT (ElytraProcess honest gate: Baritone flies only with
+    // elytra + rockets + a surveyed launch, and lands before durability or
+    // rockets run out. Same here — refuse with the missing piece named,
+    // never launch half-kitted and splat halfway there.)
     if (bot.entity.elytraFlying) {
         log(bot, 'Already flying.');
         return true;
+    }
+    const needRockets = 3;
+    if (countFireworkRockets(bot) < needRockets) {
+        log(bot, `Need ${needRockets}+ rockets to fly safe — only have ${countFireworkRockets(bot)}. Craft more first.`);
+        return false;
     }
     if (!await equipElytra(bot)) return false;
 
