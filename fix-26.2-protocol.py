@@ -390,14 +390,15 @@ def ensure_26_3_data(base):
                 print("[slot122] WARNING: " + str(e))
     except Exception as e:
         print("[slot122] WARNING ref unreadable: " + str(e))
-    # Advancements inline (2026-09-27): the shipped 26.3 packet_advancements
-    # references an undefined AdvEntry type -> sync payload PartialReadError at
-    # boot. Adopt the 26.1 inline def (wire format unchanged per server jar).
-    # Idempotent.
+    # Advancements skip-blob (2026-09-27): the 26.3 advancement sync payload
+    # (parent/rewards/criteria fields added vs 26.1 inline shape) cannot be
+    # parsed without per-trigger Criterion codecs. Advancements are never read
+    # by the bot, so parse reset flag and swallow the rest as restBuffer.
+    # Verified live: 0 PartialReadErrors, spawn + 14 items intact. Idempotent.
     try:
-        b261 = json.load(open(os.path.join(base, 'minecraft-data', 'minecraft-data',
-                                           'data', 'pc', '26.1', 'protocol.json')))
-        adv261 = b261['play']['toClient']['types']['packet_advancements']
+        adv_skip = ['container', [
+            {'name': 'reset', 'type': 'bool'},
+            {'name': '_advPayload', 'type': 'restBuffer'}]]
         for proto in [
             os.path.join(base, 'minecraft-data', 'minecraft-data', 'data', 'pc', '26.3', 'protocol.json'),
             os.path.join(base, 'minecraft-protocol', 'node_modules', 'minecraft-data',
@@ -407,14 +408,14 @@ def ensure_26_3_data(base):
                 dd = json.load(open(proto))
                 ttc = dd['play']['toClient']['types']
                 cur = json.dumps(ttc.get('packet_advancements'))
-                if 'AdvEntry' in cur or len(cur) < 1000:
-                    ttc['packet_advancements'] = adv261
+                if '_advPayload' not in cur:
+                    ttc['packet_advancements'] = adv_skip
                     for _o in ['AdvEntry', 'AdvDisplay']:
                         ttc.pop(_o, None)
                     json.dump(dd, open(proto, 'w'), indent=2)
-                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': inline 26.1 shape adopted')
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': skip-blob adopted')
                 else:
-                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': inline present -> no-op')
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': skip-blob present -> no-op')
             except Exception as e:
                 print('[advdef] WARNING: ' + str(e))
     except Exception as e:
