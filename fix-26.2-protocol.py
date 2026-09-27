@@ -573,19 +573,56 @@ def ensure_physics_fallback(base):
     marker = "Default to vanilla proportional values"
     if marker in s:
         print("[physics] liquid-gravity fallback present -> no-op")
+    else:
+        old = "    throw new Error('No liquid gravity settings, have you made sure the liquid gravity features are up to date?')"
+        if old not in s:
+            print("[physics] WARNING: gravity anchor not found")
+        else:
+            new = ("    // 26.3 fork data has no liquid-gravity feature flags at all (verified:\n"
+                   "    // both indep+prop false on 26.2 AND 26.3 AND upstream 1.21.x data) yet the\n"
+                   "    // server physics is vanilla water. Default to vanilla proportional values\n"
+                   "    // instead of crashing the bot at login.\n"
+                   "    physics.waterGravity = physics.gravity / 16\n"
+                   "    physics.lavaGravity = physics.gravity / 4")
+            open(pj, "w").write(s.replace(old, new, 1))
+            s = open(pj).read()
+            print("[physics] liquid-gravity fallback installed")
+    ensure_mineflayer_move_diff(base)
+
+
+def ensure_mineflayer_move_diff(base):
+    """BOTCRAFT PORT (SendPosition minimal-diff): vanilla move threshold is
+    (dpos)^2 > 4e-8 (~0.2mm) plus a 20-tick heartbeat. The 1mm deadband was
+    ours; 0.2mm matches the real client. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
+    if not os.path.exists(mp):
+        print(f"[movediff] WARNING: {mp} missing")
         return
-    old = "    throw new Error('No liquid gravity settings, have you made sure the liquid gravity features are up to date?')"
+    s = open(mp).read()
+    marker = "BOTCRAFT PORT (SendPosition minimal-diff"
+    if marker in s:
+        print("[movediff] vanilla 4e-8 + heartbeat present -> no-op")
+        return
+    old = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
+           "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
+           "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
+           "    const moved = (dx + dy + dz) > 0.001")
     if old not in s:
-        print("[physics] WARNING: gravity anchor not found")
+        print("[movediff] WARNING: deadband anchor not found")
         return
-    new = ("    // 26.3 fork data has no liquid-gravity feature flags at all (verified:\n"
-           "    // both indep+prop false on 26.2 AND 26.3 AND upstream 1.21.x data) yet the\n"
-           "    // server physics is vanilla water. Default to vanilla proportional values\n"
-           "    // instead of crashing the bot at login.\n"
-           "    physics.waterGravity = physics.gravity / 16\n"
-           "    physics.lavaGravity = physics.gravity / 4")
-    open(pj, "w").write(s.replace(old, new, 1))
-    print("[physics] liquid-gravity fallback installed")
+    new = ("    const dx = Math.abs((lastSent.x ?? position.x) - position.x)\n"
+           "    const dy = Math.abs((lastSent.y ?? position.y) - position.y)\n"
+           "    const dz = Math.abs((lastSent.z ?? position.z) - position.z)\n"
+           "    // BOTCRAFT PORT (SendPosition minimal-diff: vanilla move threshold is\n"
+           "    // (dpos)^2 > 4e-8 (~0.2mm); plus a 20-tick heartbeat so a silent client\n"
+           "    // never looks dead to the server. 1mm deadband was ours; 0.2mm matches\n"
+           "    // the real client and stops micro-move spam one level lower.\n"
+           "    const _movedSq = dx * dx + dy * dy + dz * dz\n"
+           "    bot._moveTickCount = (bot._moveTickCount || 0) + 1\n"
+           "    const _heartbeat = bot._moveTickCount % 20 === 0\n"
+           "    const moved = _movedSq > 4e-8 || _heartbeat")
+    open(mp, "w").write(s.replace(old, new, 1))
+    print("[movediff] vanilla 4e-8 + heartbeat installed")
 
 
 def ensure_pathfinder_prs(base):
