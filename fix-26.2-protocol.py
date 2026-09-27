@@ -824,40 +824,60 @@ def ensure_mineflayer_driver_arbiter(base):
     # arbiter append (separate marker — applies even with dirty present):
     # exactly one non-temporary driver owns movement per tick.
     arb_marker = "bot.moveAcquire = (name, ms = 800)"
-    if arb_marker in s:
+    if arb_marker not in s:
+        if arb_old not in s:
+            print("[driver] WARNING: arbiter anchor not found")
+        else:
+            s = s.replace(arb_old, arb_new, 1)
+            open(mp, "w").write(s)
+            print("[driver] arbiter installed")
+            s = open(mp).read()
+    else:
         print("[driver] arbiter present -> no-op")
+    # look smoothing (own marker — Baritone LookBehavior smooth-look:
+    # yaw/pitch through a 5-sample moving average before the wire so a
+    # single-frame target snap can't whip the head; force bypasses).
+    # NOTE: falls through from BOTH arbiter branches (no early return
+    # above) so one run installs arbiter AND smoothing together.
+    if "bot._smoothLookBuf" in s:
+        print("[driver] look smoothing present -> no-op")
         return
-    arb_old = ("  bot.clearControlStates = () => {\n"
-               "    for (const control in controlState) {\n"
-               "      _origSetCS(control, false)\n"
-               "    }\n"
-               "    try { bot._dirtyInputs = true } catch (_) {}\n"
-               "  }")
-    if arb_old not in s:
-        print("[driver] WARNING: arbiter anchor not found")
+    look_old = ("  bot.look = async (yaw, pitch, force) => {")
+    if look_old not in s:
+        print("[driver] WARNING: look anchor not found")
         return
-    arb_new = (arb_old + "\n"
-               "  // BARITONE PORT (PathingControlManager single-owner: exactly one\n"
-               "  // non-temporary driver owns movement per tick.)\n"
-               "  bot._moveOwner = bot._moveOwner || null\n"
-               "  bot._moveLeaseUntil = bot._moveLeaseUntil || 0\n"
-               "  bot.moveAcquire = (name, ms = 800) => {\n"
-               "    try {\n"
-               "      const now = Date.now()\n"
-               "      if (bot._moveOwner && bot._moveOwner !== name && now < bot._moveLeaseUntil) return false\n"
-               "      bot._moveOwner = name; bot._moveLeaseUntil = now + ms\n"
-               "    } catch (_) {}\n"
-               "    return true\n"
-               "  }\n"
-               "  bot.moveRelease = (name) => {\n"
-               "    try { if (!name || bot._moveOwner === name) { bot._moveOwner = null; bot._moveLeaseUntil = 0 } } catch (_) {}\n"
-               "  }\n"
-               "  bot.moveOwnedByOther = (name) => {\n"
-               "    try { return !!(bot._moveOwner && bot._moveOwner !== name && Date.now() < bot._moveLeaseUntil) } catch (_) { return false }\n"
-               "  }")
-    s = s.replace(arb_old, arb_new, 1)
+    look_new = ("  // BARITONE PORT (LookBehavior smooth-look: 5-sample moving average on\n"
+                "  // yaw/pitch before the wire — one snapped frame can't whip the head.\n"
+                "  // force looks (dig-aim, place-aim) bypass: they need the exact face.)\n"
+                "  bot._smoothLookBuf = { yaw: [], pitch: [] }\n"
+                "  bot._smoothLookPush = (buf, v) => {\n"
+                "    try {\n"
+                "      buf.push(v)\n"
+                "      if (buf.length > 5) buf.shift()\n"
+                "      let s = 0\n"
+                "      for (const x of buf) s += x\n"
+                "      return s / buf.length\n"
+                "    } catch (_) { return v }\n"
+                "  }\n"
+                "  bot.look = async (yaw, pitch, force) => {")
+    s = s.replace(look_old, look_new, 1)
+    # smooth inside bot.look, right after the NaN guard, non-force only
+    nan_guard = ("    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return")
+    if nan_guard not in s:
+        print("[driver] WARNING: look NaN-guard anchor not found (smoothing skipped)")
+    else:
+        smooth_apply = (nan_guard + "\n"
+                        "    if (!force) {\n"
+                        "      try {\n"
+                        "        yaw = bot._smoothLookPush(bot._smoothLookBuf.yaw, yaw)\n"
+                        "        pitch = bot._smoothLookPush(bot._smoothLookBuf.pitch, pitch)\n"
+                        "      } catch (_) {}\n"
+                        "    } else {\n"
+                        "      try { bot._smoothLookBuf.yaw.length = 0; bot._smoothLookBuf.pitch.length = 0 } catch (_) {}\n"
+                        "    }")
+        s = s.replace(nan_guard, smooth_apply, 1)
     open(mp, "w").write(s)
-    print("[driver] arbiter installed")
+    print("[driver] look smoothing installed")
 
 
 def ensure_pathfinder_baritone_goals(base):
@@ -1190,13 +1210,10 @@ def ensure_pathfinder_prs(base):
         ("const revision = pathRevision\n          bot.emit('path_update', results)\n          if (revision !== pathRevision) return // a listener reset the goal/movements mid-tick — drop the stale path\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true", "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
          "bot.emit('path_update', results)\n          path = results.path\n          astartTimedout = results.status === 'partial'\n          pathUpdated = true",
          "#386 fresh-search guard"),
-        ("/tmp", "BARITONE sentinel no-op", "x-never", "y-never", "placeholder-never-matches"),
     ]
     applied, skipped, warned = 0, 0, 0
     for rel, marker, old, new, label in edits:
         if old is None:
-            skipped += 1; continue
-        if rel == "/tmp":
             skipped += 1; continue
         p = os.path.join(pf, rel)
         if not os.path.exists(p):
