@@ -6335,7 +6335,9 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
      * string 'reachable-clean' | 'reachable-dig' | 'unreachable' (truthy
      * strings — check `=== 'unreachable'`, not falsiness).
      **/
-    const _moveMode = (goal && (goal._moveMode === 'sprint' || goal._moveMode === 'parkour')) ? goal._moveMode : 'walk';
+    // _sprintTrial is the legacy far-leg sprint flag goToPlayer sets; treat it
+    // as sprint so "Sprinting this leg" actually sprints (it used to log + walk).
+    const _moveMode = (goal && (goal._moveMode === 'sprint' || goal._moveMode === 'parkour')) ? goal._moveMode : (goal && goal._sprintTrial === true ? 'sprint' : 'walk');
 
     const nonDestructiveMovements = new pf.Movements(bot);
     // BARITONE-STYLE LEGS (26.3): Baritone's reliability comes from (1) full
@@ -6950,7 +6952,16 @@ export async function goToPlayer(bot, username, distance=3) {
                         if (mat) {
                             await ensureBlocks(bot, mat, h);
                             const gained = await pillarUp(bot, mat, h);
-                            if (gained > 0) { log(bot, `Pillared up ${gained} — walking over now.`); }
+                            if (gained > 0) {
+                                log(bot, `Pillared up ${gained} — walking over now.`);
+                                try {
+                                    const _wg = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
+                                    _wg._pathTimeout = 4000;
+                                    await goToGoal(bot, _wg);
+                                    const _wd = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
+                                    if (_wd <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+                                } catch (_) {}
+                            }
                         } else {
                             // NO SCAFFOLD IN PACK (2026-09-27): the wall around her IS the
                             // material. Dig eye-level wall blocks with the real (now-seeing)
@@ -6992,7 +7003,18 @@ export async function goToPlayer(bot, username, distance=3) {
                                     log(bot, `Dug the wall, pillaring on ${mat2} now.`);
                                     await ensureBlocks(bot, mat2, h);
                                     const g2 = await pillarUp(bot, mat2, h);
-                                    if (g2 > 0) log(bot, `Pillared up ${g2} — walking over now.`);
+                                    if (g2 > 0) {
+                                        log(bot, `Pillared up ${g2} — walking over now.`);
+                                        try {
+                                            const _wg2 = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
+                                            _wg2._pathTimeout = 4000;
+                                            await goToGoal(bot, _wg2);
+                                            const _wd2 = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
+                                            if (_wd2 <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+                                        } catch (_) {}
+                                    }
+                                } else {
+                                    log(bot, `Dug the wall but got nothing to pillar with — still ${Math.round(dy)} short of ${username}.`);
                                 }
                             } catch (_) {}
                         }
@@ -7019,9 +7041,15 @@ export async function goToPlayer(bot, username, distance=3) {
             bot.modes.pause('self_defense');
             bot.modes.pause('cowardice');
             log(bot, `${username} is nearby but out of sight — walking to where they are.`);
+            // lastT hoisted: `t` is per-leg, but the arrival check after the
+            // loop needs the final target (11:21 crash: `t is not defined`
+            // killed the leg AFTER a full walk, reporting failure).
+            let lastT = rpos;
             for (let leg = 0; leg < 6; leg++) {
                 const fresh = await rconPlayerPos(username).catch(() => null);
                 const t = fresh || rpos;
+                lastT = t;
+                if (!t || !Number.isFinite(t.x) || !Number.isFinite(t.y) || !Number.isFinite(t.z)) { log(bot, `Lost ${username}'s position — stopping.`); break; }
                 const dx0 = t.x - bot.entity.position.x, dz0 = t.z - bot.entity.position.z;
                 const dist0 = Math.hypot(dx0, dz0);
                 if (dist0 <= Math.max(distance, 2) + 1) break; // already there — no path needed
@@ -7068,15 +7096,18 @@ export async function goToPlayer(bot, username, distance=3) {
                 const d = bot.entity.position.distanceTo(new Vec3(t.x, t.y, t.z));
                 if (d <= Math.max(distance, 2) + 1) break;
             }
-            const endD = bot.entity.position.distanceTo(new Vec3(t.x, Math.floor(t.y), t.z));
-            if (endD <= Math.max(distance, 2) + 1) {
+            // lastT survives the loop; NaN-guarded so the arrival check can
+            // never report "NaN blocks short" again.
+            let endD = Infinity;
+            try { endD = bot.entity.position.distanceTo(new Vec3(lastT.x, Math.floor(lastT.y), lastT.z)); } catch (_) { endD = Infinity; }
+            if (Number.isFinite(endD) && endD <= Math.max(distance, 2) + 1) {
                 log(bot, `You have reached ${username}.`);
                 return true;
             }
             // Same no-tp-ad rule as the entity path above: she walks, she
             // never advertises tp (the brain keeps !teleportMe for when THEY ask).
             const here = bot.entity.position;
-            const shortBy = Math.hypot(t.x - here.x, t.z - here.z);
+            const shortBy = Math.hypot(lastT.x - here.x, lastT.z - here.z);
             const shortTxt = Number.isFinite(shortBy) ? shortBy.toFixed(0) : '?';
             log(bot, `I walked toward ${username} but I'm still ${shortTxt} blocks short — no path through. If they step somewhere open I'll walk right over.`);
             return false;
