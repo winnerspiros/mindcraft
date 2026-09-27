@@ -701,8 +701,11 @@ export const actionsList = [
             const rot = rotation || 0;
             try {
                 const placed = await schematic.placeSchematic(bot, sch, origin, rot, name);
-                const v = await schematic.verifySchematic(bot, sch, origin, rot);
-                skills.log(bot, `Built "${name}" block-by-block at ${origin.x},${origin.y},${origin.z}${rot ? ` rotated ${rot}°` : ''}: placed ${placed}/${sch.blocks.length} blocks; verified ${v.ok}/${v.checked} sampled blocks correct.`);
+                let v = await schematic.verifySchematic(bot, sch, origin, rot);
+                while (!v.done) v = await schematic.verifySchematic(bot, sch, origin, rot);
+                const faults = (v.missing || 0) + (v.wrongBlock || 0) + (v.wrongState || 0);
+                const extraN = (v.extra || []).length;
+                skills.log(bot, `Built "${name}" block-by-block at ${origin.x},${origin.y},${origin.z}${rot ? ` rotated ${rot}°` : ''}: placed ${placed}/${sch.blocks.length} blocks; verified ${v.ok}/${v.checked}${faults ? `, ${faults} to fix (missing ${v.missing}, wrong block ${v.wrongBlock}, wrong state ${v.wrongState})` : ''}${extraN ? `, ${extraN} stray block${extraN === 1 ? '' : 's'} to clear` : ''}.`);
             } catch (e) {
                 skills.log(bot, `Failed to build "${name}": ${e.message}`);
             }
@@ -878,8 +881,9 @@ export const actionsList = [
 
             try {
                 const placed = await schematic.placeSchematic(bot, sch, origin, 0);
-                const v = await schematic.verifySchematic(bot, sch, origin, 0);
-                skills.log(bot, `Designed and built "${saveName}" (${sch.size.x}x${sch.size.y}x${sch.size.z}; placed ${placed}/${sch.blocks.length} blocks, ${v.ok}/${v.checked} verified).`);
+                let v = await schematic.verifySchematic(bot, sch, origin, 0);
+                while (!v.done) v = await schematic.verifySchematic(bot, sch, origin, 0);
+                skills.log(bot, `Designed and built "${saveName}" (${sch.size.x}x${sch.size.y}x${sch.size.z}; placed ${placed}/${sch.blocks.length} blocks, ${v.ok}/${v.checked} verified${(v.missing || v.wrongBlock || v.wrongState) ? `, ${(v.missing || 0) + (v.wrongBlock || 0) + (v.wrongState || 0)} to fix` : ''}).`);
             } catch (e) {
                 skills.log(bot, `I designed "${saveName}" but building hit a snag: ${e.message}`);
             }

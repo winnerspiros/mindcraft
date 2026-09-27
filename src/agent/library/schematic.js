@@ -22,7 +22,24 @@ function isAir(block) {
 // on a low-RAM box. ~10k blocks is a comfortable house; real castles stay under it.
 const MAX_BLOCKS = 10000;
 
-// Y-axis rotation helpers. steps = 0..3 (each = 90 deg clockwise viewed from above).
+// Mirror helper (LITEMATICA PORT: PositionUtils.getTransformedBlockPos L748 —
+// mirror FIRST, then rotate around origin. LEFT_RIGHT flips z, FRONT_BACK
+// flips x. Our old rotateRelative folds in footprint compensation, which is
+// equivalent for single-region origin-at-min-corner; this keeps both forms
+// straight for future sub-regions.)
+export function mirrorRelative(x, z, mirror = 'none') {
+    const m = String(mirror || 'none').toLowerCase();
+    if (m === 'left_right' || m === 'lr') return { x, z: -z };
+    if (m === 'front_back' || m === 'fb') return { x: -x, z };
+    return { x, z };
+}
+
+export function transformRelative(x, z, sx, sz, steps, mirror = 'none') {
+    const m = mirrorRelative(x, z, mirror);
+    return rotateRelative(m.x, m.z, sx, sz, steps);
+}
+
+// Y-axis rotation (clockwise steps*90 inside an sx,sz footprint).
 function rotateRelative(x, z, sx, sz, steps) {
     // rotate a relative (x,z) inside an (sx,sz) footprint, clockwise steps*90.
     switch (steps % 4) {
@@ -31,6 +48,21 @@ function rotateRelative(x, z, sx, sz, steps) {
         case 2: return { x: sx - 1 - x, z: sz - 1 - z };
         case 3: return { x: z, z: sx - 1 - x };
     }
+}
+
+// Inverse map world->schematic (LITEMATICA PORT: getReverseTransformedBlockPos
+// L782 + getOriginalPositionFromTransformed L829). Needed for EXTRA detection:
+// given a world offset (wx-ox, wz-oz), recover the schematic cell, or null if
+// outside the footprint.
+export function inverseRelative(wx, wz, sx, sz, steps, mirror = 'none') {
+    const s = ((steps % 4) + 4) % 4;
+    for (let x = 0; x < sx; x++) {
+        for (let z = 0; z < sz; z++) {
+            const t = transformRelative(x, z, sx, sz, s, mirror);
+            if (t.x === wx && t.z === wz) return { x, z };
+        }
+    }
+    return null;
 }
 
 const H_DIRS = ['north', 'east', 'south', 'west'];
@@ -296,10 +328,17 @@ export async function captureRegion(bot, p1, p2) {
  * then places each block one at a time by hand (placeBlock, no /setblock cheat).
  * Block-state orientation (stairs facing, log axis, ...) is dropped — blocks place
  * in their default orientation, same as a player who isn't being fussy.
+ * opts: { mirror: 'none'|'left_right'|'front_back', timeBoxMs } — mirror FIRST
+ * then rotate (LITEMATICA PORT: PositionUtils.getTransformedBlockPos L748);
+ * timeBoxMs caps ms per place loop pass (LITEMATICA PORT: TaskScheduler +
+ * TaskPasteSchematicPerChunkDirect 60ms cap — failed blocks stay pending and
+ * are retried next pass, same retention shape as pendingChunks).
  * Returns the number of blocks actually placed.
  */
-export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jobName = 'schematic') {
+export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jobName = 'schematic', opts = {}) {
     const steps = ((Math.round(rotationDeg / 90) % 4) + 4) % 4;
+    const mirror = String(opts.mirror || 'none').toLowerCase();
+    const timeBoxMs = opts.timeBoxMs ?? 0; // 0 = no cap (single pass, old behavior)
     const { x: sx, z: sz } = schematic.size;
     if (schematic.blocks.length > MAX_BLOCKS) {
         throw new Error(`Schematic has ${schematic.blocks.length} blocks (cap ${MAX_BLOCKS}). Split it or use a smaller one.`);
@@ -324,7 +363,7 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jo
     };
 
     const rotated = schematic.blocks.map((b) => {
-        const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
+        const { x, z } = transformRelative(b.x, b.z, sx, sz, steps, mirror);
         return { x, y: b.y, z, name: b.name, props: rotateProps(b.props || {}, steps, b.name) };
     });
 
@@ -352,15 +391,23 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jo
     }
 
     // Gather + craft materials for every block type before placing anything.
+    // Collapse UPPER halves (LITEMATICA PORT: MaterialCache L196 — upper comes
+    // free with lower, count once) and skip unobtainables (portals, heads).
     const byName = {};
-    for (const b of rotated) (byName[b.name] ||= []).push(b);
-    for (const [name, list] of Object.entries(byName)) {
+    for (const b of rotated) {
+        const m = skills.mapStateToItem ? skills.mapStateToItem(b.name, b.props || {}) : { item: b.name };
+        if (m.skip) continue;
+        const key = (m.upper ? b.name + ':lower' : m.item) || b.name;
+        (byName[key] ||= { item: m.item || b.name, count: 0 });
+        byName[key].count += (m.mult || 1);
+    }
+    for (const { item: name, count: need } of Object.values(byName)) {
         if (buildTick() === 'abort') break;
         if (buildTick() === 'wait') await buildWait();
         if (buildTick() === 'abort') break;
-        const have = await skills.acquireBlocks(bot, name, list.length);
-        if (have < list.length) {
-            skills.log(bot, `Only gathered ${have}/${list.length} ${name} — building with what I have.`);
+        const have = await skills.acquireBlocks(bot, name, need);
+        if (have < need) {
+            skills.log(bot, `Only gathered ${have}/${need} ${name} — building with what I have.`);
         }
     }
 
@@ -372,42 +419,52 @@ export async function placeSchematic(bot, schematic, origin, rotationDeg = 0, jo
     rotated.sort((a, b) => a.y - b.y || edgeDist(a) - edgeDist(b));
 
     let placed = 0;
-    const failed = [];
-    for (const b of rotated) {
-        if (buildTick() === 'abort') break;
-        if (buildTick() === 'wait') await buildWait();
-        if (buildTick() === 'abort') break;
-        const wx = Math.floor(origin.x) + b.x;
-        const wy = Math.floor(origin.y) + b.y;
-        const wz = Math.floor(origin.z) + b.z;
-        // Retry pass (schem review: single-attempt placement is the #1 cause of
-        // holey builds — a miss because she was still walking is permanent).
-        // Two tries with a short settle between; still-failing blocks go on the
-        // failed list for the re-visit sweep below.
-        let ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
-        if (!ok && !bot.interrupt_code) {
-            await new Promise(r => setTimeout(r, 400));
-            ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
-        }
-        if (ok) { placed++; bot._buildJob.placed = placed; }
-        else failed.push(b);
-    }
-    // Re-visit sweep: walk back over misses now that neighbours exist (many
-    // "nothing to place on" failures succeed once adjacent blocks are in).
-    if (failed.length && buildTick() !== 'abort') {
-        skills.log(bot, `Re-visiting ${failed.length} missed blocks...`);
-        for (const b of failed) {
-            if (buildTick() === 'abort') break;
+    // Pending-queue retention (LITEMATICA PORT: pendingChunks — failed blocks
+    // stay queued and retry next pass, no per-block retry count). With
+    // timeBoxMs set each pass is capped; without it this is one pass + sweep.
+    let pending = [...rotated];
+    let passStart = Date.now();
+    let firstPass = true;
+    while (pending.length) {
+        const next = [];
+        let attempted = 0;
+        for (const b of pending) {
+            if (buildTick() === 'abort') { pending = next.concat(pending.slice(pending.indexOf(b))); break; }
             if (buildTick() === 'wait') await buildWait();
             if (buildTick() === 'abort') break;
+            if (timeBoxMs > 0 && !firstPass && attempted > 0 && Date.now() - passStart >= timeBoxMs) { next.push(b); continue; }
+            attempted++;
             const wx = Math.floor(origin.x) + b.x;
             const wy = Math.floor(origin.y) + b.y;
             const wz = Math.floor(origin.z) + b.z;
-            if (await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true)) { placed++; bot._buildJob.placed = placed; }
+            // Retry pass (schem review: single-attempt placement is the #1 cause of
+            // holey builds — a miss because she was still walking is permanent).
+            // Two tries with a short settle between; still-failing blocks stay pending.
+            let ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
+            if (!ok && !bot.interrupt_code) {
+                await new Promise(r => setTimeout(r, 400));
+                ok = await skills.placeBlock(bot, b.name, wx, wy, wz, 'bottom', true);
+            }
+            if (ok) { placed++; bot._buildJob.placed = placed; }
+            else next.push(b);
         }
+        if (buildTick() === 'abort') break;
+        if (attempted > 0 && next.length === pending.length && next.length > 0) break; // no progress — neighbours won't change
+        if (next.length === 0) { pending = []; break; }
+        if (attempted === 0) break; // fully deferred by the time cap — stop, don't spin
+        pending = next;
+        firstPass = false;
+        passStart = Date.now();
+        if (timeBoxMs === 0) {
+            skills.log(bot, `Re-visiting ${pending.length} missed blocks...`);
+            continue; // old single-sweep shape: one re-visit pass, then the loop exits on no-progress
+        }
+        // time-boxed: yield a tick so the loop stays responsive, then continue
+        await new Promise(r => setTimeout(r, 50));
     }
+    const failed = pending;
     bot._buildJob.done = true;
-    bot._buildJob.failed = rotated.length - placed;
+    bot._buildJob.failed = failed.length;
     return placed;
 }
 
@@ -422,22 +479,101 @@ export function resumeBuild(bot) { bot._buildPause = false; }
 export function cancelBuild(bot) { bot._buildCancel = true; bot._buildPause = false; }
 
 /**
- * Verify a schematic was placed: sample the bottom layer and count how many
- * cells now hold the expected block. Returns { ok, checked } so the caller can
- * report self-verification (Blueprint.check-style) without trusting the paste blindly.
+ * Verify a schematic was placed — LITEMATICA PORT (SchematicVerifier
+ * checkBlockStates L699-790 + verifyChunks 50ms budget L464). 5-way
+ * classification per cell: MISSING (expected, world air), WRONG_BLOCK
+ * (different name), WRONG_STATE (same name, different props), EXTRA
+ * (world solid where schematic is air — found via the inverse map, since
+ * our forward map alone can't see strays), CORRECT. Crop age ignored
+ * (IGNORE_CROP_AGE + areStatesEqualIgnoringAge L705: wheat/carrots grow,
+ * age drift is not a build fault). Fluids and user-ignored blocks never
+ * count as EXTRA (IGNORE_EXISTING_FLUIDS L764 + IgnoreBlockRegistry).
+ * Time-boxed (~50ms per call like the 50_000_000ns tick budget) with a
+ * resume cursor on bot._verifyCursor so big builds verify across ticks.
+ * Returns { ok, checked, missing, wrongBlock, wrongState, extra, done }.
  */
-export async function verifySchematic(bot, schematic, origin, rotationDeg = 0) {
+const CROP_AGE_PROPS = new Set(['age']);
+const FLUID_NAMES = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
+// Blocks whose presence where the schematic says air is never a fault.
+const VERIFY_IGNORE_EXTRA = new Set(['torch', 'wall_torch', 'redstone_torch', 'redstone_wall_torch',
+    'snow', 'grass', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush',
+    'poppy', 'dandelion', 'vine', 'glow_lichen', 'fire', 'soul_fire', 'rail']);
+
+function propsEqualIgnoringAge(a, b) {
+    const ka = Object.keys(a || {}).filter((k) => !CROP_AGE_PROPS.has(k));
+    const kb = Object.keys(b || {}).filter((k) => !CROP_AGE_PROPS.has(k));
+    if (ka.length !== kb.length) return false;
+    return ka.every((k) => String(a[k]) === String(b?.[k]));
+}
+
+function blockProps(blk) {
+    try {
+        const st = blk?.state; if (!st) return {};
+        if (typeof st.getProperties === 'function') {
+            const out = {}; for (const [k, v] of Object.entries(st.getProperties())) out[k] = String(v?.name ?? v);
+            return out;
+        }
+    } catch (_) {}
+    return {};
+}
+
+export async function verifySchematic(bot, schematic, origin, rotationDeg = 0, opts = {}) {
     const steps = ((Math.round(rotationDeg / 90) % 4) + 4) % 4;
-    const { x: sx, z: sz } = schematic.size;
-    const bottom = schematic.blocks.filter((b) => b.y === 0);
-    const sampled = bottom.length <= 40 ? bottom : bottom.filter((_, i) => i % Math.ceil(bottom.length / 40) === 0);
-    let ok = 0;
-    for (const b of sampled) {
-        const { x, z } = rotateRelative(b.x, b.z, sx, sz, steps);
-        const blk = bot.blockAt(new Vec3(Math.floor(origin.x) + x, Math.floor(origin.y) + b.y, Math.floor(origin.z) + z));
-        if (blk && blk.name === b.name) ok++;
+    const mirror = opts.mirror || 'none';
+    const ignoreExtra = new Set([...VERIFY_IGNORE_EXTRA, ...(opts.ignoreExtra || [])]);
+    const { x: sx, y: sy, z: sz } = schematic.size;
+    const ox = Math.floor(origin.x), oy = Math.floor(origin.y), oz = Math.floor(origin.z);
+    const expected = new Map(); // "x,y,z" world -> block
+    for (const b of schematic.blocks) {
+        const t = transformRelative(b.x, b.z, sx, sz, steps, mirror);
+        expected.set(`${ox + t.x},${oy + b.y},${oz + t.z}`, b);
     }
-    return { ok, checked: sampled.length };
+    const start = Date.now();
+    const budgetMs = opts.budgetMs ?? 50;
+    const cursor = bot._verifyCursor || { cells: null, i: 0 };
+    if (!cursor.cells) {
+        cursor.cells = [...expected.keys()];
+        // EXTRA sweep: walk the world footprint, inverse-map each solid cell.
+        // Cells that inverse to null (outside footprint) or to air are strays.
+        cursor.extras = [];
+        for (let y = 0; y < sy; y++) {
+            for (let x = 0; x < sx; x++) {
+                for (let z = 0; z < sz; z++) {
+                    const wx = ox + x, wy = oy + y, wz = oz + z;
+                    if (expected.has(`${wx},${wy},${wz}`)) continue;
+                    let blk = null;
+                    try { blk = bot.blockAt(new Vec3(wx, wy, wz)); } catch (_) {}
+                    if (!blk || isAir(blk) || FLUID_NAMES.has(blk.name) || ignoreExtra.has(blk.name)) continue;
+                    cursor.extras.push({ x: wx, y: wy, z: wz, found: blk.name });
+                }
+            }
+        }
+    }
+    let ok = cursor.ok || 0, missing = cursor.missing || 0, wrongBlock = cursor.wrongBlock || 0,
+        wrongState = cursor.wrongState || 0;
+    const details = cursor.details || [];
+    let i = cursor.i;
+    for (; i < cursor.cells.length; i++) {
+        if (Date.now() - start >= budgetMs) break;
+        const key = cursor.cells[i];
+        const b = expected.get(key);
+        const [wx, wy, wz] = key.split(',').map(Number);
+        let blk = null;
+        try { blk = bot.blockAt(new Vec3(wx, wy, wz)); } catch (_) {}
+        const airW = isAir(blk);
+        if (airW) { missing++; details.push({ type: 'MISSING', at: key, expected: b.name }); continue; }
+        if (blk.name !== b.name) { wrongBlock++; details.push({ type: 'WRONG_BLOCK', at: key, expected: b.name, found: blk.name }); continue; }
+        const want = rotateProps(b.props || {}, steps, b.name);
+        if (!propsEqualIgnoringAge(blockProps(blk), want)) { wrongState++; details.push({ type: 'WRONG_STATE', at: key, expected: b.name }); continue; }
+        ok++;
+    }
+    const done = i >= cursor.cells.length;
+    if (!done) {
+        bot._verifyCursor = { cells: cursor.cells, extras: cursor.extras, i, ok, missing, wrongBlock, wrongState, details };
+        return { ok, checked: i, missing, wrongBlock, wrongState, extra: cursor.extras, done: false };
+    }
+    bot._verifyCursor = null;
+    return { ok, checked: cursor.cells.length, missing, wrongBlock, wrongState, extra: cursor.extras, details, done: true };
 }
 
 export function schematicPath(name) {
