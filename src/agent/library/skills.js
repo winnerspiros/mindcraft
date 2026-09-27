@@ -6106,6 +6106,7 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
         }
         if (!rescued) {
             log(bot, `No path found after retries — staying put instead of blind navigation (26.3 movement gate).`);
+            try { bot.agent?.self_prompter?.reportNav(false); } catch (_) {}
             return false;
         }
     }
@@ -6246,6 +6247,7 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
             nav.catch(() => {});
             log(bot, `Navigation stuck (${_stuckFail}) — staying put instead of burning the clock.`);
             clearInterval(doorCheckInterval);
+            try { bot.agent?.self_prompter?.reportNav(false); } catch (_) {}
             return false;
         }
         const settled = !bot.pathfinder.isMoving();
@@ -6260,10 +6262,13 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
             nav.catch(() => {});
             log(bot, `Navigation timed out after ${Math.round(navTimeoutMs / 1000)}s — staying put (goal unreachable from here).`);
             clearInterval(doorCheckInterval);
+            try { bot.agent?.self_prompter?.reportNav(false); } catch (_) {}
             return false;
         }
         if (bot.interrupt_code) {
             // interrupted mid-nav: detach, clean up, get out fast.
+            // neutral for the streak: an interrupt is the brain changing its
+            // mind, not the planner failing.
             nav.catch(() => {});
             clearInterval(doorCheckInterval);
             return false;
@@ -6279,6 +6284,7 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
             bot.setControlState('sprint', false);
             bot.setControlState('forward', false);
         } catch (_) {}
+        try { bot.agent?.self_prompter?.reportNav(true); } catch (_) {}
         return true;
     } catch (err) {
         clearInterval(doorCheckInterval);

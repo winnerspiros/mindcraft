@@ -121,8 +121,23 @@ const modes_list = [
                     // food. Hungry-with-no-food previously spun an empty execute()
                     // every 6s, which stopped the self-prompt loop each time and
                     // left her too busy "eating nothing" to go gather food.
-                    const food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
-                    if (!food) return;
+                    // SERVER-TRUTH (2026-09-27): client items() is blind on 26.3 —
+                    // she stood at food 7 with 32 beef in her pack. RCON decides.
+                    let food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
+                    if (!food) {
+                        try {
+                            const { rconInventory } = await import('../utils/rcon.js');
+                            const inv = await rconInventory(bot.username);
+                            const bite = (inv || []).find(e => /beef|chicken|porkchop|bread|cod|salmon|apple|carrot|pork|mutton|potato|melon|cookie|pumpkin_pie/.test(e.name));
+                            if (bite) {
+                                say(agent, `I have ${bite.name} but can't see it — re-syncing so I can eat.`);
+                                try { await bot.clickWindow(0, 0, 0).catch(() => {}); } catch (_) {}
+                                await new Promise(r => setTimeout(r, 800));
+                                food = bot.inventory.items().find(i => i.name.includes('beef') || i.name.includes('chicken') || i.name.includes('porkchop') || i.name.includes('bread') || i.name.includes('cod') || i.name.includes('salmon') || i.name.includes('apple') || i.name.includes('carrot'));
+                                if (!food) return; // still blind: don't spin, retry next tick
+                            } else return;
+                        } catch (_) { return; }
+                    }
                     execute(this, agent, async () => {
                         await bot.equip(food, 'hand');
                         await bot.consume();
