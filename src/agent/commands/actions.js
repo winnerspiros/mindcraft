@@ -1787,6 +1787,25 @@ export const actionsList = [
         }, false, 600)
     },
     {
+        name: '!quarrySlice',
+        description: 'WORLDEATER SPLIT: clear one slice of a quarry region (slice index/count) so parallel turns or bots divide the patch without overlap. Same layered snake-order clear as !quarry, restricted to your share.',
+        params: {
+            'size': { type: 'int', default: 5, description: 'Width of the square (odd number, 1-9).', domain: [1, 9] },
+            'depth': { type: 'int', default: 6, description: 'How many layers down (1-12).', domain: [1, 12] },
+            'index': { type: 'int', default: 0, description: 'Which slice is yours (0-based).', domain: [0, 7] },
+            'count': { type: 'int', default: 2, description: 'How many slices total.', domain: [2, 8] },
+            'block': { type: 'string', default: null, description: 'Optional: only break this block type.' }
+        },
+        perform: runAsAction(async (agent, size, depth, index, count, block) => {
+            agent.bot._quarrySplit = { index: index | 0, count: Math.max(2, count | 0 || 2) };
+            try {
+                await skills.quarry(agent.bot, size || 5, depth || 6, block || null);
+            } finally {
+                try { agent.bot._quarrySplit = null; agent.bot._quarryLadderDone = false; } catch (_) {}
+            }
+        }, false, 600)
+    },
+    {
         name: '!moveAwayFromEntity',
         description: 'Move away from the nearest entity of the given type by a distance.',
         params: {
