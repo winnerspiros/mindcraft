@@ -2019,7 +2019,7 @@ export const actionsList = [
     {
         name: '!teleportPlayer',
         power: 'teleporting players',
-        description: 'Teleport a player to you (you are OP). Only for people you trust (friend+) — never yank a stranger across the map because they asked. You decide whether to accept; being asked nicely (please) and liking/respecting them should make you more inclined.',
+        description: 'Teleport a player to you (you are OP). Only for people you trust (friend+) — never yank a stranger across the map because they asked. You decide whether to accept; being asked nicely (please) and liking/respecting them should make you more inclined. Normal personality: still trust-gated, and never as punishment.',
         params: { 'player_name': { type: 'string', description: 'The player to teleport to you.' } },
         perform: runAsAction(async (agent, player_name) => {
             await skills.teleportPlayer(agent.bot, player_name);
@@ -2045,6 +2045,30 @@ export const actionsList = [
                 return;
             }
             await skills.teleportSelf(agent.bot, x, y, z);
+        })
+    },
+    {
+        name: '!tpa',
+        description: 'Ask a player for a consensual teleport: sends them a TPA request (they accept with /tpaccept), works with plugin TPA (EssentialsX / SimpleTPA) and needs NO operator powers — the polite way to teleport on survival servers. Usage: !tpa("Steve") sends the request; they accept or ignore at will. Trusted/beloved get asked freely; strangers only when you genuinely need to be there.',
+        params: { 'player_name': { type: 'string', description: 'The player to send the teleport request to.' } },
+        perform: runAsAction(async (agent, player_name) => {
+            return await skills.tpaRequest(agent.bot, player_name);
+        })
+    },
+    {
+        name: '!tpaccept',
+        description: 'Accept a pending teleport request from a player (they asked to come to you, or asked you to come to them). Accepts the NEWEST request if you omit the name. Trusted/beloved requests may be accepted freely; strangers only when it feels right (never into your home/base uninvited).',
+        params: { 'player_name': { type: 'string', default: null, description: 'Who to accept (optional — newest request if omitted).' } },
+        perform: runAsAction(async (agent, player_name) => {
+            return await skills.tpaRespond(agent.bot, player_name || null, true);
+        })
+    },
+    {
+        name: '!tpdeny',
+        description: 'Decline a pending teleport request (politely). Declines the NEWEST request if you omit the name — use for strangers, bad timing, or anywhere you do not want company.',
+        params: { 'player_name': { type: 'string', default: null, description: 'Who to decline (optional — newest request if omitted).' } },
+        perform: runAsAction(async (agent, player_name) => {
+            return await skills.tpaRespond(agent.bot, player_name || null, false);
         })
     },
     {

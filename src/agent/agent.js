@@ -19,6 +19,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig } from '../utils/server_context.js';
 import { ModerationWatcher } from './moderation.js';
 import { PlayerActivityWatcher } from './player_activity.js';
 import { RelationshipManager } from './relationship.js';
@@ -209,8 +210,9 @@ export class Agent {
             
             // EasyAuth auto-login FIRST (offline-mode server, pre-spawn so the
             // stream stays clean): then skin only after spawn proves the
-            // session is fully authenticated.
-            if (this.prompter.profile.auth_password)
+            // session is fully authenticated. Home only — on a server without
+            // EasyAuth this would paste the password into public chat.
+            if (needsLogin() && this.prompter.profile.auth_password)
                 this.bot.chat(`/login ${this.prompter.profile.auth_password}`);
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
@@ -236,18 +238,24 @@ export class Agent {
                 // desync the 26.3 play stream (set_beacon decode kick), so the
                 // login chat on the login event stays the only pre-spawn write.
                 // Requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
+                // Survival server: no Tailor either — skip the /skin commands,
+                // which would just be unknown-command noise there.
                 try {
+                    if (canOp()) {
                     if (this.prompter.profile.skin)
                         this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
                     else
                         this.bot.chat(`/skin clear`);
+                    }
                 } catch (e) {
                     console.log(`${this.name} skin chat failed: ${String(e).slice(0, 80)}`);
                 }
 
                 // She's OP (level 4) and would otherwise box-punch mobs with no armor.
                 // Give her a real survival kit so she stops dying.
-                await this._gearUp();
+                // Survival server: _gearUp no-ops the /give half — she starts
+                // naked there and the /kit probe already ran in the join flow.
+                if (canOp()) await this._gearUp();
 
                 // 26.3 spawn-settle: login + spawn teleports + chunk batch is
                 // the heaviest server work on this 1-OCPU box. AI actions
@@ -428,6 +436,12 @@ export class Agent {
             // only respond to open chat messages when there are no other agents
             respondFunc(username, message, false);
         });
+
+        // uwu: guest-server join flow — AuthMe-style /register-/login prompts
+        // + one /kit probe. Prompt-gated only (never sends blind), max 2 tries
+        // each, then shuts up and plays honest. Home stays off (EasyAuth
+        // /login rides the login event; RCON kit via _gearUp).
+        this._startGuestJoinFlow();
 
         // uwu: moderation + personal-memory watcher (flags movement hacks as data; loads dossiers)
         this.moderation = new ModerationWatcher(this);
@@ -1068,8 +1082,16 @@ export class Agent {
             try { this.bot.armorManager.equipAll(); } catch (_) {}
             return; // silent: fully kitted, nothing to announce
         }
-        // Legacy path only (RCON down): /give ONLY missing pieces at 1200ms
-        // spacing (under the ~4 chat/s vanilla spam gate).
+        // Legacy path only (RCON down, HOME only): /give ONLY missing pieces
+        // at 1200ms spacing (under the ~4 chat/s vanilla spam gate).
+        // Survival server: op=false — no /give at all. She starts naked and
+        // earns everything the honest way (punch tree -> gearUp pipeline);
+        // the /kit probe already ran in _startGuestJoinFlow.
+        if (!canOp()) {
+            console.log(`${this.name} survival server: no /give, no kit — honest start (punch tree, craft, mine).`);
+            try { this.bot.armorManager.equipAll(); } catch (_) {}
+            return;
+        }
         try {
             for (const item of missing) {
                 this.bot.chat(`/give ${this.name} ${item} 1`);
@@ -1103,9 +1125,16 @@ export class Agent {
         // drops on death — if no diamond armor is in inventory, re-/give the full
         // kit (she's op, /give resolves). Equip-only path covers armor that somehow
         // survived (e.g. player gifted her some).
+        // Survival server: op=false — no re-/give, ever. Equip what she (or a
+        // kind player) actually has, then back to honest play.
         const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
         const hasArmor = armorPieces.some(p => this.bot.inventory.items().some(i => i.name === p));
         if (!hasArmor) {
+            if (!canOp()) {
+                console.log(`${this.name} survival server: respawned naked, no re-kit — honest rebuild.`);
+                try { this.bot.armorManager.equipAll(); } catch (_) {}
+                return;
+            }
             console.log(`${this.name} kit missing after respawn — full gear-up.`);
             return this._gearUp();
         }
@@ -1115,6 +1144,180 @@ export class Agent {
         const shield = this.bot.inventory.items().find(i => i.name === 'shield');
         if (shield) await this.bot.equip(shield, 'off-hand');
         console.log(`${this.name} re-armored after respawn.`);
+    }
+
+    // Guest-server join flow: AuthMe-style /register-/login prompts + one
+    // /kit probe. Prompt-gated ONLY (never sends blind), 8s cooldown, max 2
+    // tries each, then shuts up and plays honest. No-ops unless this context
+    // has auto_auth:true (guest). Home stays off: EasyAuth /login rides the
+    // login event and the kit comes via RCON _gearUp.
+    async _startGuestJoinFlow() {
+        let flow;
+        try { flow = authFlow(); } catch (_) { return; }
+        if (!flow || flow.auto !== true) return;
+        if (!flow.password) { console.warn('[guest-auth] auto_auth on but no password (servers.json auth_password / profile auth_password) — skipping.'); return; }
+        const bot = this.bot;
+        const pw = flow.password;
+        const st = { reg: 0, log: 0, authed: false, kitDone: false, lastTry: 0 };
+        const COOL = 8000, MAXT = 2;
+        const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+        const tryKitProbe = async () => {
+            if (st.kitDone || flow.probeKit !== true) return;
+            st.kitDone = true;
+            const lines = [];
+            const collect = (jm) => { try { lines.push(String(jm.toString()).slice(0, 200)); } catch (_) {} };
+            bot.on('message', collect);
+            try { bot.chat('/kit list'); console.log('[guest-kit] sent /kit list.'); }
+            catch (e) { console.warn('[guest-kit] /kit list send failed:', e.message); bot.removeListener('message', collect); return; }
+            await sleep(6000);
+            bot.removeListener('message', collect);
+            const blob = lines.join('\n');
+            if (!blob || /unknown command|no such command|doesn.t exist|no kits available|no permission/i.test(blob)) {
+                console.log('[guest-kit] no kits on this server — playing honest.');
+                return;
+            }
+            // Harvest candidate kit names from "/kit <name>" hints or comma lists in the reply.
+            const names = new Set();
+            for (const m of blob.matchAll(/\/kit\s+([A-Za-z0-9_\-]+)/g)) {
+                const n = m[1].toLowerCase();
+                if (!['list', 'preview', 'show', 'info'].includes(n)) names.add(m[1]);
+            }
+            for (const line of blob.split('\n')) {
+                if (/kit/i.test(line) && line.split(',').length >= 2) {
+                    for (const tok of line.split(',')) {
+                        const w = tok.replace(/[^A-Za-z0-9_\- ]/g, '').trim().split(/\s+/).pop();
+                        if (w && /^[A-Za-z0-9_\-]{2,24}$/.test(w) && !/kit/i.test(w)) names.add(w);
+                    }
+                }
+            }
+            const STARTER = /^(starter|start|basic|default|free|food|tools|beginner|welcome|newbie|player|survival|daily|common)s?$/i;
+            const pick = [...names].find(n => STARTER.test(n));
+            if (!pick) {
+                console.log(`[guest-kit] kits seen but no obvious starter (${[...names].join(', ') || 'unparsed'}) — not claiming, playing honest.`);
+                try { this.handleMessage('system', `(AUTO) Kit check: this server offers kits (${[...names].join(', ') || 'could not parse the list'}) but none is clearly a free starter, so you claimed nothing. Mention it to the players only if they ask about kits; otherwise just play honest survival.`); } catch (_) {}
+                return;
+            }
+            const after = [];
+            const collect2 = (jm) => { try { after.push(String(jm.toString()).slice(0, 200)); } catch (_) {} };
+            bot.on('message', collect2);
+            try { bot.chat(`/kit ${pick}`); } catch (_) {}
+            await sleep(4000);
+            bot.removeListener('message', collect2);
+            console.log(`[guest-kit] claimed starter kit '${pick}'. server said: ${after.join(' | ').slice(0, 200) || '(nothing)'}`);
+        };
+        const onMsg = async (jsonMsg) => {
+            if (st.authed && st.kitDone) return;
+            let plain = '';
+            try { plain = String(jsonMsg.toString()); } catch (_) { return; }
+            if (!plain) return;
+            // Success lines first: "successfully registered" contains "register",
+            // so it must win over the prompt check below.
+            if (/successfully (registered|logged)|successfully (register|login)|you (are now|have been) (registered|logged in)|login successful|registration complete|logged in successfully/i.test(plain)) {
+                if (!st.authed) {
+                    st.authed = true;
+                    console.log('[guest-auth] authenticated per server message.');
+                    setTimeout(() => tryKitProbe().catch(() => {}), 5000);
+                }
+                return;
+            }
+            if (st.authed) return;
+            const now = Date.now();
+            if (now - st.lastTry < COOL) return;
+            if (/\/register\b/i.test(plain) || /please register|register an account|you are not registered|unregistered/i.test(plain)) {
+                if (st.reg >= MAXT) return;
+                st.reg++; st.lastTry = now;
+                // Attempt 1: AuthMe form (/register <pw> <pw>). Attempt 2: short form.
+                try { bot.chat(st.reg === 1 ? `/register ${pw} ${pw}` : `/register ${pw}`); console.log(`[guest-auth] sent /register (try ${st.reg}/${MAXT}).`); } catch (e) { console.warn('[guest-auth] /register send failed:', e.message); }
+                return;
+            }
+            if (/\/login\b/i.test(plain) || /please (log ?in|login)|you are not logged|not logged in|use \/l(ogin)? /i.test(plain)) {
+                if (st.log >= MAXT) return;
+                st.log++; st.lastTry = now;
+                try { bot.chat(`/login ${pw}`); console.log(`[guest-auth] sent /login (try ${st.log}/${MAXT}).`); } catch (e) { console.warn('[guest-auth] /login send failed:', e.message); }
+                return;
+            }
+        };
+        bot.on('message', onMsg);
+        // No-auth server: no prompts ever come — still do the one kit probe
+        // after things settle, then play honest.
+        setTimeout(() => { if (!st.authed && !st.kitDone) tryKitProbe().catch(() => {}); }, 30000);
+        console.log('[guest-auth] watcher armed (prompt-gated /register-/login, one /kit probe).');
+        // TPA inbox: watch server chat for incoming teleport requests and
+        // route them — auto-accept for trusted ranks, everyone else to the
+        // brain (she answers in character). Runs on home too: SimpleTPA
+        // messages arrive as system text, not chat, on every server.
+        // Probe (tab-complete) only when the context asks: on a server with
+        // no TPA plugin the commands would just be unknown-command noise.
+        this._startTpaInbox();
+    }
+
+    // TPA inbox: incoming teleport-request watcher + capability probe.
+    // Incoming SimpleTPA request lines look like:
+    //   "<Name> has sent you a TP request. Use /tpaccept to accept, or /tpdeny to deny."
+    // EssentialsX variants mention "teleport" + "accept"/"deny" similarly.
+    // Behavior per servers.json teleports.auto_accept:
+    //   "trusted" (default) — rank friend/darling/beloved (+YandereDev) auto-/tpaccept,
+    //   "beloved" — only the beloved auto-accepts, "off" — everything to the brain.
+    // Strangers/acquaintances always go to the brain: she answers in character
+    // (accept or decline with !tpaccept/!tpdeny). No OP, no RCON — both sides
+    // consent via the plugin, so this is safe on survival servers.
+    async _startTpaInbox() {
+        const bot = this.bot;
+        let cfg = null;
+        try { cfg = teleportConfig(); } catch (_) { return; }
+        if (!cfg || cfg.enabled === false) return;
+        if (cfg.probe === true) {
+            // Capability probe via tab-complete: zero chat, zero noise. If the
+            // server has no TPA plugin, disable for this session.
+            try {
+                const matches = await bot.tabComplete('/tprequest ', false, false, 4000).catch(() => null);
+                if (!matches || !matches.length) {
+                    console.log('[tpa] no /tprequest on this server (tab-complete empty) — TPA inbox off.');
+                    return;
+                }
+                console.log(`[tpa] probe ok (${matches.length} matches) — inbox armed.`);
+            } catch (e) {
+                console.log('[tpa] probe failed, inbox armed anyway:', e.message);
+            }
+        }
+        const seen = new Map(); // name -> last auto/route time (5min dedupe)
+        const onTpaMsg = async (jsonMsg) => {
+            let plain = '';
+            try { plain = String(jsonMsg.toString()); } catch (_) { return; }
+            if (!plain) return;
+            // Incoming request: "<Name> has sent you a TP request" (+ accept/deny hint).
+            let m = plain.match(/^\[SimpleTPA\]\s*(.+?)\s+has sent you a TP request/i)
+                || plain.match(/(.+?)\s+has (sent you|requested) (a |a teleport |teleport )?request/i);
+            if (!m) {
+                // EssentialsX style: "X has requested to teleport to you" / "X has requested that you teleport to them".
+                m = plain.match(/(.+?)\s+has requested (to teleport to you|that you teleport to them)/i);
+            }
+            if (!m) return;
+            const from = String(m[1]).replace(/^.*[>:\]]\s*/, '').trim().split(/\s+/).pop();
+            if (!from || from === this.name) return;
+            const now = Date.now();
+            if (seen.has(from) && now - seen.get(from) < 5 * 60 * 1000) return;
+            seen.set(from, now);
+            let mode = 'trusted';
+            try { mode = teleportConfig().auto_accept || 'trusted'; } catch (_) {}
+            const isOwner = from === 'YandereDev';
+            let rank = 'stranger';
+            try { rank = (this.relationship.get(from).rank || 'stranger').toLowerCase(); } catch (_) {}
+            const trusted = isOwner || rank === 'friend' || rank === 'darling' || rank === 'beloved';
+            const belovedOnly = isOwner || rank === 'beloved' || this.isBelovedName(from);
+            const auto = (mode === 'trusted' && trusted) || (mode === 'beloved' && belovedOnly);
+            if (auto) {
+                try { bot.chat(`${(cfg && cfg.accept) || '/tpaccept'} ${from}`); } catch (_) {}
+                console.log(`[tpa] auto-accepted ${from} (rank ${rank}, mode ${mode}).`);
+                return;
+            }
+            // To the brain: she decides in character, answers with !tpaccept/!tpdeny.
+            try {
+                this.handleMessage('system', `(AUTO) ${from} (rank ${rank}) just sent you a teleport request ("${plain.slice(0, 120)}"). Decide in character: accept free-heartedly if you like/trust them or the moment is sweet (!tpaccept("${from}")); decline kindly if stranger-danger, bad timing, or somewhere private (!tpdeny("${from}")). One short in-character line either way.`);
+            } catch (_) {}
+        };
+        bot.on('message', onTpaMsg);
+        console.log('[tpa] inbox armed (auto-accept mode: ' + (() => { try { return teleportConfig().auto_accept; } catch (_) { return 'trusted'; } })() + ').');
     }
 
     // Suffocation self-rescue: pvp/pathfinder can clip her head into a wall while

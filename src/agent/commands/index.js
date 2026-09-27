@@ -2,6 +2,7 @@ import { getBlockId, getItemId, suggestBlockNames, suggestItemNames, suggestBloc
 import { actionsList } from './actions.js';
 import { queryList } from './queries.js';
 import { powerRank, powerRefused } from '../library/skills.js';
+import { canOp } from '../../utils/server_context.js';
 
 // Trust levels for operator-power commands. Thin wrappers so this module
 // doesn't reach into relationship internals directly.
@@ -326,8 +327,12 @@ export async function executeCommand(agent, message) {
         // POWER GATE: operator-power commands need a trusted requester. The
         // requester is the last human sender (players can't invoke these via
         // !-syntax from chat unless the LLM echoes them — in both cases the
-        // human who triggered this turn is agent.last_sender).
+        // human who triggered this turn is agent.last_sender). On a survival
+        // server (op=false) they also need the server to HAVE powers at all.
         if (command.power) {
+            if (!canOp()) {
+                return `${parsed.commandName} unavailable: this server is survival-only (no operator powers here). Do it the honest way — walk, craft, mine, trade, or ask players.`;
+            }
             const requester = agent.last_sender;
             const level = powerRankFor(agent, requester);
             if (level === 'none') {

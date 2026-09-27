@@ -4,6 +4,7 @@ import * as mc from '../utils/mcdata.js';
 import Vec3 from 'vec3';
 import settings from './settings.js'
 import convoManager from './conversation.js';
+import { canOp, combatConfig, modeOverrides } from '../utils/server_context.js';
 
 async function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
@@ -262,12 +263,24 @@ const modes_list = [
     },
     {
         name: 'retaliation',
-        description: 'Respond when a player harms her: verbal warning, then attack, then TNT if overdone.',
+        description: 'Respond when a player harms her: verbal warning, then honest melee back. Never console/TNT.',
         interrupts: ['all'],
         on: true,
         active: false,
         last_retaliated: 0,
         update: async function (agent) {
+            // Combat rules come from servers.json combat (both personalities):
+            // retaliate=false = never answer; warn_hits = pure-verbal hits
+            // before melee; fight_back=false = words only, no hitting back.
+            // no_console_punish is unconditional: melee/bow only, stop when
+            // they stop — NEVER /effect /kick /summon /crystal as punishment.
+            // A poke (1-2 hits, accident) is NOT a real attack: firm warning,
+            // no melee. A REAL attack (warn_hits+ consecutive, on purpose)
+            // gets answered in-game and dropped the moment they stop.
+            let cc = null;
+            try { cc = combatConfig(); } catch (_) { cc = null; }
+            const WARN = (cc && typeof cc.warn_hits === 'number') ? cc.warn_hits : 2;
+            if (cc && cc.retaliate === false) return;
             const now = Date.now();
             if (now - this.last_retaliated < 12000) return;
             const grudge = agent.grudge || {};
@@ -290,24 +303,30 @@ const modes_list = [
             };
 
             try {
-                if (count <= 2) {
+                const FIGHT = !(cc && cc.fight_back === false);
+                if (count <= WARN) {
                     await speak(`Ehh?! ${name}, did you just hurt UwU?! (╬ Ò﹏Ó) S-senpai... that wasn't very nice~!`);
                 }
-                else if (count <= 4) {
+                else if (count <= WARN + 2) {
                     await speak(`Grrr~ ${name}, that's ENOUGH! UwU will bite back! (ง •̀_•́)ง`);
-                    await skills.attackEntity(agent.bot, player, false); // a few hits, not a kill
-                    await new Promise(r => setTimeout(r, 800));
-                    agent.bot.pvp?.stop?.();
+                    if (FIGHT) {
+                        await skills.attackEntity(agent.bot, player, false); // a few hits, not a kill
+                        await new Promise(r => setTimeout(r, 800));
+                        agent.bot.pvp?.stop?.();
+                    }
                 }
                 else {
-                    // overdone: extreme response. TNT summon REMOVED (25 Sept:
+                    // overdone: STILL melee only (TNT summon REMOVED 25 Sept:
                     // players farmed her "protective violence" framing into mass
                     // summons — 10k withers proved ANY raw /summon path gets
-                    // weaponized). Cap at melee + a scary line instead.
+                    // weaponized). Cap at melee + a scary line instead, and
+                    // words-only when fight_back=false.
                     await speak(`That's TOO far, ${name}!!! UwU warned you~! 💢💥`);
-                    await skills.attackEntity(agent.bot, player, false);
-                    await new Promise(r => setTimeout(r, 800));
-                    agent.bot.pvp?.stop?.();
+                    if (FIGHT) {
+                        await skills.attackEntity(agent.bot, player, false);
+                        await new Promise(r => setTimeout(r, 800));
+                        agent.bot.pvp?.stop?.();
+                    }
                     delete grudge[name];       // full reset after escalation
                     delete grudge['__last__'];
                     this.last_retaliated = now;
@@ -933,6 +952,8 @@ class ModeController {
     }
 
     setOn(mode_name, on) {
+        // survival server: the cheat mode can never be armed (op=false).
+        if (mode_name === 'cheat' && on && !canOp()) return;
         modes_map[mode_name].on = on;
     }
 
@@ -1026,7 +1047,17 @@ export function initModes(agent) {
         agent.bot.restrict_to_inventory = agent.task.restrict_to_inventory;
     }
     let modes_json = agent.prompter.getInitModes();
+    // survival server (op=false in servers.json): the cheat mode can never
+    // run OP commands, so pin it off no matter what the profile says.
+    if (modes_json && !canOp() && modes_json.cheat !== undefined) modes_json.cheat = false;
+    // Per-server mode overrides (servers.json "modes"): applied after the
+    // profile so one context can quiet e.g. hunting without touching home.
+    try {
+        const ov = (typeof modeOverrides === 'function') ? modeOverrides() : {};
+        if (modes_json && ov) for (const k of Object.keys(ov)) modes_json[k] = ov[k];
+    } catch (_) {}
     if (modes_json) {
         agent.bot.modes.loadJson(modes_json);
     }
+    if (!canOp()) agent.bot.modes.setOn('cheat', false);
 }

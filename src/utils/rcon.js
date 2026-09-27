@@ -7,9 +7,10 @@ import fs from 'node:fs';
 // empty while the server holds a real kit. RCON `data get entity` is the
 // arbiter: silent (zero chat, zero LLM turns), authoritative, no decode
 // needed. Kit via RCON `give` / `item replace` (proven live, no spam gate).
-const RCON_HOST = '127.0.0.1';
-const RCON_PORT = 25575;
-const RCON_PW_FILE = '/home/ubuntu/kenoi-fabric/rcon.password';
+// Endpoint comes from servers.json (server_context.rconConfig): home only.
+// On a survival server (rcon disabled) every call fails fast with ok:false
+// and callers take their survival path.
+import { rconConfig } from './server_context.js';
 
 function encode(id, type, payload) {
     const body = Buffer.from(payload, 'utf8');
@@ -23,10 +24,12 @@ function encode(id, type, payload) {
 
 export function rconCommand(cmd, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
+        const rc = rconConfig();
+        if (!rc.enabled) { reject(new Error('rcon disabled on this server (survival-only)')); return; }
         let pw;
-        try { pw = fs.readFileSync(RCON_PW_FILE, 'utf8').trim(); }
+        try { pw = fs.readFileSync(rc.pwFile, 'utf8').trim(); }
         catch (e) { reject(new Error('rcon pw unreadable: ' + e.message)); return; }
-        const sock = net.createConnection({ host: RCON_HOST, port: RCON_PORT }, () => {
+        const sock = net.createConnection({ host: rc.host, port: rc.port }, () => {
             sock.write(encode(1, 3, pw));
         });
         const timer = setTimeout(() => { try { sock.destroy(); } catch (_) {} reject(new Error('rcon timeout: ' + cmd.slice(0, 40))); }, timeoutMs);
