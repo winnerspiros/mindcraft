@@ -220,7 +220,14 @@ export class SelfPrompter {
     reportNav(ok) {
         try {
             if (ok) this._navFails = 0;
-            else this._navFails = (this._navFails || 0) + 1;
+            else {
+                this._navFails = (this._navFails || 0) + 1;
+                // streak trips the tick critic too: the loop's own check may
+                // never run under churn, but update() ticks every 300ms.
+                if (this._navFails >= 4 && this.agent) {
+                    try { this.agent._streakTrip = Date.now(); } catch (_) {}
+                }
+            }
         } catch (_) {}
     }
 

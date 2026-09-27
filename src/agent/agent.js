@@ -1026,7 +1026,11 @@ export class Agent {
             if (!sp || !sp.prompt || sp.advancing) return;
             const now = Date.now();
             if (!this._lastCriticTick) this._lastCriticTick = 0;
-            if (now - this._lastCriticTick < 10 * 60 * 1000) return;
+            // STUCK-FUSE (2026-09-27): 10min let one bad goal hold all day.
+            // 3min bounds it; a nav-failure streak jumps the queue now.
+            const streakTrip = this._streakTrip && (now - this._streakTrip < 60 * 1000);
+            if (!streakTrip && now - this._lastCriticTick < 3 * 60 * 1000) return;
+            this._streakTrip = 0;
             this._lastCriticTick = now;
             // fire and forget — advanceGoal guards reentry via sp.advancing
             sp.advanceGoal().then((r) => {
