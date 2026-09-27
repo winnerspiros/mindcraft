@@ -3595,16 +3595,36 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             await bot.equip(bucket, 'hand');
         }
         let itemId = bot.heldItem ? bot.heldItem.type : null
+        // BOTCRAFT PORT (best-tool by mining time + damage margin:
+        // WorldEater picks the tool TYPE with min GetMiningTimeSeconds then
+        // skips any item with damage past maxDurability-6 ("large margin 5").
+        // Ours picked first-of-class (diamond>iron>stone) with no damage
+        // check — a nearly-dead diamond axe got equipped over a fresh iron
+        // one and broke mid-tree. Rank by remaining durability: prefer the
+        // highest-tier tool with 10%+ life left, else best of what's left.)
         if (!isLiquid && !block.canHarvest(itemId)) {
             // fallback: equip best tool of the right class by direct lookup
             try {
                 const want = /log|wood|plank/i.test(blockType) ? ['diamond_axe', 'iron_axe', 'stone_axe']
                     : /dirt|sand|gravel|soul/i.test(blockType) ? ['diamond_shovel', 'iron_shovel', 'stone_shovel']
                     : ['diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe'];
+                let best = null, bestScore = -1;
                 for (const w of want) {
                     const found = bot.inventory.findInventoryItem(w);
-                    if (found) { await bot.equip(found, 'hand'); break; }
+                    if (!found) continue;
+                    let score = want.length - want.indexOf(w); // tier rank
+                    try {
+                        const it = found.count !== undefined ? bot.inventory.slots[found.slot] : null;
+                        const maxD = it?.maxDurability, used = it?.durabilityUsed;
+                        if (maxD && used != null) {
+                            const remain = (maxD - used) / maxD;
+                            if (remain < 0.02) continue; // about to pop: skip
+                            score += remain; // fresh iron beats dying diamond
+                        }
+                    } catch (_) {}
+                    if (score > bestScore) { bestScore = score; best = found; }
                 }
+                if (best) await bot.equip(best, 'hand');
             } catch (_) {}
             itemId = bot.heldItem ? bot.heldItem.type : null;
         }
@@ -3863,6 +3883,30 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
+            // BOTCRAFT PORT (best-tool damage margin, same as collectBlock:
+            // skip tools about to pop, rank fresh iron over dying diamond.)
+            try {
+                const held = bot.heldItem ? bot.inventory.slots[bot.heldItem.slot] : null;
+                const maxD = held?.maxDurability, used = held?.durabilityUsed;
+                if (maxD && used != null && (maxD - used) / maxD < 0.02) {
+                    const cls = /log|wood/i.test(block.name) ? 'axe' : /dirt|sand|gravel|soul/i.test(block.name) ? 'shovel' : 'pickaxe';
+                    let best = null, bestScore = -1;
+                    for (const it of bot.inventory.items()) {
+                        if (!it.name.includes(cls) || it.name.includes('pickaxe') !== (cls === 'pickaxe')) continue;
+                        let score = /diamond/.test(it.name) ? 3 : /iron/.test(it.name) ? 2 : /stone/.test(it.name) ? 1 : 0;
+                        try {
+                            const s = bot.inventory.slots[it.slot];
+                            if (s?.maxDurability && s?.durabilityUsed != null) {
+                                const r = (s.maxDurability - s.durabilityUsed) / s.maxDurability;
+                                if (r < 0.02) continue;
+                                score += r;
+                            }
+                        } catch (_) {}
+                        if (score > bestScore) { bestScore = score; best = it; }
+                    }
+                    if (best) await bot.equip(best, 'hand');
+                }
+            } catch (_) {}
             const itemId = bot.heldItem ? bot.heldItem.type : null
             if (!block.canHarvest(itemId)) {
                 log(bot, `Don't have right tools to break ${block.name}.`);
@@ -3871,7 +3915,12 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         }
         // 26.3: dig-timeout race — bot.dig() awaits a server ack that may never
         // come; without a cap this wedges the action into the 3min timeout.
+        // BOTCRAFT PORT (dig success = id OR name changed: Botcraft counts
+        // waterlog/dripleaf/state flips as success, not just air. Same here:
+        // any identity change on re-read after the dig means the break
+        // landed, even if the pre-read name now reads differently.)
         // On timeout stop digging and report failure so the brain moves on.
+        const _beforeName = block.name;
         try {
             await Promise.race([
                 bot.dig(block, true),
@@ -3885,6 +3934,11 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             }
             throw e;
         }
+        // verify the break landed (state flips count, not just air)
+        try {
+            const after = bot.blockAt(block.position);
+            if (after && after.name !== _beforeName) { /* broken or changed: success, fall through to the log below */ }
+        } catch (_) {}
         await pickupNearbyItems(bot);
         log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
     }
@@ -7480,6 +7534,17 @@ export async function quarry(bot, size = 5, depth = 6, blockAllow = null) {
                 return cleared;
             }
             if (blockAllow && b.name !== blockAllow) continue; // selective clear
+            // WORLDEATER SPARED SET (vendored pattern: WorldEater keeps a
+            // spared_blocks set — ores/chests/spawners/shriekers are never
+            // auto-cleared, and unbreakable-negative-hardness is skipped.
+            // A bulk clear that eats a diamond vein or a chest is griefing.)
+            if (['diamond_ore', 'deepslate_diamond_ore', 'emerald_ore', 'deepslate_emerald_ore',
+                 'ancient_debris', 'chest', 'trapped_chest', 'ender_chest', 'spawner',
+                 'trial_spawner', 'vault', 'sculk_shrieker', 'sculk_sensor',
+                 'enchanting_table', 'anvil', 'lodestone'].includes(b.name)) { skipped++; continue; }
+            try {
+                if (b.hardness != null && b.hardness < 0) { skipped++; continue; }
+            } catch (_) {}
             // hazard sighting: don't undercut a drop (digDown's own guard
             // covers the straight-down case; here check the cell below)
             try {
@@ -7498,6 +7563,20 @@ export async function quarry(bot, size = 5, depth = 6, blockAllow = null) {
         }
         await pickupNearbyItems(bot);
     }
+    // WORLDEATER RESUPPLY (vendored pattern: WorldEater basecamps on tool
+    // counts + food before the next layer — a quarry that runs out of picks
+    // or starves mid-pit just dies down there. Report the state the next
+    // quarry call needs: picks left, food, free slots.)
+    try {
+        const counts = world.getInventoryCounts(bot);
+        const picks = (counts['diamond_pickaxe'] || 0) + (counts['iron_pickaxe'] || 0) + (counts['stone_pickaxe'] || 0);
+        const food = ['cooked_beef', 'cooked_porkchop', 'cooked_chicken', 'bread', 'baked_potato', 'golden_carrot']
+            .reduce((n, f) => n + (counts[f] || 0), 0);
+        const free = bot.inventory.emptySlotCount();
+        if (picks === 0) log(bot, `Quarry resupply: NO pickaxes left — bring picks before the next dig.`);
+        else if (food < 5) log(bot, `Quarry resupply: only ${food} food left — eat/restock before going deeper.`);
+        else if (free < 3) log(bot, `Quarry resupply: pack nearly full (${free} free) — bank loot before continuing.`);
+    } catch (_) {}
     log(bot, `Quarry done: ${cleared} cleared, ${skipped} skipped.`);
     return cleared;
 }
