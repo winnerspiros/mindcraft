@@ -551,6 +551,12 @@ export function sourcingHint(name) {
     // animal-sourced (leather, meats)
     const animal = safeGet(() => mc.getItemAnimalSource(n), null);
     if (animal) return `get from a ${animal} (breed or kill, near plains/meadows)`;
+    // mob drops (mcdata MOB_DROPS — minecraft-data has no entity-drop table)
+    const mobs = safeGet(() => (mc.getItemMobDrops ? mc.getItemMobDrops(n) : null), null);
+    if (mobs && mobs.length) {
+        if (safeGet(() => (mc.isLaidItem ? mc.isLaidItem(n) : false), false)) return `wait near ${mobs[0]}s — laid, never hunted`;
+        return `kill ${mobs.slice(0, 3).join(' / ')}`;
+    }
     // smelt chain
     const smeltFrom = safeGet(() => mc.getItemSmeltingIngredient(n), null) || SMELT_MAP[n];
     if (smeltFrom) return `smelt ${smeltFrom} in a furnace`;
