@@ -4182,10 +4182,41 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                     if (best) await bot.equip(best, 'hand');
                 }
             } catch (_) {}
-            const itemId = bot.heldItem ? bot.heldItem.type : null
+            let itemId = bot.heldItem ? bot.heldItem.type : null
             if (!block.canHarvest(itemId)) {
-                log(bot, `Don't have right tools to break ${block.name}.`);
-                return false;
+                // BLIND-HANDS EQUIP (2026-09-27): equipForBlock reads the blind
+                // client inventory (Slot bug) and holds air while a diamond
+                // pick sits in the pack — canHarvest fails on a lie. One
+                // RCON-truth pass: pick the right class by block, equip by
+                // server-known name, re-check. No RCON = honest refusal.
+                try {
+                    const { rconInventory } = await import('../../utils/rcon.js');
+                    const inv = await rconInventory(bot.username);
+                    const want = /log|wood|plank/i.test(block.name) ? /axe/
+                        : /dirt|sand|gravel|soul_sand|soul_soil/.test(block.name) ? /shovel/
+                        : /leaves|plant|wool|snow/.test(block.name) ? /shears|sword|hoe/
+                        : /pickaxe|axe|shovel|hoe|sword/;
+                    // default: pickaxe-first for stone-like, else any tool
+                    const names = (inv || []).map(e => e.name);
+                    const pick = names.find(n => /pickaxe/.test(n) && /diamond|iron|stone|netherite/.test(n))
+                        || names.find(n => /pickaxe/.test(n))
+                        || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe/.test(n)) : null)
+                        || (/dirt|sand|gravel/i.test(block.name) ? names.find(n => /shovel/.test(n)) : null);
+                    if (pick) {
+                        // force it into hand: direct slot search on the client may
+                        // still fail blind, so try client equip by name first.
+                        try {
+                            const it = bot.inventory.items().find(i => i.name === pick);
+                            if (it) await bot.equip(it, 'hand');
+                            else { await bot.equip(bot.registry.itemsByName[pick].id, 'hand').catch(() => {}); }
+                        } catch (_) {}
+                        itemId = bot.heldItem ? bot.heldItem.type : null;
+                    }
+                } catch (_) {}
+                if (!block.canHarvest(itemId)) {
+                    log(bot, `Don't have right tools to break ${block.name}.`);
+                    return false;
+                }
             }
         }
         // 26.3: dig-timeout race — bot.dig() awaits a server ack that may never
