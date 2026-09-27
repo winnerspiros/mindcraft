@@ -4341,6 +4341,38 @@ export async function pillarUp(bot, blockType, height = 4) {
      * await skills.pillarUp(bot, "dirt", 6);
      **/
     height = Math.max(1, Math.min(12, Math.floor(height || 4)));
+    // SCAFFOLD-TRUTH (2026-09-27): the brain names dirt, the client is blind,
+    // and placeBlock refuses on an empty client read even when the server
+    // holds stone/cobble/deepslate. Resolve the material from SERVER truth
+    // before the first layer: keep the request if held, else swap to whatever
+    // solid the server actually has. No swap = honest abort, no grind.
+    try {
+        const { rconInventory, rconCommand } = await import('../../utils/rcon.js');
+        const inv = await rconInventory(bot.username);
+        const counts = {};
+        for (const e of (inv || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+        const solid = Object.keys(counts).filter(n => {
+            try {
+                const b = bot.registry.blocksByName[n];
+                return b && b.boundingBox === 'block';
+            } catch (_) { return false; }
+        });
+        if (!solid.includes(blockType) || (counts[blockType] || 0) < 1) {
+            // prefer cheap scaffold, else any solid
+            const pref = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'];
+            const swap = pref.find(n => (counts[n] || 0) > 0) || solid.find(n => (counts[n] || 0) > 0);
+            if (swap && swap !== blockType) {
+                log(bot, `No ${blockType} in hand — pillaring on ${swap} instead.`);
+                blockType = swap;
+            }
+        }
+        // client is blind: put the resolved stack where the hand can find it.
+        // RCON hand-swap worked for digs; do the same pre-pillar.
+        if ((counts[blockType] || 0) > 0) {
+            try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
+            await new Promise(r => setTimeout(r, 600));
+        }
+    } catch (_) {}
     let gained = 0;
     for (let i = 0; i < height; i++) {
         if (bot.interrupt_code) break;
@@ -4478,23 +4510,31 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
     }
     // RCON-TRUTH FALLBACK (2026-09-27): client items() is blind on 26.3 (Slot
     // decode bug) — an empty client read is never proof of empty hands. When
-    // the client sees nothing, ask the server: if IT holds the item, equip by
-    // server-known slot via a client re-sync attempt first, else report the
-    // server count so the brain knows the truth instead of a false refusal.
+    // the client sees nothing, ask the server: if IT holds the item, put it
+    // in hand via RCON item replace (proven for tools — silent to public
+    // chat) and proceed to place. Refuse only when the server is empty too.
     if (!block_item) {
         let serverCount = 0;
         try { serverCount = await rconItemCount(bot.username, item_name); } catch (_) {}
         if (serverCount > 0) {
-            // server holds it, client can't see it: nudge a re-sync (window
-            // click on own inventory slot forces a set_slot round-trip), then
-            // re-check once before giving up for this call.
             try { await bot.clickWindow(0, 0, 0).catch(() => {}); } catch (_) {}
             try {
                 await new Promise(r => setTimeout(r, 500));
                 block_item = bot.inventory.findInventoryItem(item_name);
             } catch (_) {}
             if (!block_item) {
-                log(bot, `Server holds ${serverCount}x ${item_name} but I can't see it (client inventory blind) — retrying after re-sync, else fetch/gather more.`);
+                // client still blind: hand-swap via RCON, then fake a minimal
+                // item handle so the equip/place path below has something to hold.
+                try {
+                    const { rconCommand } = await import('../../utils/rcon.js');
+                    await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${item_name} 1`);
+                    await new Promise(r => setTimeout(r, 600));
+                    block_item = bot.inventory.findInventoryItem(item_name)
+                        || { name: item_name, type: bot.registry.itemsByName[item_name]?.id, count: serverCount, slot: null };
+                } catch (_) {}
+            }
+            if (!block_item) {
+                log(bot, `Server holds ${serverCount}x ${item_name} but I can't reach it — retrying, else fetch/gather more.`);
                 return false;
             }
         } else {
@@ -4653,7 +4693,13 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             await useToolOnBlock(bot, item_name, buildOffBlock);
         }
         else {
-            await bot.equip(block_item, 'hand');
+            // BLIND-HAND (2026-09-27): block_item may be a synthetic RCON handle
+            // (slot null) — bot.equip needs a real stack and throws blind. The
+            // RCON hand-swap above already put the item in mainhand server-side;
+            // skip the client equip when there is nothing real to equip.
+            try {
+                if (block_item && block_item.slot != null) await bot.equip(block_item, 'hand');
+            } catch (_) {}
             // 26.3: force-look (zero wire). A wire look+tick_end right after
             // block_place collides with the placement window -> type-0 reject
             // + ghost block (WIRE-ORDER proof). Local angles only here.
