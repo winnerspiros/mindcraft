@@ -3598,34 +3598,42 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             await bot.equip(bucket, 'hand');
         }
         let itemId = bot.heldItem ? bot.heldItem.type : null
-        // BOTCRAFT PORT (best-tool by mining time + damage margin:
-        // WorldEater picks the tool TYPE with min GetMiningTimeSeconds then
-        // skips any item with damage past maxDurability-6 ("large margin 5").
-        // Ours picked first-of-class (diamond>iron>stone) with no damage
-        // check — a nearly-dead diamond axe got equipped over a fresh iron
-        // one and broke mid-tree. Rank by remaining durability: prefer the
-        // highest-tier tool with 10%+ life left, else best of what's left.)
+        // BARITONE PORT (ToolSet.getBestSlot: scan hotbar by calculateSpeedVsBlock
+        // = destroySpeed(+Efficiency)/hardness, correct-tool /30 else /100;
+        // tie-break cheaper material; itemSaver skips tools within threshold
+        // of popping. Ours was first-of-class (diamond>iron>stone) — a slow
+        // correct tool lost to a fast wrong one. Rank by actual break speed.)
         if (!isLiquid && !block.canHarvest(itemId)) {
-            // fallback: equip best tool of the right class by direct lookup
+            // fallback: BARITONE PORT (ToolSet speed math) — rank candidates
+            // by actual break speed: tier multiplier x efficiency, divided by
+            // 30 when correct-tool else 100; skip tools about to pop
+            // (itemSaver); tie-break cheaper material. Speed, not tier order.
             try {
-                const want = /log|wood|plank/i.test(blockType) ? ['diamond_axe', 'iron_axe', 'stone_axe']
-                    : /dirt|sand|gravel|soul/i.test(blockType) ? ['diamond_shovel', 'iron_shovel', 'stone_shovel']
-                    : ['diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe'];
+                const want = /log|wood|plank/i.test(blockType) ? ['diamond_axe', 'iron_axe', 'stone_axe', 'wooden_axe']
+                    : /dirt|sand|gravel|soul/i.test(blockType) ? ['diamond_shovel', 'iron_shovel', 'stone_shovel', 'wooden_shovel']
+                    : ['diamond_pickaxe', 'iron_pickaxe', 'stone_pickaxe', 'wooden_pickaxe'];
+                const _tierMult = { diamond: 8, iron: 6, stone: 4, wooden: 2 };
+                const _hard = (() => { try { return block.hardness ?? 1; } catch (_) { return 1; } })();
                 let best = null, bestScore = -1;
                 for (const w of want) {
                     const found = bot.inventory.findInventoryItem(w);
                     if (!found) continue;
-                    let score = want.length - want.indexOf(w); // tier rank
+                    const tier = Object.keys(_tierMult).find(t => w.startsWith(t)) || 'wooden';
+                    let speed = (_tierMult[tier] || 2);
                     try {
                         const it = found.count !== undefined ? bot.inventory.slots[found.slot] : null;
                         const maxD = it?.maxDurability, used = it?.durabilityUsed;
-                        if (maxD && used != null) {
-                            const remain = (maxD - used) / maxD;
-                            if (remain < 0.02) continue; // about to pop: skip
-                            score += remain; // fresh iron beats dying diamond
+                        if (maxD && used != null && (maxD - used) <= 10) continue; // itemSaver: within 10 of popping
+                        const ench = it?.enchants || it?.enchantments || [];
+                        for (const e of ench) {
+                            const n = String(e?.name || e?.id || '').toLowerCase();
+                            if (n.includes('efficiency')) { const l = e?.lvl || 1; speed += l * l + 1; break; }
                         }
                     } catch (_) {}
-                    if (score > bestScore) { bestScore = score; best = found; }
+                    speed = speed / Math.max(0.1, _hard);
+                    const correct = /pickaxe|axe|shovel/.test(w); // class already matched above = correct tool
+                    speed = correct ? speed / 30 : speed / 100;
+                    if (speed > bestScore) { bestScore = speed; best = found; }
                 }
                 if (best) await bot.equip(best, 'hand');
             } catch (_) {}
@@ -3790,6 +3798,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 }
                 if (bot.interrupt_code) return false;
                 await pickupNearbyItems(bot);
+                // BARITONE PORT (MineProcess drop-loiter 250ms: keep the
+                // target in the goal set briefly so drops get vacuumed
+                // instead of left on the ground behind her.)
+                try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
                 success = true;
             }
             if (success)
@@ -5808,6 +5820,13 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
 
     bot.pathfinder.setMovements(final_movements);
     try {
+        // BARITONE PORT (PathExecutor stuck budgets: off-path >2 blocks for
+        // >200 ticks (10s) cancels, >3 blocks cancels instantly; movement
+        // timeout = original estimate + 100 ticks. Ours only had the outer
+        // nav watchdog — a leg walking AWAY from the path burned the whole
+        // budget before failing. Track off-path inside the watchdog: sample
+        // distance to the goal every 500ms; >3 blocks off the START distance
+        // for 3 straight samples, or zero progress for 10s, fails fast.)
         // 26.3: navigation watchdog — pathfinder.goto() has NO timeout; a
         // goal it can never reach (19:19/19:23: !moveAway hung 3min ->
         // force-stop loop -> 10s stop() -> cleanKill 'Exiting.' suicide ->
@@ -5840,10 +5859,30 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
             if (bot.pathfinder.isMoving()) break;
             await new Promise(r => setTimeout(r, 200));
         }
+        // BARITONE PORT (stuck budgets, see above): fail fast when the leg
+        // walks away or makes zero progress — don't burn the full watchdog.
+        let _startDist = Infinity, _offSamples = 0, _lastProg = Date.now(), _bestDist = Infinity;
+        try { _startDist = _bestDist = bot.entity.position.distanceTo(new Vec3(goal.x ?? goal.target?.x ?? 0, goal.y ?? goal.target?.y ?? 0, goal.z ?? goal.target?.z ?? 0)); } catch (_) {}
+        let _stuckFail = null;
         while (Date.now() - t0 < navTimeoutMs) {
             if (bot.interrupt_code || navDone) break;
-            await new Promise(r => setTimeout(r, 200));
+            await new Promise(r => setTimeout(r, 500));
+            try {
+                const _d = bot.entity.position.distanceTo(new Vec3(goal.x ?? goal.target?.x ?? 0, goal.y ?? goal.target?.y ?? 0, goal.z ?? goal.target?.z ?? 0));
+                if (_d < _bestDist - 0.5) { _bestDist = _d; _lastProg = Date.now(); _offSamples = 0; }
+                else if (_d > _startDist + 3) { if (++_offSamples >= 3) { _stuckFail = 'walked away from the path'; break; } }
+                else _offSamples = 0;
+                if (Date.now() - _lastProg > 10000 && bot.pathfinder.isMoving()) { _stuckFail = 'no progress for 10s'; break; }
+            } catch (_) {}
             if (Date.now() - t0 >= navTimeoutMs) break;
+        }
+        if (_stuckFail && !bot.interrupt_code) {
+            try { bot.pathfinder.setGoal(null); } catch (e) {}
+            try { bot.pathfinder.stop(); } catch (e) {}
+            nav.catch(() => {});
+            log(bot, `Navigation stuck (${_stuckFail}) — staying put instead of burning the clock.`);
+            clearInterval(doorCheckInterval);
+            return false;
         }
         const settled = !bot.pathfinder.isMoving();
         if ((!settled || !navDone) && !bot.interrupt_code) {
