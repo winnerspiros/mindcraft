@@ -474,9 +474,10 @@ export const actionsList = [
     },
         {
         name: '!placeHere',
-        description: 'Place a given block in the current location. Do NOT use to build structures, only use for single blocks/torches.',
+        description: 'Place a given block in the current location. Do NOT use to build structures, only use for single blocks/torches. Fetches the block first when short (dig/craft, never /give).',
         params: {'type': { type: 'BlockOrItemName', description: 'The block type to place.' }},
         perform: runAsAction(async (agent, type) => {
+            await skills.ensureBlocks(agent.bot, type, 1);
             let pos = agent.bot.entity.position;
             await skills.placeBlock(agent.bot, type, pos.x, pos.y, pos.z);
         })
