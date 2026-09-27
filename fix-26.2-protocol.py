@@ -1123,6 +1123,115 @@ def ensure_pathfinder_baritone_astar(base):
     print("[baritone-astar] cost validation installed")
 
 
+def ensure_uwu_swim(base):
+    """UWU-SWIM + UWU-SCAFFOLD (2026-09-27, marker-idempotent): shore drops
+    into safe water plan (+liquidCost, lava still refuses), legs may start in
+    safe water, digger kicks off while treading water, scaffold falls back to
+    any solid carried block. Anchors on stock upstream text; warns, never
+    blind-writes. Rerun is a no-op once markers exist."""
+    pf = os.path.join(base, "mineflayer-pathfinder")
+    mp = os.path.join(pf, "lib", "movements.js")
+    ix = os.path.join(pf, "index.js")
+    # 1. shore drop into water (getMoveDropDown blanket guard)
+    if os.path.exists(mp):
+        t = open(mp).read()
+        if "UWU-SWIM (2026-09-27): shore drops" in t:
+            print("[uwu-swim] shore-drop present -> no-op")
+        else:
+            old = "    if (blockC.liquid) return // dont go underwater"
+            new = ("    // UWU-SWIM (2026-09-27): shore drops into SAFE water must plan — the old\n"
+                   "    // blanket guard returned no-path at every pond edge (shore jitter). Lava\n"
+                   "    // (blocksToAvoid) still refuses; water plans with +liquidCost so dry\n"
+                   "    // detours win when both exist.\n"
+                   "    if (blockC.liquid) {\n"
+                   "      if (blockC.name === 'lava' || this.blocksToAvoid.has(blockC.type)) return // lava: still never\n"
+                   "      cost += this.liquidCost\n"
+                   "    }")
+            if old not in t:
+                print("[uwu-swim] WARNING: drop anchor moved, skipped")
+            else:
+                open(mp, "w").write(t.replace(old, new, 1))
+                print("[uwu-swim] shore-drop installed")
+        # 2. legs starting in water (getMoveDown standing-in-liquid guard)
+        t = open(mp).read()
+        if "UWU-SWIM (2026-09-27): allow planning while standing" in t:
+            print("[uwu-swim] in-water legs present -> no-op")
+        else:
+            old = "    if (this.getBlock(node, 0, 0, 0).liquid) return // dont go underwater"
+            new = ("    // UWU-SWIM (2026-09-27): allow planning while standing in SAFE water\n"
+                   "    // (wading to a water goal / swimming a leg). Lava still refuses.\n"
+                   "    if (this.getBlock(node, 0, 0, 0).liquid) {\n"
+                   "      const _here = this.getBlock(node, 0, 0, 0)\n"
+                   "      if (_here.name === 'lava' || this.blocksToAvoid.has(_here.type)) return\n"
+                   "    }")
+            if old not in t:
+                print("[uwu-swim] WARNING: down anchor moved, skipped")
+            else:
+                open(mp, "w").write(t.replace(old, new, 1))
+                print("[uwu-swim] in-water legs installed")
+    # 3. digger kickoff while treading water + scaffold fallback
+    if os.path.exists(ix):
+        t = open(ix).read()
+        if "UWU-SWIM (2026-09-27): the old onGround-only kickoff" in t:
+            print("[uwu-swim] swim-dig present -> no-op")
+        else:
+            old = ("    // Handle digging\n"
+                   "    if (digging || nextPoint.toBreak.length > 0) {\n"
+                   "      if (!digging && bot.entity.onGround) {")
+            new = ("    // Handle digging\n"
+                   "    if (digging || nextPoint.toBreak.length > 0) {\n"
+                   "      // UWU-SWIM (2026-09-27): the old onGround-only kickoff never fired in\n"
+                   "      // water, so water-edge breaks stalled forever. Swim digs are legal —\n"
+                   "      // tread water (jump) until stable, then dig from the float.\n"
+                   "      if (!digging && !bot.entity.onGround && (bot.entity.isInWater || bot.entity.isInLava)) {\n"
+                   "        bot.setControlState('jump', true)\n"
+                   "        return\n"
+                   "      }\n"
+                   "      if (!digging && bot.entity.onGround) {")
+            if old not in t:
+                print("[uwu-swim] WARNING: dig anchor moved, skipped")
+            else:
+                open(ix, "w").write(t.replace(old, new, 1))
+                print("[uwu-swim] swim-dig installed")
+        t = open(ix).read()
+        if "UWU-SCAFFOLD (2026-09-27)" in t:
+            print("[uwu-swim] scaffold fallback present -> no-op")
+        else:
+            old = ("      const block = stateMovements.getScaffoldingItem()\n"
+                   "      if (!block) {\n"
+                   "        resetPath('no_scaffolding_blocks')\n"
+                   "        return\n"
+                   "      }")
+            new = ("      // UWU-SCAFFOLD (2026-09-27): stock only places dirt/cobble — with an\n"
+                   "      // empty client inventory (26.3 Slot-decode bug) that is always 0, so\n"
+                   "      // every dig+place plan died at execution. Fall back to any solid block\n"
+                   "      // the client CAN see; the planner's toPlace already decided the move is\n"
+                   "      // worth making, so the material is secondary.\n"
+                   "      let block = stateMovements.getScaffoldingItem()\n"
+                   "      if (!block) {\n"
+                   "        try {\n"
+                   "          const seen = bot.inventory.items() || []\n"
+                   "          const solid = seen.find(i => {\n"
+                   "            try {\n"
+                   "              const blk = bot.registry.blocksByName[i.name]\n"
+                   "              if (!blk) return false\n"
+                   "              return blk.boundingBox === 'block'\n"
+                   "            } catch (_) { return false }\n"
+                   "          })\n"
+                   "          if (solid) block = solid\n"
+                   "        } catch (_) {}\n"
+                   "      }\n"
+                   "      if (!block) {\n"
+                   "        resetPath('no_scaffolding_blocks')\n"
+                   "        return\n"
+                   "      }")
+            if old not in t:
+                print("[uwu-swim] WARNING: scaffold anchor moved, skipped")
+            else:
+                open(ix, "w").write(t.replace(old, new, 1))
+                print("[uwu-swim] scaffold fallback installed")
+
+
 def ensure_pathfinder_prs(base):
     """Adopt 8 upstream pathfinder PRs + 3 gated fixes (df0324e) into
     node_modules/mineflayer-pathfinder. Marker-idempotent per hunk: each
@@ -1355,6 +1464,7 @@ def main():
     ensure_physics_fallback(BASE)
     ensure_prismarine_phase_order(BASE)
     ensure_pathfinder_walker(BASE)
+    ensure_uwu_swim(BASE)
     ensure_pathfinder_baritone_goals(BASE)
     ensure_pathfinder_baritone_astar(BASE)
     ensure_mineflayer_driver_arbiter(BASE)
