@@ -2831,6 +2831,19 @@ export async function attackEntity(bot, entity, kill=true) {
     }
 }
 
+// BOTCRAFT PORT (YieldForCondition: Botcraft's behaviour waits yield until
+// a condition fires or a timeout hits, instead of sleeping blind. Blind
+// sleeps in fight loops waste ticks after the state already changed —
+// e.g. waiting 600ms for RCON truth when the foe renders 100ms in.)
+async function waitForCond(fn, timeoutMs = 2000, intervalMs = 100) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        try { if (await fn()) return true; } catch (_) {}
+        await new Promise(r => setTimeout(r, intervalMs));
+    }
+    return false;
+}
+
 export async function rconLocateHostile(bot, names, radius=64) {
     /**
      * RCON truth when her eyes fail: locate the nearest hostile of the given
@@ -2993,6 +3006,12 @@ export async function defendSelf(bot, range=9) {
         // forward/back 250ms ticks until in band — no probes, no retries,
         // no 1s planning budget per adjustment. Strafe drift (side step each
         // 3rd tick) makes her orbit instead of statue-trading.
+        // BOTCRAFT PORT (per-target throttle: MobHitter's LastTimeHit map —
+        // one swing per target per 600ms. Vanilla attack cooldown is ~600ms
+        // anyway; re-swinging faster resets nothing and only burns durability
+        // + feeds Panda's angle check. Re-resolve the handle each pass so a
+        // stale/dead entity can't wedge the loop.)
+        bot._meleeHitAt = bot._meleeHitAt || {};
         const hurt = bot.health < 14 || bot.food < 16;
         const wantRange = hurt ? 10 : 3;
         try {
@@ -3007,9 +3026,30 @@ export async function defendSelf(bot, range=9) {
         } finally {
             try { bot.setControlState('forward', false); bot.setControlState('back', false); bot.setControlState('left', false); } catch (_) {}
         }
-        bot.pvp.attack(enemy);
-        attacked = true;
-        await new Promise(resolve => setTimeout(resolve, 150));
+        // throttle: swing this target at most once per 600ms (vanilla attack
+        // cooldown); skip the swing when the cooldown hasn't elapsed.
+        let _eid = null;
+        try { _eid = enemy.id ?? enemy.uuid ?? enemy.username ?? enemy.name; } catch (_) {}
+        const _now = Date.now();
+        if (_eid == null || _now - (bot._meleeHitAt[_eid] || 0) >= 600) {
+            bot.pvp.attack(enemy);
+            if (_eid != null) bot._meleeHitAt[_eid] = _now;
+            attacked = true;
+        }
+        // GC the hit map like MobHitter's Cleaner (entries older than 10s —
+        // dead/despawned entities must not pile up across fights).
+        try {
+            for (const k of Object.keys(bot._meleeHitAt))
+                if (_now - bot._meleeHitAt[k] > 10000) delete bot._meleeHitAt[k];
+        } catch (_) {}
+        // YieldForCondition, not a blind sleep: re-scan as soon as the target
+        // dies/leaves instead of standing 150ms on a corpse.
+        await waitForCond(async () => {
+            try {
+                const still = world.getNearbyEntities(bot, range);
+                return !still.includes(enemy);
+            } catch (_) { return true; }
+        }, 150, 50);
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
         if (bot.interrupt_code) {
             bot.pvp.stop();
@@ -3061,9 +3101,16 @@ export async function defendBlind(bot, range = 16) {
             continue;
         }
         // still blind: RCON truth (fails fast to null off-home)
+        // BOTCRAFT PORT (throttle: MobHitter tracks per-entity last-hit time
+        // and only swings each mob once per ~600ms, plus a Cleaner that GCs
+        // the map. Blind-swinging every 250ms burned durability and spammed
+        // Panda's angle check; throttle to one swing per target per tick.)
+        bot._blindSwingAt = bot._blindSwingAt || {};
         let r = null;
         try { r = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
         if (!r) { await new Promise(r2 => setTimeout(r2, 600)); continue; }
+        const _rk = `${Math.round(r.pos.x)},${Math.round(r.pos.y)},${Math.round(r.pos.z)}`;
+        if (Date.now() - (bot._blindSwingAt[_rk] || 0) < 600) continue;
         try {
             const d = bot.entity.position.distanceTo(r.pos);
             if (d > 3.5) await goToPosition(bot, r.pos.x, r.pos.y, r.pos.z, 2);
@@ -3073,6 +3120,7 @@ export async function defendBlind(bot, range = 16) {
         try {
             await bot.lookAt(new Vec3(r.pos.x, r.pos.y + 1.4, r.pos.z));
             bot.swingArm('right');
+            bot._blindSwingAt[_rk] = Date.now();
             swung = true;
         } catch (_) {}
         await new Promise(r2 => setTimeout(r2, 250));
@@ -3608,16 +3656,28 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                         return best ? new Vec3(best[0], best[1], best[2]) : null;
                     } catch (_) { return null; }
                 };
+                // BOTCRAFT PORT (closest-point reach: Botcraft DigTask measures
+                // distance to the CLOSEST POINT on the block, not the center —
+                // ~0.5-0.9 extra blocks of legit reach. Same for the walk-up
+                // loop and the pre-dig gate: measure to the nearest face
+                // point, not the center. Kills half the "too far" misses.
+                const _closestDist = (bpos) => {
+                    try {
+                        const eye = bot.entity.position.offset(0, 1.62, 0);
+                        const cx = Math.min(Math.max(eye.x, bpos.x), bpos.x + 1);
+                        const cy = Math.min(Math.max(eye.y, bpos.y), bpos.y + 1);
+                        const cz = Math.min(Math.max(eye.z, bpos.z), bpos.z + 1);
+                        return Math.hypot(cx - eye.x, cy - eye.y, cz - eye.z);
+                    } catch (_) { return Infinity; }
+                };
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
                 try {
-                    const eyeOf = () => bot.entity.position.offset(0, 1.62, 0);
-                    const ctr = block.position.offset(0.5, 0.5, 0.5);
                     let tries = 0;
-                    while (eyeOf().distanceTo(ctr) > 4.5 && tries < 12 && !bot.interrupt_code) {
+                    while (_closestDist(block.position) > 4.5 && tries < 12 && !bot.interrupt_code) {
                         tries++;
                         try {
-                            const dx = ctr.x - bot.entity.position.x, dz = ctr.z - bot.entity.position.z;
+                            const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
                             bot.setControlState('forward', true);
                             try { await bot.look(Math.atan2(-dx, -dz), 0); } catch (_) {}
                             await new Promise(r => setTimeout(r, 500));
@@ -3629,11 +3689,11 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 if (bot.interrupt_code) return false;
                 // 26.3: reach check BEFORE the dig — goToPosition stops 3 out
                 // with WALK-ONLY legs, and bot.dig on an out-of-reach block
-                // either throws or no-ops into the 25s timeout. Skip and let
-                // the brain pick a closer goal instead of burning a cycle.
+                // either throws or no-ops into the timeout. Closest-point
+                // measure (Botcraft): skip only when the nearest face is past
+                // 5.5, not the center.
                 try {
-                    const eye = bot.entity.position.offset(0, 1.62, 0);
-                    if (eye.distanceTo(block.position.offset(0.5, 0.5, 0.5)) > 5.5) {
+                    if (_closestDist(block.position) > 5.5) {
                         log(bot, `Too far to dig ${block.name} from here, moving on.`);
                         return false;
                     }
@@ -3656,21 +3716,46 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     const facePt = _digFace(block.position);
                     if (facePt) { try { await bot.lookAt(facePt, true); } catch (_) {} }
                 } catch (_) {}
+                // BOTCRAFT PORT (expected-time dig: Botcraft DigTask computes
+                // client-side mining time and sends FinishDigging AFTER it
+                // elapses instead of waiting for a server ack that may never
+                // come. bot.digTime() already encodes tool/efficiency/haste/
+                // fatigue/ground: use it as the budget + 3s margin. On timeout
+                // VERIFY the break (re-read the block) instead of assuming
+                // failure — Panda-cancelled or ack-lost breaks that actually
+                // landed were reported as failures, so the brain thought
+                // nothing happened and wandered off ("click and leave").
+                let _expectedMs = 25000;
+                try {
+                    const dt = bot.digTime ? bot.digTime(block) : null;
+                    if (Number.isFinite(dt) && dt >= 0) _expectedMs = Math.min(20000, Math.max(1500, dt + 3000));
+                } catch (_) {}
                 try {
                     await Promise.race([
                         bot.dig(block, true),
-                        new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), 25000)),
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), _expectedMs)),
                         new Promise((_, rej) => {
                             const t = setInterval(() => {
                                 if (bot.interrupt_code) { clearInterval(t); rej(new Error('interrupted')); }
                             }, 200);
-                            setTimeout(() => { clearInterval(t); }, 26000);
+                            setTimeout(() => { clearInterval(t); }, _expectedMs + 1000);
                         }),
                     ]);
                 } catch (e) {
                     try { bot.stopDigging(); } catch (_) {}
                     if (bot.interrupt_code) return false; // stopped: out fast, no chatter
                     if (String((e && e.message) || e).includes('dig-timeout')) {
+                        // verify before declaring failure — the break may have
+                        // landed while the ack got lost/cancelled.
+                        try {
+                            const after = bot.blockAt(block.position);
+                            if (!after || after.name === 'air' || after.name !== block.name) {
+                                log(bot, `Broke ${block.name} (ack lost, verified on re-read).`);
+                                await pickupNearbyItems(bot);
+                                success = true;
+                                break;
+                            }
+                        } catch (_) {}
                         log(bot, `Dig timed out on ${block.name}, moving on.`);
                         return false;
                     }
@@ -5886,8 +5971,13 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         if (mode === 'sprint' || mode === 'parkour') _goal._moveMode = mode;
         await goToGoal(bot, _goal);
         clearInterval(progressInterval);
+        // BOTCRAFT PORT (goal window: Botcraft's min_end_dist_xz — for block
+        // approach the XZ plane is what matters; Y mismatches (standing a
+        // block above/below the target) must not read as failure. Measure
+        // arrival in XZ when the caller passes a block-ish goal.
+        const dxz = Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z);
         const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
-        if (distance <= min_distance+1) {
+        if (dxz <= min_distance + 1) {
             log(bot, `You have reached at ${x}, ${y}, ${z}.`);
             return true;
         }
@@ -7346,6 +7436,70 @@ export async function digDown(bot, distance = 10) {
     else
         log(bot, `Dug down ${capped} blocks.`);
     return true;
+}
+
+// WORLDEATER PORT (layered dig region: Botcraft's WorldEater plans a quarry
+// as an action QUEUE — top layer first, never break the block underfoot,
+// bail on lava/water/drops per position. Direct port of that pattern into
+// our breakBlockAt legs: snake-order cells per layer, per-cell navigate +
+// break + verify, skip own-foot cell, stop on hazard sighting.)
+export async function quarry(bot, size = 5, depth = 6, blockAllow = null) {
+    size = Math.max(1, Math.min(9, Math.round(size) || 5));
+    if (size % 2 === 0) size += 1; // odd: she stands center, symmetric legs
+    depth = Math.max(1, Math.min(12, Math.round(depth) || 6));
+    const ox = Math.floor(bot.entity.position.x), oz = Math.floor(bot.entity.position.z);
+    const topY = Math.floor(bot.entity.position.y) - 1; // layer 0 = ground under feet
+    const half = Math.floor(size / 2);
+    let cleared = 0, skipped = 0;
+    log(bot, `Clearing a ${size}x${size} patch, ${depth} deep (layer by layer, top first).`);
+    for (let layer = 0; layer < depth; layer++) {
+        if (bot.interrupt_code) { log(bot, `Quarry stopped after ${cleared} blocks.`); return cleared; }
+        const y = topY - layer;
+        // snake order per layer (vendored WorldEater ordering: adjacent cells
+        // in sequence, no long walks back across the patch per block)
+        const cells = [];
+        for (let dx = -half; dx <= half; dx++) {
+            const row = [];
+            for (let dz = -half; dz <= half; dz++) row.push([ox + dx, y, oz + dz]);
+            if ((dx + half) % 2 === 1) row.reverse();
+            cells.push(...row);
+        }
+        for (const [cx, cy, cz] of cells) {
+            if (bot.interrupt_code) { log(bot, `Quarry stopped after ${cleared} blocks.`); return cleared; }
+            // never break the block under her own feet (WorldEater guarantee)
+            try {
+                const foot = bot.blockAt(bot.entity.position)?.position;
+                if (foot && foot.x === cx && foot.y === cy && foot.z === cz) { skipped++; continue; }
+            } catch (_) {}
+            let b = null;
+            try { b = bot.blockAt(new Vec3(cx, cy, cz)); } catch (_) {}
+            if (!b || b.name === 'air' || b.name === 'cave_air') continue;
+            if (b.name === 'bedrock') { skipped++; continue; }
+            if (['lava', 'water', 'flowing_lava', 'flowing_water'].includes(b.name)) {
+                log(bot, `Quarry hit ${b.name} at layer ${layer + 1} — stopping (hazard).`);
+                return cleared;
+            }
+            if (blockAllow && b.name !== blockAllow) continue; // selective clear
+            // hazard sighting: don't undercut a drop (digDown's own guard
+            // covers the straight-down case; here check the cell below)
+            try {
+                const below = bot.blockAt(new Vec3(cx, cy - 1, cz));
+                if (!below || below.name === 'air' || below.name === 'cave_air') {
+                    const deep = bot.blockAt(new Vec3(cx, cy - 2, cz));
+                    if (!deep || deep.name === 'air' || deep.name === 'cave_air') {
+                        log(bot, `Quarry skipping ${b.name} over a drop — stopping.`);
+                        return cleared;
+                    }
+                }
+            } catch (_) {}
+            const ok = await breakBlockAt(bot, cx, cy, cz, 12000);
+            if (ok) cleared++;
+            else skipped++;
+        }
+        await pickupNearbyItems(bot);
+    }
+    log(bot, `Quarry done: ${cleared} cleared, ${skipped} skipped.`);
+    return cleared;
 }
 
 export async function goToSurface(bot) {

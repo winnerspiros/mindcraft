@@ -1775,6 +1775,18 @@ export const actionsList = [
         })
     },
     {
+        name: '!quarry',
+        description: 'WORLDEATER PORT: clear a square region layer by layer (top layer first, snake order per layer, skip the block under your feet, bail on lava/water/drops). Use for bulk gathering (dirt, stone, sand) or clearing a building pad. Small sizes only (1-9 wide, 1-12 deep) — the brain re-issues to go bigger.',
+        params: {
+            'size': { type: 'int', default: 5, description: 'Width of the square (odd number, 1-9).', domain: [1, 9] },
+            'depth': { type: 'int', default: 6, description: 'How many layers down (1-12).', domain: [1, 12] },
+            'block': { type: 'string', default: null, description: 'Optional: only break this block type, leave the rest.' }
+        },
+        perform: runAsAction(async (agent, size, depth, block) => {
+            await skills.quarry(agent.bot, size || 5, depth || 6, block || null);
+        }, false, 600)
+    },
+    {
         name: '!moveAwayFromEntity',
         description: 'Move away from the nearest entity of the given type by a distance.',
         params: {
