@@ -3588,6 +3588,26 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // toward the block until inside 4.5 eye reach or 6s), THEN dig.
                 // If she genuinely can't close (wall/door/void between), say
                 // so once and let the brain pick another tree.
+                // PANDA-SAFE (2026-09-27: PandaAntiExploit cancelled her breaks —
+                // "player cannot see block" — because bot.dig looks at the block
+                // CENTER, and the server raycast from her eye hit leaves/terrain
+                // first. The walk-up faces the center too. Fix: aim the look at
+                // the block's NEAREST CORNER to her eye (shortest ray, least
+                // occlusion) right before dig starts — same break, visible face.
+                const _digFace = (bpos) => {
+                    try {
+                        const eye = bot.entity.position.offset(0, 1.62, 0);
+                        const corners = [[0.1, 0.1, 0.1], [0.9, 0.1, 0.1], [0.1, 0.1, 0.9], [0.9, 0.1, 0.9],
+                                         [0.1, 0.9, 0.1], [0.9, 0.9, 0.1], [0.1, 0.9, 0.9], [0.9, 0.9, 0.9], [0.5, 0.5, 0.5]];
+                        let best = null, bestD = Infinity;
+                        for (const [fx, fy, fz] of corners) {
+                            const px = bpos.x + fx, py = bpos.y + fy, pz = bpos.z + fz;
+                            const dd = Math.hypot(px - eye.x, py - eye.y, pz - eye.z);
+                            if (dd < bestD) { bestD = dd; best = [px, py, pz]; }
+                        }
+                        return best ? new Vec3(best[0], best[1], best[2]) : null;
+                    } catch (_) { return null; }
+                };
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
                 try {
@@ -3626,6 +3646,16 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // exit 1). Bail the instant interrupt_code fires so stop()
                 // always wins fast. On timeout stop digging and report
                 // failure so the brain moves on.
+                // PANDA-SAFE: look at the nearest corner (not center) first —
+                // bot.dig's internal lookAt aims center, which Panda's
+                // server-side raycast reads as occluded (leaves/terrain hit
+                // first) and cancels the break. A pre-aim at the closest
+                // point sets her view to a visible face; dig's own lookAt
+                // then only micro-adjusts.
+                try {
+                    const facePt = _digFace(block.position);
+                    if (facePt) { try { await bot.lookAt(facePt, true); } catch (_) {} }
+                } catch (_) {}
                 try {
                     await Promise.race([
                         bot.dig(block, true),
