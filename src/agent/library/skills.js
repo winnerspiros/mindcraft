@@ -1248,6 +1248,8 @@ export async function acquireBlocks(bot, blockType, count, _depth = 0) {
         const got = await acquireBlocks(bot, mapped.item, count * (mapped.mult || 1), _depth);
         return got;
     }
+    const craftHit = await craftableShortcut(bot, blockType, count);
+    if (craftHit !== null) return craftHit;
     const haveCount = () => world.getInventoryCounts(bot)[blockType] || 0;
 
     let have = haveCount();
@@ -1301,6 +1303,26 @@ export async function acquireBlocks(bot, blockType, count, _depth = 0) {
     } catch (_) {}
 
     await collectBlock(bot, blockType, count - have);
+    return haveCount();
+}
+
+// CRAFTABLE SHORTCUT (2026-09-27): the brain asks for planks/sticks/torches via
+// !collectBlocks, but those are CRAFTED, not dug. Catch the common craftables
+// here and craft from stock instead of pathing to a block that can't be dug.
+export async function craftableShortcut(bot, blockType, count) {
+    const t = String(blockType).toLowerCase();
+    const target = /oak_planks|planks/.test(t) ? 'oak_planks'
+        : /stick/.test(t) ? 'stick'
+        : /torch/.test(t) ? 'torch'
+        : /crafting_table|crafting table/.test(t) ? 'crafting_table'
+        : /chest/.test(t) ? 'chest'
+        : null;
+    if (!target) return null; // not a known craftable: caller digs normally
+    const haveCount = () => world.getInventoryCounts(bot)[target] || 0;
+    const before = haveCount();
+    if (before >= count) return before;
+    log(bot, `${target} is crafted, not dug — crafting ${count - before} more.`);
+    try { await craftRecipe(bot, target, count - before); } catch (_) {}
     return haveCount();
 }
 

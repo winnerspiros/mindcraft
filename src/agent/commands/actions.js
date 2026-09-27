@@ -428,9 +428,9 @@ export const actionsList = [
     },
     {
         name: '!collectBlocks',
-        description: 'Collect the nearest blocks of a given type.',
+        description: 'Collect the nearest blocks of a given type. RAW MATERIALS ONLY (ore, log, dirt, stone — things found in the world). NEVER craftables (planks, sticks, torches, tools): use !craftRecipe for those.',
         params: {
-            'type': { type: 'BlockName', description: 'The block type to collect.' },
+            'type': { type: 'BlockName', description: 'A RAW world block (ore/log/dirt/stone). Not planks/sticks/torches (use !craftRecipe).' },
             'num': { type: 'int', description: 'The number of blocks to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, type, num) => {
