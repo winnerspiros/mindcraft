@@ -4401,6 +4401,24 @@ export async function pillarUp(bot, blockType, height = 4) {
         } catch (_) {
             try { bot.setControlState('forward', false); bot.setControlState('sneak', false); } catch (_) {}
         }
+        // PER-LAYER HAND-SWAP (2026-09-27): each placed layer consumes the hand
+        // stack server-side; the pre-pillar swap covers layer 1 only. Re-swap
+        // every layer from server truth so layers 2+ place instead of refusing.
+        try {
+            const { rconInventory, rconCommand, rconItemCount } = await import('../../utils/rcon.js');
+            let have = 0;
+            try { have = await rconItemCount(bot.username, blockType); } catch (_) {}
+            if (have < 1) {
+                const inv = await rconInventory(bot.username);
+                const counts = {};
+                for (const e of (inv || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+                const pref = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'];
+                const swap = pref.find(n => (counts[n] || 0) > 0);
+                if (swap && swap !== blockType) { log(bot, `Out of ${blockType} — continuing on ${swap}.`); blockType = swap; }
+            }
+            try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
+            await new Promise(r => setTimeout(r, 400));
+        } catch (_) {}
         let ok = await placeBlock(bot, blockType, feet.x, feet.y, feet.z, 'bottom', true);
         if (!ok && !bot.interrupt_code) {
             await new Promise(r => setTimeout(r, 400));
