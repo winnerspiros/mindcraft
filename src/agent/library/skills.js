@@ -6581,19 +6581,12 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         log(bot, `Cheat-/tp disabled on 26.3, walking to ${x}, ${y}, ${z} instead.`);
     }
     
-    const checkDigProgress = () => {
-        if (bot.targetDigBlock) {
-            const targetBlock = bot.targetDigBlock;
-            const itemId = bot.heldItem ? bot.heldItem.type : null;
-            if (!targetBlock.canHarvest(itemId)) {
-                log(bot, `Pathfinding stopped: Cannot break ${targetBlock.name} with current tools.`);
-                bot.pathfinder.stop();
-                bot.stopDigging();
-            }
-        }
-    };
-    
-    const progressInterval = setInterval(checkDigProgress, 1000);
+    // BLIND-KILLER REMOVED (2026-09-27): a 1s interval read bot.heldItem
+    // (client-blind: null/sword while the SERVER hand holds the pick — RCON
+    // proved) and stopDigging() mid-swing whenever canHarvest lied. The dig
+    // verbs already gate canHarvest before the swing with RCON fallback; this
+    // duplicate only murdered held breaks. No interval, no mid-dig kill.
+    const progressInterval = null;
 
     // 26.3: NO sprint, NO sprint-jump by default. Pathfinder's allowSprinting
     // emits sprint+jump fall deltas (d1.0-1.4/tick) that the 26.3 moved-wrongly
@@ -6636,7 +6629,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         const _goal = new pf.goals.GoalNear(x, y, z, min_distance);
         if (mode === 'sprint' || mode === 'parkour') _goal._moveMode = mode;
         await goToGoal(bot, _goal);
-        clearInterval(progressInterval);
+        try { if (progressInterval) clearInterval(progressInterval); } catch (_) {}
         // BOTCRAFT PORT (goal window: Botcraft's min_end_dist_xz — for block
         // approach the XZ plane is what matters; Y mismatches (standing a
         // block above/below the target) must not read as failure. Measure
@@ -6653,7 +6646,7 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         }
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
-        clearInterval(progressInterval);
+        try { if (progressInterval) clearInterval(progressInterval); } catch (_) {}
         return false;
     }
 }
