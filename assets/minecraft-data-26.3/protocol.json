@@ -10324,7 +10324,126 @@
                 "array",
                 {
                   "countType": "varint",
-                  "type": "AdvEntry"
+                  "type": [
+                    "container",
+                    [
+                      {
+                        "name": "key",
+                        "type": "string"
+                      },
+                      {
+                        "name": "value",
+                        "type": [
+                          "container",
+                          [
+                            {
+                              "name": "parentId",
+                              "type": [
+                                "option",
+                                "string"
+                              ]
+                            },
+                            {
+                              "name": "displayData",
+                              "type": [
+                                "option",
+                                [
+                                  "container",
+                                  [
+                                    {
+                                      "name": "title",
+                                      "type": "anonymousNbt"
+                                    },
+                                    {
+                                      "name": "description",
+                                      "type": "anonymousNbt"
+                                    },
+                                    {
+                                      "name": "icon",
+                                      "type": "Slot"
+                                    },
+                                    {
+                                      "name": "frameType",
+                                      "type": "varint"
+                                    },
+                                    {
+                                      "name": "flags",
+                                      "type": [
+                                        "bitfield",
+                                        [
+                                          {
+                                            "name": "unused",
+                                            "size": 29,
+                                            "signed": false
+                                          },
+                                          {
+                                            "name": "hidden",
+                                            "size": 1,
+                                            "signed": false
+                                          },
+                                          {
+                                            "name": "show_toast",
+                                            "size": 1,
+                                            "signed": false
+                                          },
+                                          {
+                                            "name": "has_background_texture",
+                                            "size": 1,
+                                            "signed": false
+                                          }
+                                        ]
+                                      ]
+                                    },
+                                    {
+                                      "name": "backgroundTexture",
+                                      "type": [
+                                        "switch",
+                                        {
+                                          "compareTo": "flags/has_background_texture",
+                                          "fields": {
+                                            "1": "string"
+                                          },
+                                          "default": "void"
+                                        }
+                                      ]
+                                    },
+                                    {
+                                      "name": "xCord",
+                                      "type": "f32"
+                                    },
+                                    {
+                                      "name": "yCord",
+                                      "type": "f32"
+                                    }
+                                  ]
+                                ]
+                              ]
+                            },
+                            {
+                              "name": "requirements",
+                              "type": [
+                                "array",
+                                {
+                                  "countType": "varint",
+                                  "type": [
+                                    "array",
+                                    {
+                                      "countType": "varint",
+                                      "type": "string"
+                                    }
+                                  ]
+                                }
+                              ]
+                            },
+                            {
+                              "name": "sendsTelemtryData",
+                              "type": "bool"
+                            }
+                          ]
+                        ]
+                      }
+                    ]
+                  ]
                 }
               ]
             },
@@ -11144,85 +11263,6 @@
             {
               "name": "payload",
               "type": "restBuffer"
-            }
-          ]
-        ],
-        "AdvEntry": [
-          "container",
-          [
-            {
-              "name": "key",
-              "type": "string"
-            },
-            {
-              "name": "display",
-              "type": [
-                "option",
-                {
-                  "type": "AdvDisplay",
-                  "anonymous": false
-                }
-              ]
-            },
-            {
-              "name": "requirements",
-              "type": [
-                "array",
-                {
-                  "countType": "varint",
-                  "type": [
-                    "array",
-                    {
-                      "countType": "varint",
-                      "type": "string"
-                    }
-                  ]
-                }
-              ]
-            },
-            {
-              "name": "sendsTelemetryEvent",
-              "type": "bool"
-            }
-          ]
-        ],
-        "AdvDisplay": [
-          "container",
-          [
-            {
-              "name": "title",
-              "type": "anonymousNbt"
-            },
-            {
-              "name": "description",
-              "type": "anonymousNbt"
-            },
-            {
-              "name": "icon",
-              "type": "Slot"
-            },
-            {
-              "name": "frameType",
-              "type": "varint"
-            },
-            {
-              "name": "flags",
-              "type": "i32"
-            },
-            {
-              "name": "background",
-              "type": [
-                "option",
-                "string"
-              ]
-            },
-            {
-              "name": "xCoord",
-              "type": "f32"
-            },
-            {
-              "name": "yCoord",
-              "type": "f32"
             }
           ]
         ]
