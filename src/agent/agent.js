@@ -155,6 +155,7 @@ export class Agent {
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
+        try { this.bot.agent = this; } catch (_) {} // backlink: skills report nav outcomes to the stuck-fuse
         
         // Connection Handler
         const onDisconnect = (event, reason) => {
