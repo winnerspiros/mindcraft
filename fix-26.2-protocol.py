@@ -362,13 +362,15 @@ def ensure_26_3_data(base):
                 copied += 1
         print(f"[data] 26.3 game-data -> {dest}: {copied} copied, {len(os.listdir(dest))} present"
               if copied else f"[data] 26.3 game-data -> {dest}: all {len(os.listdir(dest))} present -> no-op")
-    # SlotComponent 122-lock (2026-09-27): the 26.3 server jar's DataComponents
-    # class defines 122 types (no map_color/swing_animation). minecraft-data
-    # 3.116.0 shipped 124 switch fields vs a 122 mapper; any item carrying an
-    # orphan id breaks Slot decode -> items() reads 0. Force mapper==switch==122.
+    # SlotComponent bytecode-order lock (2026-09-27): the 26.3 server jar's
+    # DataComponents class defines 122 types in registration order (javap -c
+    # putstatic sequence = registry order; the shipped 26.3 mapper was
+    # alpha-sorted, wrong). /tmp/true122.txt holds the bytecode order; force
+    # mapper to it and drop any switch orphans so mapper==switch==122.
     try:
         ref = json.load(open(DATA_SRC_263 + "/protocol.json"))
-        ref_map = ref["types"]["SlotComponentType"][1]["mappings"]
+        seq = [l.strip() for l in open("/tmp/true122.txt") if l.strip()]
+        ref_map = {str(n): v for n, v in enumerate(seq)}
         ref_sw = ref["types"]["SlotComponent"][1][1]["type"][1]["fields"]
         for proto in [
             os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3", "protocol.json"),
