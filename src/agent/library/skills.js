@@ -1073,6 +1073,12 @@ async function autoLight(bot) {
 }
 
 async function equipHighestAttack(bot) {
+    // COMBAT-FAST: skip re-equip when the right weapon is already held
+    // (equip() costs a full inventory round-trip each fight tick).
+    try {
+        const held = bot.heldItem;
+        if (held && (held.name.includes('sword') || (held.name.includes('axe') && !held.name.includes('pickaxe')))) return;
+    } catch (_) {}
     let weapons = bot.inventory.items().filter(item => item.name.includes('sword') || (item.name.includes('axe') && !item.name.includes('pickaxe')));
     if (weapons.length === 0)
         weapons = bot.inventory.items().filter(item => item.name.includes('pickaxe') || item.name.includes('shovel'));
@@ -2952,6 +2958,21 @@ export async function defendSelf(bot, range=9) {
     }
     // No flyer in 48: ground fight as before, but scan the same range the
     // caller asked for. A RCON flyer sweep already came back empty above.
+    // COMBAT-FAST (2026-09-27: fight felt slow + bot-like — three causes):
+    // (1) pvp.movements was stock Movements (allowSprinting+allowParkour
+    // TRUE): every attack leg re-planned sprint-jump strafes and overwrote
+    // OUR walk profile via setMovements inside pvp.attack. Now WALK-ONLY so
+    // combat footwork never kicks and never replans hot. (2) kiting ran
+    // GoalFollow/GoalInvert through the FULL goToGoal planner (probes +
+    // retries + sidestep, seconds per leg) — now direct control-state steps.
+    // (3) sweep sleeps (500ms fight / 600-700ms blind / 1500ms RCON-miss)
+    // kept her standing between decisions — now 150-250ms.
+    try {
+        bot.pvp.movements.allowSprinting = false;
+        bot.pvp.movements.allowParkour = false;
+        bot.pvp.movements.canDig = false;
+        bot.pvp.movements.canPlaceOn = false;
+    } catch (_) {}
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
 
     // Opening volley: a couple arrows at a distant enemy ONCE, before closing to
@@ -2968,24 +2989,27 @@ export async function defendSelf(bot, range=9) {
         // hug range shifts with her state — healthy+fed closes to minRange 3,
         // hurt/hungry backs to maxRange 10 and lets the bow do the work. The
         // old code stood at one fixed distance and traded hits with the pack.
+        // COMBAT-FAST: direct steps, not planner legs. Face the enemy, walk
+        // forward/back 250ms ticks until in band — no probes, no retries,
+        // no 1s planning budget per adjustment. Strafe drift (side step each
+        // 3rd tick) makes her orbit instead of statue-trading.
         const hurt = bot.health < 14 || bot.food < 16;
         const wantRange = hurt ? 10 : 3;
-        const dist = bot.entity.position.distanceTo(enemy.position);
-        if (dist > wantRange + 0.5 && enemy.name !== 'creeper' && enemy.name !== 'phantom') {
-            try {
-                bot.pathfinder.setMovements(new pf.Movements(bot));
-                await goToGoal(bot, new pf.goals.GoalFollow(enemy, wantRange));
-            } catch (err) {/* might error if entity dies, ignore */}
-        } else if (dist < wantRange - 0.5) {
-            try {
-                bot.pathfinder.setMovements(new pf.Movements(bot));
-                let inverted_goal = new pf.goals.GoalInvert(new pf.goals.GoalFollow(enemy, wantRange));
-                await goToGoal(bot, inverted_goal);
-            } catch (err) {/* might error if entity dies, ignore */}
+        try {
+            const dx = enemy.position.x - bot.entity.position.x;
+            const dz = enemy.position.z - bot.entity.position.z;
+            const dist = Math.hypot(dx, dz);
+            await bot.look(Math.atan2(-dx, -dz), 0);
+            bot.setControlState('forward', dist > wantRange + 0.5 && enemy.name !== 'creeper' && enemy.name !== 'phantom');
+            bot.setControlState('back', dist < wantRange - 0.5);
+            bot.setControlState('left', (Date.now() / 750 | 0) % 4 === 3); // orbit drift
+            await new Promise(r => setTimeout(r, 250));
+        } finally {
+            try { bot.setControlState('forward', false); bot.setControlState('back', false); bot.setControlState('left', false); } catch (_) {}
         }
         bot.pvp.attack(enemy);
         attacked = true;
-        await new Promise(resolve => setTimeout(resolve, 500));
+        await new Promise(resolve => setTimeout(resolve, 150));
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
         if (bot.interrupt_code) {
             bot.pvp.stop();
@@ -3033,13 +3057,13 @@ export async function defendBlind(bot, range = 16) {
                 await bot.attack(foe);
                 swung = true;
             } catch (_) {}
-            await new Promise(r => setTimeout(r, 600));
+            await new Promise(r => setTimeout(r, 250));
             continue;
         }
         // still blind: RCON truth (fails fast to null off-home)
         let r = null;
         try { r = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
-        if (!r) { await new Promise(r2 => setTimeout(r2, 1500)); continue; }
+        if (!r) { await new Promise(r2 => setTimeout(r2, 600)); continue; }
         try {
             const d = bot.entity.position.distanceTo(r.pos);
             if (d > 3.5) await goToPosition(bot, r.pos.x, r.pos.y, r.pos.z, 2);
@@ -3051,7 +3075,7 @@ export async function defendBlind(bot, range = 16) {
             bot.swingArm('right');
             swung = true;
         } catch (_) {}
-        await new Promise(r2 => setTimeout(r2, 700));
+        await new Promise(r2 => setTimeout(r2, 250));
     }
     try { bot.pvp.stop(); } catch (_) {}
     log(bot, swung ? `Blind fight done — threat should be down.` : `Blind fight: never found the attacker.`);
