@@ -194,6 +194,22 @@ export function modeOverrides() {
     try { return serverContext().modes || {}; } catch (_) { return {}; }
 }
 
+// Teleport-capability cache: NOTHING tp-related is said or sent until this
+// is true. Set by the TPA inbox probe (agent.js); home defaults true
+// (SimpleTPA mod installed, verified). Guest starts null (unknown) until
+// the tab-complete probe confirms /tprequest exists.
+let _tpaAvailable = null;
+export function setTeleportsAvailable(v) { _tpaAvailable = v === true; }
+export function isTeleportsAvailable() {
+    try {
+        const t = serverContext().teleports || {};
+        if (t.enabled === false) return false;
+        if (_tpaAvailable !== null) return _tpaAvailable;
+        if (t.probe === true) return false; // unprobed guest: unknown = no tp talk
+        return true; // home-style entry, no probe asked: SimpleTPA known present
+    } catch (_) { return false; }
+}
+
 export function authFlow() {
     // { auto, password, probeKit }: password falls back to the profile
     // password when the server entry leaves auth_password null.

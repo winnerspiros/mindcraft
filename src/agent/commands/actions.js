@@ -2049,7 +2049,7 @@ export const actionsList = [
     },
     {
         name: '!tpa',
-        description: 'Ask a player for a consensual teleport: sends them a TPA request (they accept with /tpaccept), works with plugin TPA (EssentialsX / SimpleTPA) and needs NO operator powers — the polite way to teleport on survival servers. Usage: !tpa("Steve") sends the request; they accept or ignore at will. Trusted/beloved get asked freely; strangers only when you genuinely need to be there.',
+        description: 'Ask a player for a consensual teleport: sends them a TPA request (they accept with /tpaccept), works with plugin TPA (EssentialsX / SimpleTPA) and needs NO operator powers. ONLY usable when teleport commands were actually seen on this server (probbed at join — otherwise it walks instead). LAST resort, not the commute: never send unless there is a real reason walking cannot do (asked somewhere unreachable, rescue/recall, trip is pointless on foot). Walking is better, always. One pending request per player (no re-send spam). Trusted/beloved get asked freely; strangers only when you genuinely need to be there.',
         params: { 'player_name': { type: 'string', description: 'The player to send the teleport request to.' } },
         perform: runAsAction(async (agent, player_name) => {
             return await skills.tpaRequest(agent.bot, player_name);
@@ -2073,7 +2073,7 @@ export const actionsList = [
     },
     {
         name: '!comeHere',
-        description: 'Someone asks you to come somewhere: go NOW (no debate for trusted/beloved), pick the honest road (walk near, sprint far flat, travel-trick 60+, boat water, bridge gaps), and SAY what you chose. Pass the requester name (their "tp to me" goes through !teleportMe, gated).',
+        description: 'Someone asks you to come somewhere: go NOW (no debate for trusted/beloved), WALK the honest road (walk near, sprint far flat, travel-trick 60+, boat water, bridge gaps), and SAY what you chose. NEVER advertise tp yourself ("tp to me"/!teleportMe are yours to RECEIVE when THEY ask — you come on foot). Pass the requester name.',
         params: { 'who': { type: 'string', default: null, description: 'Who asked (player name, optional — defaults to last sender).' } },
         perform: runAsAction(async (agent, who) => {
             await skills.comeHere(agent.bot, who || agent.last_sender || 'someone');
