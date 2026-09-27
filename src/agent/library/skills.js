@@ -3839,8 +3839,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
 
     let collected = 0;
 
-    const movements = new pf.Movements(bot);
-    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
+    const movements = moveProfile(bot, 'sprint');
     movements.dontMineUnderFallingBlock = false;
     movements.dontCreateFlow = true;
 
@@ -4221,8 +4220,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
     if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
         if (bot.entity.position.distanceTo(block.position) > 4.5) {
             let pos = block.position;
-            let movements = new pf.Movements(bot);
-    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
+            let movements = moveProfile(bot, 'sprint');
             movements.canPlaceOn = false;
             movements.allow1by1towers = false;
             bot.pathfinder.setMovements(movements);
@@ -4817,8 +4815,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             if (standGoal) break;
         }
         let pos = targetBlock.position;
-        let movements = new pf.Movements(bot);
-    movements.allowSprinting = false; movements.allowParkour = false; // 26.3 WALK-ONLY (moved-wrongly gate)
+        let movements = moveProfile(bot, 'sprint');
         bot.pathfinder.setMovements(movements);
         await goToGoal(bot, standGoal
             ? new pf.goals.GoalBlock(standGoal.x, standGoal.y, standGoal.z)
@@ -6668,6 +6665,12 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         log(bot, `Cheat-/tp disabled on 26.3, walking to ${x}, ${y}, ${z} instead.`);
     }
     
+    try {
+        if (mode === 'walk' && Number.isFinite(x) && Number.isFinite(z) && bot.entity && bot.entity.position) {
+            const _d = Math.hypot(x - bot.entity.position.x, z - bot.entity.position.z);
+            if (_d > 12 && (bot.food ?? 20) > 6) mode = 'sprint';
+        }
+    } catch (_) {}
     // BLIND-KILLER REMOVED (2026-09-27): a 1s interval read bot.heldItem
     // (client-blind: null/sword while the SERVER hand holds the pick — RCON
     // proved) and stopDigging() mid-swing whenever canHarvest lied. The dig
@@ -6675,12 +6678,11 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
     // duplicate only murdered held breaks. No interval, no mid-dig kill.
     const progressInterval = null;
 
-    // 26.3: NO sprint, NO sprint-jump by default. Pathfinder's allowSprinting
-    // emits sprint+jump fall deltas (d1.0-1.4/tick) that the 26.3 moved-wrongly
-    // gate reads as impossible -> "Invalid move" kick mid-walk (walk-death
-    // logs proved). Walk speed only — slower, never kicks. Sprint restores one
-    // leg at a time via goal.sprint=true (goToPlayer far-leg) once walk proves
-    // clean; never blanket-on.
+    // SPRINT-BY-DISTANCE (2026-09-27): WALK-ONLY was a moved-wrongly fear from
+    // before the LAC exemption was confirmed (header: exempt UUID, sprint
+    // ~0.28/tick under the 0.6 setback-only line). Long legs walk-slogged,
+    // water crossings worst (walk + swim). Legs over 12 XZ auto-sprint; short
+    // legs stay walk (edges, doors, lava). Parkour stays opt-in per call.
     // PARKOUR UPDATE: she is LAC-exempt (her offline UUID is the exempt one),
     // so the moved-wrongly gate can't touch her; mode='sprint'/'parkour' arms
     // the matching profile per leg. Default stays walk (edges, lava, mobs).
