@@ -6029,8 +6029,12 @@ export async function goToPlayer(bot, username, distance=3) {
                 log(bot, `You have reached ${username}.`);
                 return true;
             }
-            const shortBy = Number.isFinite(endD) ? endD.toFixed(0) : '?';
-            log(bot, `I walked toward ${username} but I'm still ${shortBy} blocks short — no path through. If they step somewhere open I'll walk right over.`);
+            // Same no-tp-ad rule as the entity path above: she walks, she
+            // never advertises tp (the brain keeps !teleportMe for when THEY ask).
+            const here = bot.entity.position;
+            const shortBy = Math.hypot(t.x - here.x, t.z - here.z);
+            const shortTxt = Number.isFinite(shortBy) ? shortBy.toFixed(0) : '?';
+            log(bot, `I walked toward ${username} but I'm still ${shortTxt} blocks short — no path through. If they step somewhere open I'll walk right over.`);
             return false;
         }
         log(bot, `Could not find ${username}.`);
@@ -6048,7 +6052,7 @@ export async function goToPlayer(bot, username, distance=3) {
     try {
         const endD = bot.entity.position.distanceTo(playerEntity.position);
         if (endD <= distance + 1) { log(bot, `You have reached ${username}.`); return true; }
-        log(bot, `I walked toward ${username} but I'm still ${endD.toFixed(0)} blocks short (no path through) — say "tp to me" (!teleportMe) and I'll pop over.`);
+        log(bot, `I walked toward ${username} but I'm still ${endD.toFixed(0)} blocks short — no path through. If they step somewhere open I'll walk right over.`);
         return false;
     } catch (_) { log(bot, `You have reached ${username}.`); return true; }
 }
