@@ -4465,12 +4465,14 @@ export async function pillarUp(bot, blockType, height = 4) {
     // the 2-layer stall. Top up from the adjacent wall BEFORE layer one: dig
     // up to (height - held) cheap blocks, then climb in one go.
     try {
-        const { rconInventory: _ri2 } = await import('../../utils/rcon.js');
+        const _ri2mod = (await import('../../utils/rcon.js'));
+        const _ri2 = _ri2mod.rconInventory;
+        try { _ri2mod.rconInventoryBust(bot.username); } catch (_) {}
         const _c0 = {};
-        for (const e of ((await _ri2(bot.username)) || [])) _c0[e.name] = (_c0[e.name] || 0) + e.count;
+        for (const e of ((await _ri2(bot.username, true)) || [])) _c0[e.name] = (_c0[e.name] || 0) + e.count;
         let _have0 = _c0[blockType] || 0;
         if (_have0 < height) {
-            const _need = Math.min(height - _have0, 8);
+            const _need = Math.min(height - _have0 + 2, 10);
             const _eye = bot.entity.position.offset(0, 1.62, 0);
             let _got = 0;
             for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0],[1,1,0],[-1,1,0],[0,1,1],[0,1,-1]]) {
@@ -4479,7 +4481,11 @@ export async function pillarUp(bot, blockType, height = 4) {
                 try { _wb = bot.blockAt(_eye.clone().offset(dx, dy, dz)); } catch (_) {}
                 if (!_wb || _wb.name === 'air' || _wb.name === 'water' || _wb.name === 'lava' || _wb.name === 'bedrock') continue;
                 try { await equipRightTool(bot, _wb).catch(() => {}); } catch (_) {}
-                try { await bot.dig(_wb, true).catch(() => {}); _got++; } catch (_) {}
+                try { await bot.dig(_wb, true).catch(() => {}); } catch (_) {}
+                try {
+                    const _chk = bot.blockAt(_wb.position);
+                    if (!_chk || _chk.name === 'air' || _chk.name !== _wb.name) _got++;
+                } catch (_) {}
             }
             if (_got > 0) {
                 try { await bot.waitForTicks(40); } catch (_) {}
@@ -6893,9 +6899,24 @@ export async function goToPlayer(bot, username, distance=3) {
                                 const faces = [[1,0],[ -1,0],[0,1],[0,-1]].map(([dx,dz]) => { try { return bot.blockAt(eye.position.offset(dx,0,dz)); } catch (_) { return null; } }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava');
                                 let got = 0;
                                 for (const wb of faces.slice(0, 3)) {
-                                    try { await bot.equip(bot.registry.itemsByName['diamond_pickaxe']?.id ? bot.inventory.items().find(i => i.name.includes('pickaxe'))?.type : null, 'hand').catch(() => {}); } catch (_) {}
+                                    if (bot.interrupt_code) break;
                                     try { await equipRightTool(bot, wb).catch(() => {}); } catch (_) {}
-                                    try { await bot.dig(wb, true, 'raycast').catch(() => bot.dig(wb).catch(() => {})); got++; } catch (_) {}
+                                    // VERIFIED DIG (not fire-and-count): only count it if the
+                                    // block is actually gone on re-read afterwards.
+                                    try {
+                                        await bot.dig(wb, true).catch(() => {});
+                                    } catch (_) {}
+                                    try {
+                                        const chk = bot.blockAt(wb.position);
+                                        if (!chk || chk.name === 'air' || chk.name !== wb.name) got++;
+                                        else {
+                                            try { await bot.dig(wb, true).catch(() => {}); } catch (_) {}
+                                            try {
+                                                const chk2 = bot.blockAt(wb.position);
+                                                if (!chk2 || chk2.name === 'air' || chk2.name !== wb.name) got++;
+                                            } catch (_) {}
+                                        }
+                                    } catch (_) {}
                                 }
                                 try { await bot.waitForTicks(40); } catch (_) {}
                                 try { await pickupNearbyItems(bot); } catch (_) {}
