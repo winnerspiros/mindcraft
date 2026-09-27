@@ -6723,10 +6723,26 @@ export async function goToPlayer(bot, username, distance=3) {
                 const d = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
                 if (d <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
             } catch (_) {}
-            // vertical gap left (they're above/below)? say so with the fix.
+            // vertical gap left (they're above/below)? DO the fix, not just log it.
+            // The brain reads this log next turn and re-walks; the legs do the
+            // climbing HERE while the fresh RCON position is hot.
             try {
                 const dy = rpos.y - bot.entity.position.y;
-                if (dy > 3) log(bot, `${username} is ${Math.round(dy)} up — I need to pillar (${Math.ceil(dy)+1} high), not walk.`);
+                if (dy > 3) {
+                    const h = Math.min(Math.ceil(dy) + 1, 12);
+                    log(bot, `${username} is ${Math.round(dy)} up — pillaring ${h}, not walking.`);
+                    try {
+                        const inv = (await import('../../utils/rcon.js')).rconInventory;
+                        const counts = {};
+                        for (const e of ((await inv(bot.username)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+                        const mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (counts[n] || 0) > 0);
+                        if (mat) {
+                            await ensureBlocks(bot, mat, h);
+                            const gained = await pillarUp(bot, mat, h);
+                            if (gained > 0) { log(bot, `Pillared up ${gained} — walking over now.`); }
+                        } else log(bot, `Nothing to pillar with — digging the wall for blocks first.`);
+                    } catch (_) {}
+                }
                 else if (dy < -3) log(bot, `${username} is ${Math.round(-dy)} down — I need to dig down carefully.`);
             } catch (_) {}
             return okg;
