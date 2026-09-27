@@ -104,6 +104,41 @@ export async function rconPlayerPos(name) {
     return pos;
 }
 
+// Server-truth inventory (2026-09-27): client items() is blind on 26.3 (Slot
+// decode bug reads 0 [] while RCON holds a real kit), so placement/dig verbs
+// that gate on carried blocks must consult the server. Cached a few seconds
+// per name — placement checks run mid-leg, not per tick.
+const _invCache = {};
+const INV_CACHE_MS = 4000;
+export async function rconInventory(name) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safe) return null;
+    const now = Date.now();
+    if (_invCache[safe] && now - _invCache[safe].t < INV_CACHE_MS) return _invCache[safe].inv;
+    let out;
+    try { out = await rconCommand(`data get entity ${safe} Inventory`); }
+    catch (e) { return null; }
+    // entries look like {Slot: 5b, id: "minecraft:dirt", count: 1} — capture id+count pairs
+    const inv = [];
+    try {
+        const re = /id:\s*"minecraft:([a-z_]+)"[^}]*?count:\s*(\d+)/g;
+        let m;
+        while ((m = re.exec(String(out)))) inv.push({ name: m[1], count: parseInt(m[2], 10) });
+    } catch (_) {}
+    _invCache[safe] = { t: now, inv };
+    return inv;
+}
+// Count of a server-held item (null = unknown, treat as 0 with no authority).
+export async function rconItemCount(name, item) {
+    try {
+        const inv = await rconInventory(name);
+        if (!inv) return 0;
+        let n = 0;
+        for (const e of inv) if (e.name === item) n += e.count;
+        return n;
+    } catch (_) { return 0; }
+}
+
 function parseIds(text) {
     const have = new Set();
     const re = /minecraft:([a-z_]+)"/g;
