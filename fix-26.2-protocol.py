@@ -390,6 +390,45 @@ def ensure_26_3_data(base):
                 print("[slot122] WARNING: " + str(e))
     except Exception as e:
         print("[slot122] WARNING ref unreadable: " + str(e))
+    # AdvEntry/AdvDisplay defs (2026-09-27): the shipped 26.3 protocol.json
+    # references AdvEntry but never defines it -> advancement sync payload
+    # fails (PartialReadError at boot). Define both from the server jar
+    # (DisplayInfo.fromNetwork bytecode order). Idempotent.
+    try:
+        _chat = 'anonymousNbt'
+        _adv_display = ['container', [
+            {'name': 'title', 'type': _chat},
+            {'name': 'description', 'type': _chat},
+            {'name': 'icon', 'type': 'Slot'},
+            {'name': 'frameType', 'type': 'varint'},
+            {'name': 'flags', 'type': 'i32'},
+            {'name': 'background', 'type': ['option', 'string']},
+            {'name': 'xCoord', 'type': 'f32'},
+            {'name': 'yCoord', 'type': 'f32'}]]
+        _adv_entry = ['container', [
+            {'name': 'key', 'type': 'string'},
+            {'name': 'display', 'type': ['option', {'type': 'AdvDisplay', 'anonymous': False}]},
+            {'name': 'requirements', 'type': ['array', {'countType': 'varint', 'type': ['array', {'countType': 'varint', 'type': 'string'}]}]},
+            {'name': 'sendsTelemetryEvent', 'type': 'bool'}]]
+        for proto in [
+            os.path.join(base, "minecraft-data", "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+            os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data",
+                         "minecraft-data", "data", "pc", "26.3", "protocol.json"),
+        ]:
+            try:
+                dd = json.load(open(proto))
+                ttc = dd['play']['toClient']['types']
+                if 'AdvEntry' not in ttc or 'AdvDisplay' not in ttc:
+                    ttc['AdvEntry'] = _adv_entry
+                    ttc['AdvDisplay'] = _adv_display
+                    json.dump(dd, open(proto, 'w'), indent=2)
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': AdvEntry/AdvDisplay defined')
+                else:
+                    print('[advdef] ' + proto.split('node_modules/')[-1] + ': present -> no-op')
+            except Exception as e:
+                print('[advdef] WARNING: ' + str(e))
+    except Exception as e:
+        print('[advdef] WARNING ref: ' + str(e))
     for data_js in [
         os.path.join(base, "minecraft-data", "data.js"),
         os.path.join(base, "minecraft-protocol", "node_modules", "minecraft-data", "data.js"),
