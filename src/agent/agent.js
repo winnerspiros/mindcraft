@@ -1153,11 +1153,9 @@ export class Agent {
     // login event and the kit comes via RCON _gearUp.
     async _startGuestJoinFlow() {
         let flow;
-        try { flow = authFlow(); } catch (_) { return; }
-        if (!flow || flow.auto !== true) return;
-        if (!flow.password) { console.warn('[guest-auth] auto_auth on but no password (servers.json auth_password / profile auth_password) — skipping.'); return; }
+        try { flow = authFlow(); } catch (_) { flow = { auto: false, password: null, probeKit: false }; }
         const bot = this.bot;
-        const pw = flow.password;
+        const pw = (flow && flow.password) || null;
         const st = { reg: 0, log: 0, authed: false, kitDone: false, lastTry: 0 };
         const COOL = 8000, MAXT = 2;
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -1210,6 +1208,10 @@ export class Agent {
             let plain = '';
             try { plain = String(jsonMsg.toString()); } catch (_) { return; }
             if (!plain) return;
+            // AuthMe prompts need a password — without one, stay silent (home
+            // EasyAuth rides the login event; guest without auth_password
+            // plays honest and never pastes anything).
+            if (pw) {
             // Success lines first: "successfully registered" contains "register",
             // so it must win over the prompt check below.
             if (/successfully (registered|logged)|successfully (register|login)|you (are now|have been) (registered|logged in)|login successful|registration complete|logged in successfully/i.test(plain)) {
@@ -1236,6 +1238,7 @@ export class Agent {
                 try { bot.chat(`/login ${pw}`); console.log(`[guest-auth] sent /login (try ${st.log}/${MAXT}).`); } catch (e) { console.warn('[guest-auth] /login send failed:', e.message); }
                 return;
             }
+            } // end if (pw) — no password, no auth chat, ever
         };
         bot.on('message', onMsg);
         // No-auth server: no prompts ever come — still do the one kit probe
