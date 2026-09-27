@@ -37,10 +37,19 @@ export function blacklistCommands(commands) {
     }
 }
 
-const argList = '(?:-?\\d+(?:\\.\\d+)?|true|false|"[^"]*")(?:\\s*,\\s*(?:-?\\d+(?:\\.\\d+)?|true|false|"[^"]*"))*';
-// Explicit command syntax: "!name" or "!name(args...)". Bang may be ASCII '!' or full-width U+FF01,
-// which kawaii/JP-flavoured models sometimes emit instead of '!'.
-const commandRegex = new RegExp(`[!！](\\w+)(?:\\((${argList})\\))?`);
+// One argument token: number, bool, "quoted string", or bare word (granite,
+// YandereDev). The brain emits bare words constantly despite the docs saying
+// to quote strings — dropping them caused the `was given 0 args` loop.
+const argToken = '(?:-?\\d+(?:\\.\\d+)?|true|false|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*)';
+const argList = `${argToken}(?:\\s*,\\s*${argToken})*`;
+// Space-separated form: "!goToPlayer YandereDev", "!collectBlocks granite 3".
+// The brain puts the command last, so anything past the command's param count
+// is trailing prose and gets cut at parse time (see parseCommandMessage).
+const spaceArgs = `${argToken}(?: +${argToken})*`;
+// Explicit command syntax: "!name", "!name(args...)" or "!name arg1 arg2".
+// Bang may be ASCII '!' or full-width U+FF01, which kawaii/JP-flavoured
+// models sometimes emit instead of '!'.
+const commandRegex = new RegExp(`[!！](\\w+)(?:\\((${argList})\\)| +(${spaceArgs}))?`);
 // Bare function-call syntax "name(args...)" for known command names. Some models (e.g. gpt-4o-mini)
 // drop the "!" prefix, which was previously treated as plain conversation text and bled the raw
 // command string into chat. Restrict to real command names so ordinary prose isn't matched.
@@ -49,13 +58,28 @@ const commandNames = commandList
     .sort((a, b) => b.length - a.length);
 const bareNamePattern = commandNames.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
 const bareCommandRegex = new RegExp(`(${bareNamePattern})\\((${argList})\\)`);
-const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
+const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"|[A-Za-z_][A-Za-z0-9_]*/g;
 
 // Returns { name (with '!'), argsStr, raw (the matched text), index } for the first command
 // found in message (bang-prefixed OR bare function-call), or null if none.
 export function getCommandInfo(message) {
     let m = message.match(commandRegex);
-    if (m) return { name: '!' + m[1], argsStr: m[2], raw: m[0], index: m.index };
+    if (m) {
+        // paren form m[2], space form m[3] — trim space-form tokens to the
+        // command's param count so trailing prose ("and stay close") isn't
+        // swallowed as extra args.
+        let argsStr = m[2] ?? null;
+        let raw = m[0];
+        if (argsStr == null && m[3] != null) {
+            const cmd = commandMap['!' + m[1]];
+            const maxArgs = cmd && cmd.params ? Object.keys(cmd.params).length : Infinity;
+            const toks = m[3].match(argRegex) || [];
+            const kept = toks.slice(0, maxArgs);
+            argsStr = kept.join(' ');
+            raw = raw.slice(0, raw.length - m[3].length) + kept.join(' ');
+        }
+        return { name: '!' + m[1], argsStr, raw, index: m.index };
+    }
     m = message.match(bareCommandRegex);
     if (m) return { name: '!' + m[1], argsStr: m[2], raw: m[0], index: m.index };
     return null;
