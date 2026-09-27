@@ -3804,6 +3804,22 @@ async function equipRightTool(bot, block) {
                     if (slotIdx >= 36 && slotIdx <= 44) { try { bot.setQuickBarSlot(slotIdx - 36); } catch (_) {} }
                 }
             } catch (_) {}
+            // HAND-TRUTH (2026-09-27): client heldItem lies (blind slots). Ask
+            // the SERVER what is actually in hand; wrong class => force via
+            // RCON replace (silent, proven) and re-verify. One log line on
+            // mismatch so corrections are visible, not mysterious.
+            try {
+                const { rconCommand } = await import('../../utils/rcon.js');
+                let hand = '';
+                try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                const wantCls = cls || 'pickaxe';
+                if (!handHas.includes(wantCls)) {
+                    log(bot, `Holding ${handHas || 'nothing'} for ${name} — swapping to ${best.name}.`);
+                    try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${best.name} 1`); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 800));
+                }
+            } catch (_) {}
             return true;
         }
     } catch (_) {}
