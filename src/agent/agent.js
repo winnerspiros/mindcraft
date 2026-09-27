@@ -1294,6 +1294,9 @@ export class Agent {
             let plain = '';
             try { plain = String(jsonMsg.toString()); } catch (_) { return; }
             if (!plain) return;
+            // DIAG (temp): log the raw text of any tp-flavoured line so the
+            // exact SimpleTPA wire format is visible in the journal once.
+            try { if (/tp\b|teleport|accept|deny/i.test(plain)) console.log('[tpa] wire:', JSON.stringify(plain.slice(0, 200))); } catch (_) {}
             // Incoming request: "<Name> has sent you a TP request" (+ accept/deny hint).
             let m = plain.match(/^\[SimpleTPA\]\s*(.+?)\s+has sent you a TP request/i)
                 || plain.match(/(.+?)\s+has (sent you|requested) (a |a teleport |teleport )?request/i);
