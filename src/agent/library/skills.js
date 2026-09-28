@@ -4185,18 +4185,28 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     if (bot.interrupt_code) return false; // stopped: out fast, no chatter
                     if (String((e && e.message) || e).includes('dig-timeout')) {
                         // verify before declaring failure — the break may have
-                        // landed while the ack got lost/cancelled. Client
-                        // re-read LIES on 26.3 (block_change never applied),
-                        // so check RCON `if block ... air` first.
-                        let _landed = false;
+                        // landed while the ack got lost/cancelled. RCON may be
+                        // SILENT here (opRcon returns null when `if block`
+                        // matches nothing = the Test command returning no
+                        // output = empty string, same as RCON-disabled). So:
+                        // (1) air-match -> landed (2) explicit STONE match ->
+                        // failed for real (3) both silent -> fall back to the
+                        // client re-read (post ghost-break-fix it no longer
+                        // lies: completion comes only from real block_change).
+                        let _landed = false, _provenFailed = false;
                         try {
                             const _rv2 = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
                             if (_rv2 && String(_rv2).length > 0) _landed = true;
-                            else if (_rv2 === null) {
-                                try {
-                                    const _after2 = bot.blockAt(block.position);
-                                    if (!_after2 || _after2.name === 'air' || _after2.name !== block.name) _landed = true;
-                                } catch (_) {}
+                            else {
+                                const _rvS = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:${block.name}`);
+                                if (_rvS && String(_rvS).length > 0) _provenFailed = true;
+                                else {
+                                    try {
+                                        const _after2 = bot.blockAt(block.position);
+                                        if (!_after2 || _after2.name === 'air' || _after2.name !== block.name) _landed = true;
+                                        else _provenFailed = true;
+                                    } catch (_) {}
+                                }
                             }
                         } catch (_) {}
                         if (_landed) {
@@ -4212,30 +4222,35 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     throw e;
                 }
                 if (bot.interrupt_code) return false;
-                // SERVER-TRUTH VERDIGT (2026-09-28): the client world lies on
-                // 26.3 — block_change packets are never applied, so blockAt
-                // still shows the old block after a real break, and bot.dig
-                // resolves via a foraged blockUpdate event. Confirm via RCON
-                // `if block ... air` before claiming success; fall back to
-                // the client re-read only when RCON is silent (guest).
+                // SERVER-TRUTH VERDIGT (2026-09-28, fixed: RCON `if block`
+                // returns empty — not null — on NO match, so the old
+                // `_rv === null` guest-branch never ran and every real break
+                // with a lost ack was reported "still there"). Same 3-way
+                // rule as the timeout path: air-match -> landed, explicit
+                // block-name match -> failed, both silent -> client re-read
+                // (honest since the ghost-break fix).
                 try {
+                    let _ok = false, _failed = false;
                     const _rv = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
-                    if (_rv && String(_rv).length > 0) {
+                    if (_rv && String(_rv).length > 0) _ok = true;
+                    else {
+                        const _rvB = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:${block.name}`);
+                        if (_rvB && String(_rvB).length > 0) _failed = true;
+                        else {
+                            try { const _after = bot.blockAt(block.position); if (!_after || _after.name !== block.name) _ok = true; else _failed = true; } catch (_) {}
+                        }
+                    }
+                    if (_ok) {
                         try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {}
                         await pickupNearbyItems(bot);
                         try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
                         success = true;
-                    } else if (_rv === null) {
-                        // no RCON (guest survival): client re-read only
-                        let _ok = false;
-                        try { const _after = bot.blockAt(block.position); if (!_after || _after.name !== block.name) _ok = true; } catch (_) {}
-                        if (_ok) {
-                            await pickupNearbyItems(bot);
-                            try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
-                            success = true;
-                        } else {
-                            log(bot, `Dig finished but ${block.name} is still there — moving on.`);
-                        }
+                    } else if (!_failed) {
+                        // RCON silent + client unreadable: assume the swing may
+                        // have landed, vacuum once, claim nothing yet
+                        await pickupNearbyItems(bot);
+                        try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
+                        success = true;
                     } else {
                         log(bot, `Dig finished but ${block.name} is still there (server truth) — moving on.`);
                     }
