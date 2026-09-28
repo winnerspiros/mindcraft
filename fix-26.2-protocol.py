@@ -833,6 +833,10 @@ def ensure_mineflayer_seqtruth(base):
     if "_nextSeq() // 26.3 SEQ-TRUTH" not in s:
         print("[seqtruth] WARNING: sequence sites not replaced")
         return
+    # timer-fired marker (distinguishes full-wait timeout from early abort)
+    if "[dig-trace] TIMER-FIRED" not in s:
+        s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
+                      "    function finishDigging () {\n      try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}\n      clearInterval(swingInterval)", 1)
     open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
