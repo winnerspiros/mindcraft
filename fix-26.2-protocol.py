@@ -683,6 +683,7 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_digaim_pt3(base)
     ensure_mineflayer_ghostbreak(base)
     ensure_mineflayer_deathtruth(base)
     ensure_mineflayer_digaim(base)
@@ -779,6 +780,109 @@ def ensure_mineflayer_deathtruth(base):
     s = s.replace(old, new, 1)
     open(mp, "w").write(s)
     print("[deathtruth] death-truth installed")
+
+
+def ensure_mineflayer_digaim_pt3(base):
+    """26.3 DIG-AIM pt3: aim-then-START ordering. Panda raycasts the START
+    against the server's CURRENT yaw/pitch — the stashed flush arrived a tick
+    late (face-away cancels). digging.js arms bot._digAimArmed, re-sends the
+    final aim past the hold, waits 120ms, then STARTs; physics.js lets
+    armed aims bypass the hold (frozen-gate still applies) and restarts the
+    hold clock instead of stashing. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
+    dp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp) or not os.path.exists(dp):
+        print("[digaim3] WARNING: physics/digging missing")
+        return
+    s = open(mp).read()
+    # pt3-present check: ONLY the pt3-introduced lines count. The base digaim
+    # hunk sets bot._pendingForceLook and the leftover shouldSendLook line
+    # mentions _digAimArmed, so gate on the pt3 hold comment.
+    if "26.3 DIG-AIM FIX pt3" in s:
+        print("[digaim3] pt3 present -> no-op")
+    else:
+        # hold exists in TWO pre-pt3 forms: pristine (comment + 2-line hold +
+        # jitter line), or digaim one-liner (comment + merged line)
+        old_fresh = ("    // jitter every stare look by 0-30ms so pairs can't phase-lock.\n"
+                "    if (!shouldUsePhysics) return\n"
+                "    if (performance.now() - lastPosSend < 2500) return\n"
+                "    if (physics._lookJitter")
+        old = "    if (!shouldUsePhysics || performance.now() - lastPosSend < 2500) { bot._pendingForceLook = { yaw, pitch, onGround }; return }"
+        if old_fresh in s:
+            s = s.replace(old_fresh, ("    // jitter every stare look by 0-30ms so pairs can't phase-lock.\n"
+                "    // 26.3 DIG-AIM FIX pt3: an armed dig (START about to go out) needs its\n"
+                "    // aim on the wire BEFORE the block_dig, not stashed for the next tick —\n"
+                "    // Panda raycasts the START against the server's CURRENT yaw/pitch, and\n"
+                "    // the stashed flush always arrived one tick too late (face-away cancels).\n"
+                "    if ((!shouldUsePhysics || performance.now() - lastPosSend < 2500)) {\n"
+                "      if (bot._digAimArmed) {\n"
+                "        lastPosSend = performance.now() // hold clock restarts — next non-dig look still waits\n"
+                "      } else {\n"
+                "        bot._pendingForceLook = { yaw, pitch, onGround }\n"
+                "        return\n"
+                "      }\n"
+                "    }\n"
+                "    if (physics._lookJitter"), 1)
+        elif old in s:
+            new = ("    // 26.3 DIG-AIM FIX pt3: an armed dig (START about to go out) needs its\n"
+                   "    // aim on the wire BEFORE the block_dig, not stashed for the next tick —\n"
+                   "    // Panda raycasts the START against the server's CURRENT yaw/pitch, and\n"
+                   "    // the stashed flush always arrived one tick too late (face-away cancels).\n"
+                   "    if ((!shouldUsePhysics || performance.now() - lastPosSend < 2500)) {\n"
+                   "      if (bot._digAimArmed) {\n"
+                   "        lastPosSend = performance.now() // hold clock restarts — next non-dig look still waits\n"
+                   "      } else {\n"
+                   "        bot._pendingForceLook = { yaw, pitch, onGround }\n"
+                   "        return\n"
+                   "      }\n"
+                   "    }")
+            s = s.replace(old, new, 1)
+        else:
+            print("[digaim3] WARNING: hold anchor not found")
+            return
+        old2 = "  bot.physics.shouldSendLook = () => {"
+        if old2 not in s:
+            print("[digaim3] WARNING: shouldSendLook anchor not found")
+            return
+        if "if (bot._digAimArmed) return shouldUsePhysics" not in s:
+            s = s.replace(old2, ("  bot.physics.shouldSendLook = () => {\n"
+                    "    if (bot._digAimArmed) return shouldUsePhysics // dig aim: frozen-gated only, never hold-gated"), 1)
+            # drop the now-duplicated frozen check on the next line
+            s = s.replace(("    if (bot._digAimArmed) return shouldUsePhysics // dig aim: frozen-gated only, never hold-gated\n"
+                    "    if (!shouldUsePhysics) return false"), ("    if (bot._digAimArmed) return shouldUsePhysics // dig aim: frozen-gated only, never hold-gated\n"
+                    "    if (!shouldUsePhysics && !bot._digAimArmed) return false"), 1)
+        open(mp, "w").write(s)
+        print("[digaim3] physics pt3 installed")
+        s = open(mp).read()
+    d = open(dp).read()
+    if "bot._digAimArmed = true" in d:
+        print("[digaim3] digging pt3 present -> no-op")
+        return
+    old3 = ("    diggingTask = createTask()\n"
+            "    // 26.3: sequence MUST be the live block-change ack counter.")
+    if old3 not in d:
+        print("[digaim3] WARNING: digging start anchor not found")
+        return
+    new3 = ("    diggingTask = createTask()\n"
+            "    // 26.3 DIG-AIM pt3: aim-then-START ordering. Panda raycasts the START\n"
+            "    // against the server's CURRENT yaw/pitch — the stashed flush arrived a\n"
+            "    // tick late so the server still faced away (face-away cancels x13). Arm\n"
+            "    // the dig so the final lookAt bypasses the hold and hits the wire, wait\n"
+            "    // one physics tick so it lands, THEN send START. Disarm after.\n"
+            "    bot._digAimArmed = true\n"
+            "    try {\n"
+            "      const _aimAt = (digFace?.x || digFace?.y || digFace?.z)\n"
+            "        ? block.position.offset(0.5, 0.5, 0.5).offset(digFace.x * 0.5, digFace.y * 0.5, digFace.z * 0.5)\n"
+            "        : block.position.offset(0.5, 0.5, 0.5)\n"
+            "      await bot.lookAt(_aimAt, true)\n"
+            "      await new Promise(r => setTimeout(r, 120))\n"
+            "    } catch (_) {}\n"
+            "    bot._digAimArmed = false\n"
+            "    bot._pendingForceLook = null\n"
+            "    // 26.3: sequence MUST be the live block-change ack counter.")
+    d = d.replace(old3, new3, 1)
+    open(dp, "w").write(d)
+    print("[digaim3] digging pt3 installed")
 
 
 def ensure_mineflayer_digaim(base):
