@@ -4060,9 +4060,9 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // with WALK-ONLY legs, and bot.dig on an out-of-reach block
                 // either throws or no-ops into the timeout. Closest-point
                 // measure (Botcraft): skip only when the nearest face is past
-                // 5.5, not the center.
+                // 4.5 (vanilla reach) minus margin -> gate at 4.2.
                 try {
-                    if (_closestDist(block.position) > 3.4) {
+                    if (_closestDist(block.position) > 4.2) {
                         // ADJACENT FALLBACK (2026-09-27): the target is past reach
                         // (usually: pathfinder stopped short in a pit). Before
                         // skipping to a far twin, try the nearest diggable wall
@@ -4076,7 +4076,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                                 try { b = bot.blockAt(eye.clone().offset(dx, dy, dz)); } catch (_) {}
                                 if (!b || b.name === 'air' || b.name === 'water' || b.name === 'lava' || b.name === 'bedrock') continue;
                                 const dd = Math.hypot((b.position.x+0.5)-eye.x, (b.position.y+0.5)-eye.y, (b.position.z+0.5)-eye.z);
-                                if (dd > 3.4) continue;
+                                if (dd > 4.2) continue;
                                 cands.push({ b, same: b.name === block.name, d: dd });
                             }
                             cands.sort((a, b2) => (b2.same - a.same) || (a.d - b2.d));
