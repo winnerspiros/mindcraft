@@ -683,6 +683,7 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_digaim_pt5(base)
     ensure_mineflayer_digaim_pt3(base)
     ensure_mineflayer_ghostbreak(base)
     ensure_mineflayer_deathtruth(base)
@@ -780,6 +781,48 @@ def ensure_mineflayer_deathtruth(base):
     s = s.replace(old, new, 1)
     open(mp, "w").write(s)
     print("[deathtruth] death-truth installed")
+
+
+def ensure_mineflayer_digaim_pt5(base):
+    """26.3 DIG-AIM pt5: armed dig aims send IMMEDIATELY in bot.look(force)
+    instead of stashing for the next updatePosition tick. The trace proved
+    armed aims never reached the wire (stale yaw=90 at START) — the stash
+    could be swallowed by the hold, jitter, or a mode look before the tick.
+    Frozen-gated via shouldUsePhysics; restarts the hold clock. Idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
+    if not os.path.exists(mp):
+        print("[digaim5] WARNING: physics.js missing")
+        return
+    s = open(mp).read()
+    if "26.3 DIG-AIM pt5" in s:
+        print("[digaim5] pt5 present -> no-op")
+        return
+    old = ("    if (force) {\n"
+           "      lastSentYaw = yaw\n"
+           "      lastSentPitch = pitch\n")
+    if old not in s:
+        print("[digaim5] WARNING: force anchor not found")
+        return
+    new = ("    if (force) {\n"
+           "      lastSentYaw = yaw\n"
+           "      lastSentPitch = pitch\n"
+           "      // 26.3 DIG-AIM pt5: when a dig is ARMED, the aim must hit the wire NOW\n"
+           "      // (Panda raycasts START against the server's current angles). The old\n"
+           "      // stash-and-return path relied on the next updatePosition tick, which\n"
+           "      // could be swallowed by the hold, jitter, or a mode look — the trace\n"
+           "      // proved armed aims never reached the wire (stale yaw=90 at START).\n"
+           "      if (bot._digAimArmed && shouldUsePhysics) {\n"
+           "        try {\n"
+           "          sendPacketLook(\n"
+           "            Math.fround(conv.toNotchianYaw(yaw)),\n"
+           "            Math.fround(conv.toNotchianPitch(pitch)),\n"
+           "            bot.entity.onGround)\n"
+           "          lastPosSend = performance.now()\n"
+           "        } catch (_) {}\n"
+           "      }\n")
+    s = s.replace(old, new, 1)
+    open(mp, "w").write(s)
+    print("[digaim5] pt5 installed")
 
 
 def ensure_mineflayer_digaim_pt3(base):
