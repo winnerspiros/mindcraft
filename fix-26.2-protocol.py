@@ -853,7 +853,9 @@ def ensure_mineflayer_seqtruth(base):
                       "try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround} eye=${bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight, 0))?.name} feet=${bot.blockAt(bot.entity.position)?.name}`) } catch (_) {}", 1)
     # STOP-WAIT: after STOP is sent, hold the dig open ~8s for the server's
     # own block_change instead of ABORTing our own completed dig.
-    if "[dig-trace] STOP-WAIT" not in s:
+    # 26.3 AIR-GATE: a same-type block_change (stone->stone) is a server
+    # resync, NOT an ack — only air (type 0) breaks the wait.
+    if "[dig-trace] STOPWAIT-UPDATE" not in s:
         s = s.replace("    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)",
                       "    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)\n"
                       "    // 26.3 STOP-WAIT: the 1500ms timer fired and STOP is on the wire, but the\n"
@@ -863,8 +865,10 @@ def ensure_mineflayer_seqtruth(base):
                       "    try {\n"
                       "      const _stopAck = await new Promise((resolve) => {\n"
                       "        const _to = setTimeout(() => { try { bot.removeListener(eventName, _done) } catch (_) {} ; resolve('stop-timeout') }, 8000)\n"
-                      "        const _done = (oldB, newB) => { try { clearTimeout(_to) } catch (_) {}; resolve('stop-ack') }\n"
-                      "        bot.once(eventName, _done)\n"
+                      "        // 26.3 AIR-GATE: same-type block_change (stone->stone) is a\n"
+                      "        // server resync, not an ack — only air (type 0) breaks the wait.\n"
+                      "        const _done = (oldB, newB) => { try { console.log(`[dig-trace] STOPWAIT-UPDATE newType=${newB?.type} newName=${newB?.name}`) } catch (_) {}; if (newB?.type === 0) { try { clearTimeout(_to); bot.removeListener(eventName, _done) } catch (_) {}; resolve('stop-ack') } }\n"
+                      "        bot.on(eventName, _done)\n"
                       "      })\n"
                       "      try { console.log(`[dig-trace] STOP-RESULT ${_stopAck} tgt=${block.position}`) } catch (_) {}\n"
                       "    } catch (_) {}", 1)
