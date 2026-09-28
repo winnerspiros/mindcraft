@@ -833,6 +833,13 @@ def ensure_mineflayer_seqtruth(base):
     if "_nextSeq() // 26.3 SEQ-TRUTH" not in s:
         print("[seqtruth] WARNING: sequence sites not replaced")
         return
+    # STOP-arrival slack: the client estimate is exact but the server grants only
+    # ~150ms grace for STOP to arrive; any 26.3 jitter on this box aborts the
+    # dig right at completion. A late STOP still breaks (server had progress);
+    # Panda sees an already-mineable target either way.
+    if "waitTime + 1500) // 26.3 NET-SLACK" not in s:
+        s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime)",
+                      "    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK", 1)
     # timer-fired marker (distinguishes full-wait timeout from early abort)
     if "[dig-trace] TIMER-FIRED" not in s:
         s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
