@@ -919,6 +919,12 @@ def ensure_mineflayer_seqtruth(base):
                       "    bot.swingArm()", 1)
         s = s.replace("    swingInterval = setInterval(() => {\n      bot.swingArm()\n    }, 350)",
                       "    swingInterval = setInterval(() => {\n      bot.swingArm()\n    }, 1500)", 1)
+    # TICK-STAMP: record wall time at START so skills.js can pair it with
+    # server gametime at timeout (starvation proof per dig).
+    if "bot._lastDigStartWall" not in s:
+        s = s.replace("    const _startSeq = _nextSeq()",
+                      "    try { bot._lastDigStartWall = Date.now() } catch (_) {}\n"
+                      "    const _startSeq = _nextSeq()", 1)
     # FACE log: which face value the START actually carries (TOP=1 default vs
     # the raycast face; vanilla stores it as destroyDirection).
     if "[dig-trace] FACE=" not in s:
