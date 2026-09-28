@@ -869,6 +869,10 @@ def ensure_mineflayer_seqtruth(base):
         s = s.replace("      // vanilla server never actually interrupt digging, but some server send block update",
                       "      try { console.log(`[dig-trace] BLOCKUPDATE tgt=${block.position} newType=${newBlock?.type} newName=${newBlock?.name} oldType=${oldBlock?.type}`) } catch (_) {}\n"
                       "      // vanilla server never actually interrupt digging, but some server send block update", 1)
+    if "[dig-trace] VALIDFACES" not in s:
+        s = s.replace("          await bot.lookAt(closest.targetPos, forceLook)\n          bot.targetDigFace = closest.face",
+                      "          await bot.lookAt(closest.targetPos, forceLook)\n          bot.targetDigFace = closest.face\n"
+                      "          try { console.log(`[dig-trace] VALIDFACES n=${validFaces.length} closer=${closerBlocks.length} face=${closest.face} tgt=${closest.targetPos.x.toFixed(2)},${closest.targetPos.y.toFixed(2)},${closest.targetPos.z.toFixed(2)}`) } catch (_) {}", 1)
     print("[seqtruth] seq-truth installed")
 
 
