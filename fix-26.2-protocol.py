@@ -683,6 +683,7 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_seqtruth(base)
     ensure_mineflayer_digaim_crouch(base)
     ensure_mineflayer_digaim_pt5(base)
     ensure_mineflayer_digaim_pt3(base)
@@ -782,6 +783,55 @@ def ensure_mineflayer_deathtruth(base):
     s = s.replace(old, new, 1)
     open(mp, "w").write(s)
     print("[deathtruth] death-truth installed")
+
+
+def ensure_mineflayer_seqtruth(base):
+    """26.3 SEQ-TRUTH: block_dig sequence must echo the server's live
+    acknowledge_player_digging counter, not a client-side increment that
+    drifts across sessions/restarts (stale/wrong seq = server silently drops
+    the whole dig gesture, no Panda log). Track server acks, +1 per send on
+    START/STOP/ABORT. Idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print("[seqtruth] WARNING: digging.js missing")
+        return
+    s = open(mp).read()
+    if "26.3 SEQ-TRUTH" in s:
+        print("[seqtruth] seq-truth present -> no-op")
+        return
+    old = ("  bot.targetDigBlock = null\n"
+           "  bot.targetDigFace = null\n"
+           "  bot.lastDigTime = null\n")
+    if old not in s:
+        print("[seqtruth] WARNING: inject anchor not found")
+        return
+    new = ("  bot.targetDigBlock = null\n"
+           "  bot.targetDigFace = null\n"
+           "  bot.lastDigTime = null\n"
+           "  // 26.3 SEQ-TRUTH: the block_dig sequence must echo the server's live\n"
+           "  // acknowledge counter, not a client-side increment. Track it here.\n"
+           "  bot._serverAckSeq = 0\n"
+           "  try {\n"
+           "    bot._client.on('acknowledge_player_digging', (packet) => {\n"
+           "      try {\n"
+           "        const v = Number(packet.sequenceId)\n"
+           "        if (Number.isFinite(v)) bot._serverAckSeq = v\n"
+           "      } catch (_) {}\n"
+           "    })\n"
+           "  } catch (_) {}\n"
+           "  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 1; return bot._serverAckSeq }\n")
+    s = s.replace(old, new, 1)
+    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n    })",
+                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n    })")
+    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n        })",
+                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n        })")
+    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1) // 26.3 ack watermark",
+                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH")
+    if "_nextSeq() // 26.3 SEQ-TRUTH" not in s:
+        print("[seqtruth] WARNING: sequence sites not replaced")
+        return
+    open(mp, "w").write(s)
+    print("[seqtruth] seq-truth installed")
 
 
 def ensure_mineflayer_digaim_crouch(base):
