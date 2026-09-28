@@ -683,8 +683,47 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_ghostbreak(base)
     ensure_mineflayer_deathtruth(base)
     ensure_mineflayer_digaim(base)
+
+
+def ensure_mineflayer_ghostbreak(base):
+    """26.3 GHOST-BREAK FIX: digging.js finishDigging() fabricated local air
+    via _updateBlockState(block, 0) the server never confirmed. The ghost
+    fired onBlockUpdate -> diggingCompleted (false success claims) and
+    poisoned findBlocks/safeToBreak for that spot until a real chunk update.
+    Remove the paint; completion now comes only from the server's own
+    block_change. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print(f"[ghostbreak] WARNING: {mp} missing")
+        return
+    s = open(mp).read()
+    if "26.3 GHOST-BREAK FIX" in s:
+        print("[ghostbreak] ghost-break fix present -> no-op")
+        return
+    old = ("      bot.targetDigBlock = null\n"
+           "      bot.targetDigFace = null\n"
+           "      bot.lastDigTime = performance.now()\n"
+           "      bot._updateBlockState(block.position, 0)\n"
+           "    }")
+    if old not in s:
+        print("[ghostbreak] WARNING: finishDigging anchor not found")
+        return
+    new = ("      bot.targetDigBlock = null\n"
+           "      bot.targetDigFace = null\n"
+           "      bot.lastDigTime = performance.now()\n"
+           "      // 26.3 GHOST-BREAK FIX: _updateBlockState(block, 0) fabricated a local\n"
+           "      // air block the server never confirmed. That ghost then (a) fired\n"
+           "      // onBlockUpdate -> diggingCompleted -> skills claimed success, and\n"
+           "      // (b) poisoned findBlocks/safeToBreak/world truth for that spot until a\n"
+           "      // real chunk update arrived. STOP painting air: wait for the server's\n"
+           "      // own block_change (or treat silence as failure at verify time).\n"
+           "    }")
+    s = s.replace(old, new, 1)
+    open(mp, "w").write(s)
+    print("[ghostbreak] ghost-break fix installed")
 
 
 def ensure_mineflayer_deathtruth(base):
