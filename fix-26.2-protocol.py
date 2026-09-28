@@ -838,6 +838,9 @@ def ensure_mineflayer_seqtruth(base):
         s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
                       "    function finishDigging () {\n      try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}\n      clearInterval(swingInterval)", 1)
     open(mp, "w").write(s)
+    if "[dig-trace] TIMER-FIRED waitTime=${waitTime} held=" not in s:
+        s = s.replace("try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}",
+                      "try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround} eye=${bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight, 0))?.name} feet=${bot.blockAt(bot.entity.position)?.name}`) } catch (_) {}", 1)
     print("[seqtruth] seq-truth installed")
 
 
