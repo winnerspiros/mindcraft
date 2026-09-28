@@ -683,7 +683,63 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_deathtruth(base)
     ensure_mineflayer_digaim(base)
+
+
+def ensure_mineflayer_deathtruth(base):
+    """26.3 DEATH-TRUTH: a death mid-dig aborted via 3 paths at once —
+    removeAllListeners('diggingCompleted') orphaned onBlockUpdate (its
+    clearInterval/clearTimeout never ran -> swing spam forever, ghost
+    targetDigBlock), stopDigging() fired ABORT on a corpse (Panda logs
+    'packets after death'), and diggingTask.promise never settled -> every
+    pending bot.dig() hangs to its cap, surfacing as 'dig-timeout' / 'still
+    there' one block later. Now: full local reset only, no wire; wake waiters
+    via diggingAborted + diggingTask.cancel. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print(f"[deathtruth] WARNING: {mp} missing")
+        return
+    s = open(mp).read()
+    if "26.3 DEATH-TRUTH" in s:
+        print("[deathtruth] death-truth present -> no-op")
+        return
+    old = ("  bot.on('death', () => {\n"
+           "    try {\n"
+           "      bot.removeAllListeners('diggingAborted')\n"
+           "      bot.removeAllListeners('diggingCompleted')\n"
+           "      bot.stopDigging()\n"
+           "    } catch (_) {}\n"
+           "  })")
+    if old not in s:
+        print("[deathtruth] WARNING: death anchor not found")
+        return
+    new = ("  bot.on('death', () => {\n"
+           "    try {\n"
+           "      // 26.3 DEATH-TRUTH: a death mid-dig used to abort via 3 paths at once —\n"
+           "      // removeAllListeners('diggingCompleted') orphaned onBlockUpdate (its\n"
+           "      // clearInterval/clearTimeout never ran -> swing spam forever, ghost\n"
+           "      // targetDigBlock), stopDigging() then fired ABORT on a corpse (Panda\n"
+           "      // logs 'packets after death'), and diggingTask.promise never settled\n"
+           "      // -> every pending bot.dig() hangs to its cap, surfacing as\n"
+           "      // 'dig-timeout' / 'still there' one block later. Full local reset\n"
+           "      // only, no wire; wake waiters via diggingAborted + cancel.\n"
+           "      try {\n"
+           "        clearInterval(swingInterval)\n"
+           "        clearTimeout(waitTimeout)\n"
+           "      } catch (_) {}\n"
+           "      swingInterval = null\n"
+           "      waitTimeout = null\n"
+           "      bot.targetDigBlock = null\n"
+           "      bot.targetDigFace = null\n"
+           "      try { bot.removeListener('diggingAborted', bot.stopDigging) } catch (_) {}\n"
+           "      try { bot.emit('diggingAborted', null) } catch (_) {}\n"
+           "      try { diggingTask.cancel(new Error('Digging aborted (death)')) } catch (_) {}\n"
+           "    } catch (_) {}\n"
+           "  })")
+    s = s.replace(old, new, 1)
+    open(mp, "w").write(s)
+    print("[deathtruth] death-truth installed")
 
 
 def ensure_mineflayer_digaim(base):
