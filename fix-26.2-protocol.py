@@ -692,8 +692,8 @@ def ensure_mineflayer_digaim(base):
     force-looks (dig/place aim) inside the 2.5s post-teleport hold, so the
     server still faced spawn when START/STOP arrived and Panda's canBreak
     raycast silently cancelled every dig. Now: stash the latest force-look
-    during the hold (frozen included) and flush it on the next
-    updatePosition look send (frozen-gated already). Marker-idempotent."""
+    during the hold (frozen included) and flush it at the top of
+    updatePosition (frozen-gated already). Marker-idempotent."""
     mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
     if not os.path.exists(mp):
         print(f"[digaim] WARNING: {mp} missing")
@@ -711,24 +711,47 @@ def ensure_mineflayer_digaim(base):
     new = ("    if (!shouldUsePhysics) { bot._pendingForceLook = { yaw, pitch, onGround }; return }\n"
            "    if (performance.now() - lastPosSend < 2500) { bot._pendingForceLook = { yaw, pitch, onGround }; return }")
     s = s.replace(old, new, 1)
-    old2 = ("    } else if (lookUpdated) {\n"
-            "      // 26.3: folded into position_look inside sendPacketLook always.")
+    old2 = ("    const position = bot.entity.position\n"
+            "    const onGround = bot.entity.onGround\n"
+            "\n"
+            "    // Only send a position update if necessary, select the appropriate packet")
     if old2 not in s:
-        print("[digaim] WARNING: lookUpdated anchor not found")
+        print("[digaim] WARNING: updatePosition anchor not found")
         return
-    new2 = ("    } else if (bot._pendingForceLook || lookUpdated) {\n"
-             "      // 26.3 DIG-AIM FIX: a force-look stashed during the hold still flushes\n"
-             "      // here (frozen-gated via updatePosition) so dig/place aim always reaches\n"
-             "      // the wire — the server raycasts from its own yaw/pitch, never local.\n"
-             "      if (bot._pendingForceLook) {\n"
-             "        try {\n"
-             "          yaw = bot._pendingForceLook.yaw\n"
-             "          pitch = bot._pendingForceLook.pitch\n"
-             "        } catch (_) {}\n"
-             "        bot._pendingForceLook = null\n"
-             "      }\n"
-             "      // 26.3: folded into position_look inside sendPacketLook always.")
+    new2 = ("    const position = bot.entity.position\n"
+            "    const onGround = bot.entity.onGround\n"
+            "    // 26.3 DIG-AIM FIX: flush a stashed force-look into the send angles FIRST\n"
+            "    // (frozen-gated via updatePosition) so dig/place aim always reaches the\n"
+            "    // wire — the server raycasts from its own yaw/pitch, never local.\n"
+            "    let _digYaw = null\n"
+            "    let _digPitch = null\n"
+            "    if (bot._pendingForceLook) {\n"
+            "      try {\n"
+            "        _digYaw = bot._pendingForceLook.yaw\n"
+            "        _digPitch = bot._pendingForceLook.pitch\n"
+            "        // keep the drift tracker in sync so the next tick sees no phantom delta\n"
+            "        lastSentYaw = conv.fromNotchianYaw(_digYaw)\n"
+            "        lastSentPitch = conv.fromNotchianPitch(_digPitch)\n"
+            "      } catch (_) { _digYaw = null }\n"
+            "      bot._pendingForceLook = null\n"
+            "    }\n"
+            "    if (_digYaw === null) {\n"
+            "      _digYaw = Math.fround(conv.toNotchianYaw(lastSentYaw))\n"
+            "      _digPitch = Math.fround(conv.toNotchianPitch(lastSentPitch))\n"
+            "    }\n"
+            "\n"
+            "    // Only send a position update if necessary, select the appropriate packet")
     s = s.replace(old2, new2, 1)
+    old3 = ("      // sendPacketLook itself. Keep this call unconditional.\n"
+            "      sendPacketLook(yaw, pitch, onGround)")
+    if old3 not in s:
+        print("[digaim] WARNING: send anchor not found")
+        return
+    new3 = ("      // sendPacketLook itself. Keep this call unconditional.\n"
+            "      // 26.3 DIG-AIM FIX: send the flushed force-look angles (or the normal\n"
+            "      // drift angles when nothing was stashed).\n"
+            "      sendPacketLook(_digYaw, _digPitch, onGround)")
+    s = s.replace(old3, new3, 1)
     open(mp, "w").write(s)
     print("[digaim] dig-aim flush installed")
 
