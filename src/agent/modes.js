@@ -264,6 +264,10 @@ const modes_list = [
         update: async function (agent) {
             // Flee only when afraid; below the threshold self_defense handles it.
             if ((agent.psyche?.mood?.fear ?? 0) < FEAR_FLEE_THRESHOLD) return;
+            // SWING-SAFE 2026-09-28: cowardice interrupts EVERYTHING (digs
+            // included) via stop()-ABORT. Never fire while a dig is mid-swing
+            // — observe, report, and let the swing finish instead.
+            try { if (agent.bot.targetDigBlock) return; } catch (_) {}
             const enemy = world.getNearestEntityWhere(agent.bot,
                 entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 16);
             if (!enemy) return;

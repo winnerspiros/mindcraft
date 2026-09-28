@@ -513,7 +513,17 @@ export class Agent {
 
     requestInterrupt() {
         this.bot.interrupt_code = true;
-        this.bot.stopDigging();
+        // SWING-SAFE 2026-09-28: stop() is called to interrupt EVERY action
+        // (chat replies, walks, modes) — but stopDigging() here ABORTS the
+        // packet the server needs (STOP_DESTROY_BLOCK cancels the break).
+        // Only stop the dig when the INTERRUPTER is itself a movement/dig
+        // action that will re-issue packets; chat/mode/talk interruptions
+        // leave the swing alone so it can finish.
+        try {
+            const cur = this.actions?.currentActionLabel || '';
+            const digKiller = /collectBlocks|breakBlock|digDown|quarry|pillar|placeHere|buildShelter|goTo|follow|moveAway|avoid|shoot|defend|attack|guard/i.test(cur);
+            if (digKiller) { try { this.bot.stopDigging(); } catch (_) {} }
+        } catch (_) { try { this.bot.stopDigging(); } catch (_) {} }
         this.bot.collectBlock.cancelTask();
         this.bot.pathfinder.stop();
         this.bot.pvp.stop();
