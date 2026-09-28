@@ -810,6 +810,8 @@ def ensure_mineflayer_digaim_crouch(base):
            "    // close range = occluded). Stand for the dig when crouched: sneak buys\n"
            "    // nothing against a raycast check, and a true eye beats a stale one.\n"
            "    try { if (bot.getControlState('sneak')) bot.setControlState('sneak', false) } catch (_) {}\n"
+           "    // force the eye NOW — the metadata echo may take a full second.\n"
+           "    try { bot.entity.eyeHeight = 1.62; bot.entity.height = 1.8 } catch (_) {}\n"
            "    try { await new Promise(r => setTimeout(r, 250)) } catch (_) {}\n"
            "    // 26.3 AIM-PROOF: per-dig packet trace.")
     s = s.replace(old, new, 1)
