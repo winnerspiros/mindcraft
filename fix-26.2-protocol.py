@@ -683,6 +683,7 @@ def ensure_mineflayer_move_diff(base):
         print("[movediff] vanilla 4e-8 + heartbeat installed")
         s = open(mp).read()
     ensure_mineflayer_wire_quiet(base)
+    ensure_mineflayer_digaim_crouch(base)
     ensure_mineflayer_digaim_pt5(base)
     ensure_mineflayer_digaim_pt3(base)
     ensure_mineflayer_ghostbreak(base)
@@ -781,6 +782,39 @@ def ensure_mineflayer_deathtruth(base):
     s = s.replace(old, new, 1)
     open(mp, "w").write(s)
     print("[deathtruth] death-truth installed")
+
+
+def ensure_mineflayer_digaim_crouch(base):
+    """26.3 CROUCH-TRUTH: the server eyes from live pose (1.62/1.27) but
+    bot.entity.eyeHeight flips only on the metadata echo AFTER the sneak
+    input — aiming with the stale height pitches wrong (0.35 off close =
+    occluded). Stand for the dig when crouched. Idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print("[digaimc] WARNING: digging.js missing")
+        return
+    s = open(mp).read()
+    if "26.3 CROUCH-TRUTH" in s:
+        print("[digaimc] crouch-truth present -> no-op")
+        return
+    old = ("    bot._digAimArmed = true\n"
+           "    // 26.3 AIM-PROOF: per-dig packet trace.")
+    if old not in s:
+        print("[digaimc] WARNING: arm anchor not found")
+        return
+    new = ("    bot._digAimArmed = true\n"
+           "    // 26.3 CROUCH-TRUTH: the server computes eye from the live pose (1.62\n"
+           "    // stand / 1.27 sneak), but bot.entity.eyeHeight only flips on the\n"
+           "    // entity_metadata ECHO — which arrives AFTER the sneak input. Aiming with\n"
+           "    // the stale height sends Panda a pitch for the wrong eye (0.35 off at\n"
+           "    // close range = occluded). Stand for the dig when crouched: sneak buys\n"
+           "    // nothing against a raycast check, and a true eye beats a stale one.\n"
+           "    try { if (bot.getControlState('sneak')) bot.setControlState('sneak', false) } catch (_) {}\n"
+           "    try { await new Promise(r => setTimeout(r, 250)) } catch (_) {}\n"
+           "    // 26.3 AIM-PROOF: per-dig packet trace.")
+    s = s.replace(old, new, 1)
+    open(mp, "w").write(s)
+    print("[digaimc] crouch-truth installed")
 
 
 def ensure_mineflayer_digaim_pt5(base):
