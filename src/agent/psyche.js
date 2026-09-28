@@ -182,7 +182,12 @@ export class Psyche {
             'jack_o_lantern', 'shroomlight', 'end_rod', 'candle', 'lava'];
         const lit = bot.findBlocks({ matching: (b) => LIGHT.some((l) => b.name.includes(l)), maxDistance: 10, count: 1 }).length > 0;
         if ((isNight || enclosed) && !lit) {
-            fearDelta += (enclosed && isNight) ? 0.16 : 0.10;
+            // CAPPED 2026-09-28: was 0.10/0.16 per 2s sample (~+3-5/min) vs
+            // decay ~0.3/min — night alone pinned fear at ~0.99 forever, so
+            // cowardice fled everything, self_defense never fired, and every
+            // dig got ABORT-interrupted mid-swing all night. Darkness is now
+            // on the same budget as a distant mob: felt, never pinning.
+            fearDelta += (enclosed && isNight) ? 0.025 : 0.015;
             sources.push(enclosed ? 'it is dark in here with no light' : 'it is dark out and there is no light nearby');
         }
 
