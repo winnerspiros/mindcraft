@@ -4152,18 +4152,16 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     // Now: on interrupt, re-issue the dig ONCE on the same block if it
                     // is still there (the interrupter already lost its turn — the action
                     // manager serializes, so finishing this swing can't overlap it).
-                    // RAYCAST-FACE (2026-09-28): bot.dig(block, true) aims at the
-                // block CENTER, but Panda canBreak raycasts server eye ->
-                // block AABB sample points — a center aim through leaves or
-                // terrain reads occluded and the START is silently cancelled,
-                // so she swings the full time and nothing breaks. digFace
-                // 'raycast' makes HER pick the face her own raycast can see
-                // (same geometry Panda checks) instead of blind center.
-                // Falls back to center-aim when the raycast path throws.
-                const _digOnce = () => Promise.race([
-                        (async () => { try { await bot.dig(block, true, 'raycast'); } catch (e) { if (String((e && e.message) || e).includes('Block not in view')) await bot.dig(block, true); else throw e; } })(),
-                        new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), _expectedMs)),
-                    ]);
+                    // RAYCAST-FACE (2026-09-28, superseded by pt4): digging.js now
+                    // aims nearest-point + raycast-verifies internally (armed,
+                    // past the hold, verified against her own raycast). Skills
+                    // passes NO digFace so dig() skips its own center/raycast
+                    // pre-aims (which overwrote pt4's verified angles with a
+                    // stale yaw=90 stare) and goes straight to armed aim+START.
+                    const _digOnce = () => Promise.race([
+                            (async () => { await bot.dig(block, true); })(),
+                            new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), _expectedMs)),
+                        ]);
                     try {
                         await _digOnce();
                     } catch (e1) {
@@ -4513,8 +4511,8 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         const _beforeName = block.name;
         try {
             await Promise.race([
-                // RAYCAST-FACE (same Panda reason as collectBlock above)
-                (async () => { try { await bot.dig(block, true, 'raycast'); } catch (e) { if (String((e && e.message) || e).includes('Block not in view')) await bot.dig(block, true); else throw e; } })(),
+                // pt4: no digFace — digging.js armed nearest-point aim only
+                (async () => { await bot.dig(block, true); })(),
                 new Promise((_, rej) => setTimeout(() => rej(new Error('dig-timeout')), 25000)),
             ]);
         } catch (e) {
