@@ -845,6 +845,9 @@ def ensure_mineflayer_seqtruth(base):
         s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
                       "    function finishDigging () {\n      try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}\n      clearInterval(swingInterval)", 1)
     open(mp, "w").write(s)
+    print("[seqtruth] seq-truth base installed")
+    # NOTE: the trace-marker ensures below re-read the file so ordering is safe.
+    s = open(mp).read()
     if "[dig-trace] TIMER-FIRED waitTime=${waitTime} held=" not in s:
         s = s.replace("try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}",
                       "try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround} eye=${bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight, 0))?.name} feet=${bot.blockAt(bot.entity.position)?.name}`) } catch (_) {}", 1)
@@ -873,6 +876,26 @@ def ensure_mineflayer_seqtruth(base):
         s = s.replace("          await bot.lookAt(closest.targetPos, forceLook)\n          bot.targetDigFace = closest.face",
                       "          await bot.lookAt(closest.targetPos, forceLook)\n          bot.targetDigFace = closest.face\n"
                       "          try { console.log(`[dig-trace] VALIDFACES n=${validFaces.length} closer=${closerBlocks.length} face=${closest.face} tgt=${closest.targetPos.x.toFixed(2)},${closest.targetPos.y.toFixed(2)},${closest.targetPos.z.toFixed(2)}`) } catch (_) {}", 1)
+    # ANIM-WATCH via bot events (block_actions.js emits blockBreakProgressObserved
+    # per stage 0-9 as HER server-side dig progresses; NONE = server never started it)
+    if "[dig-trace] ANIM-SUMMARY" not in s:
+        s = s.replace("    const _trace = []",
+                      "    const _trace = []\n"
+                      "    const _animStages = []\n"
+                      "    const _onProg = (block2, stage) => { try { _animStages.push(stage); console.log(`[dig-trace] ANIM stage=${stage}`) } catch (_) {} }\n"
+                      "    const _onProgEnd = () => { try { console.log(`[dig-trace] ANIM-END`) } catch (_) {} }\n"
+                      "    try { if (bot._digProgFn) bot.removeListener('blockBreakProgressObserved', bot._digProgFn) } catch (_) {}\n"
+                      "    try { if (bot._digProgEndFn) bot.removeListener('blockBreakProgressEnd', bot._digProgEndFn) } catch (_) {}\n"
+                      "    bot._digProgFn = _onProg\n"
+                      "    bot._digProgEndFn = _onProgEnd\n"
+                      "    try { bot.on('blockBreakProgressObserved', _onProg) } catch (_) {}\n"
+                      "    try { bot.on('blockBreakProgressEnd', _onProgEnd) } catch (_) {}", 1)
+        s = s.replace("      try { console.log(`[dig-trace] STOP-RESULT ${_stopAck} tgt=${block.position}`) } catch (_) {}",
+                      "      try { console.log(`[dig-trace] STOP-RESULT ${_stopAck} tgt=${block.position}`) } catch (_) {}\n"
+                      "      try { bot.removeListener('blockBreakProgressObserved', bot._digProgFn) } catch (_) {}\n"
+                      "      try { bot.removeListener('blockBreakProgressEnd', bot._digProgEndFn) } catch (_) {}\n"
+                      "      try { console.log(`[dig-trace] ANIM-SUMMARY tgt=${block.position} n=${_animStages.length} stages=${_animStages.join(',') || 'NONE'}`) } catch (_) {}", 1)
+    open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
 
