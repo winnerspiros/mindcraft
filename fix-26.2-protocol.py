@@ -916,6 +916,8 @@ def ensure_mineflayer_seqtruth(base):
                       "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
     # RESTOP: vanilla STOP breaks only at progress(elapsed+1) >= 0.7; an early
     # STOP logs 'stopped destroying' and the dig dies. Re-send STOP +400ms.
+    # Handle stored on bot._restopTimer; finishDigging cancels it so a stale
+    # re-STOP can never ABORT a fresh dig on another block (pos-mismatch).
     if "[dig-trace] RESTOP" not in s:
         s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace",
                       "    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace\n"
@@ -923,16 +925,24 @@ def ensure_mineflayer_seqtruth(base):
                       "    // A STOP arriving even slightly early logs stopped destroying and the\n"
                       "    // dig dies with zero further packets. Re-send the identical STOP 400ms\n"
                       "    // later so the second evaluation runs at full progress. Harmless on air.\n"
+                      "    try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n"
                       "    try {\n"
-                      "      setTimeout(() => {\n"
+                      "      bot._restopTimer = setTimeout(() => {\n"
                       "        try {\n"
                       "          if (bot.targetDigBlock && bot.targetDigBlock.position.equals(block.position)) {\n"
                       "            bot._client.write('block_dig', { status: 2, location: block.position, face: bot.targetDigFace, sequence: _nextSeq() })\n"
                       "            try { console.log(`[dig-trace] RESTOP tgt=${block.position}`) } catch (_) {}\n"
                       "          }\n"
                       "        } catch (_) {}\n"
+                      "        try { bot._restopTimer = null } catch (_) {}\n"
                       "      }, 400)\n"
                       "    } catch (_) {}", 1)
+        s = s.replace("      // 26.3 GHOST-BREAK FIX:",
+                      "      // 26.3 RESTOP-CANCEL: finishDigging ran, so the first STOP is out.\n"
+                      "      // Kill the +400ms re-STOP so it cannot ABORT a fresh dig that\n"
+                      "      // started on another block in the meantime (pos-mismatch ABORT).\n"
+                      "      try { if (bot._restopTimer) { clearTimeout(bot._restopTimer); bot._restopTimer = null } } catch (_) {}\n"
+                      "      // 26.3 GHOST-BREAK FIX:", 1)
     open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
