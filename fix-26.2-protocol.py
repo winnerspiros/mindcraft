@@ -848,6 +848,23 @@ def ensure_mineflayer_seqtruth(base):
     if "[dig-trace] TIMER-FIRED waitTime=${waitTime} held=" not in s:
         s = s.replace("try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}",
                       "try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround} eye=${bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight, 0))?.name} feet=${bot.blockAt(bot.entity.position)?.name}`) } catch (_) {}", 1)
+    # STOP-WAIT: after STOP is sent, hold the dig open ~8s for the server's
+    # own block_change instead of ABORTing our own completed dig.
+    if "[dig-trace] STOP-WAIT" not in s:
+        s = s.replace("    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)",
+                      "    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)\n"
+                      "    // 26.3 STOP-WAIT: the 1500ms timer fired and STOP is on the wire, but the\n"
+                      "    // vanilla server needs ~50-250ms + jitter to process STOP and send\n"
+                      "    // block_change. Hold here with the swing going instead of ABORTing.\n"
+                      "    try { console.log(`[dig-trace] STOP-WAIT tgt=${block.position}`) } catch (_) {}\n"
+                      "    try {\n"
+                      "      const _stopAck = await new Promise((resolve) => {\n"
+                      "        const _to = setTimeout(() => { try { bot.removeListener(eventName, _done) } catch (_) {} ; resolve('stop-timeout') }, 8000)\n"
+                      "        const _done = (oldB, newB) => { try { clearTimeout(_to) } catch (_) {}; resolve('stop-ack') }\n"
+                      "        bot.once(eventName, _done)\n"
+                      "      })\n"
+                      "      try { console.log(`[dig-trace] STOP-RESULT ${_stopAck} tgt=${block.position}`) } catch (_) {}\n"
+                      "    } catch (_) {}", 1)
     print("[seqtruth] seq-truth installed")
 
 
