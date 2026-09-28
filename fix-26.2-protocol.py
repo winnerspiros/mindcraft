@@ -865,6 +865,10 @@ def ensure_mineflayer_seqtruth(base):
                       "      })\n"
                       "      try { console.log(`[dig-trace] STOP-RESULT ${_stopAck} tgt=${block.position}`) } catch (_) {}\n"
                       "    } catch (_) {}", 1)
+    if "[dig-trace] BLOCKUPDATE" not in s:
+        s = s.replace("      // vanilla server never actually interrupt digging, but some server send block update",
+                      "      try { console.log(`[dig-trace] BLOCKUPDATE tgt=${block.position} newType=${newBlock?.type} newName=${newBlock?.name} oldType=${oldBlock?.type}`) } catch (_) {}\n"
+                      "      // vanilla server never actually interrupt digging, but some server send block update", 1)
     print("[seqtruth] seq-truth installed")
 
 
