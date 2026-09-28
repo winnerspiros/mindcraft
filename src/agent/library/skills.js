@@ -4193,6 +4193,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                         } catch (_) {}
                         if (_landed) {
                             log(bot, `Broke ${block.name} (ack lost, verified on server).`);
+                            try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {}
                             await pickupNearbyItems(bot);
                             success = true;
                             break;
@@ -4212,6 +4213,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 try {
                     const _rv = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
                     if (_rv && String(_rv).length > 0) {
+                        try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {}
                         await pickupNearbyItems(bot);
                         try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
                         success = true;
@@ -4266,12 +4268,30 @@ export async function pickupNearbyItems(bot) {
      * await skills.pickupNearbyItems(bot);
      **/
     const distance = 8;
+    // RCON-TRUTH VACUUM (2026-09-28): entity-blindness means bot.entities
+    // holds no item handles even when drops sit at her feet, so the eye
+    // scan alone returns null forever. Snapshot server-held item counts
+    // BEFORE, walk/loiter the drop point, snapshot AFTER — a rising pack
+    // count is the pickup verdict, never the entity list.
+    let _before = null;
+    try {
+        const { rconItemCount } = await import('../../utils/rcon.js');
+        _before = {};
+        for (const n of ['dirt', 'grass_block', 'stone', 'cobblestone', 'oak_log', 'sand', 'gravel', 'coal', 'iron_ore', 'diamond']) {
+            try { _before[n] = await rconItemCount(bot.username, n); } catch (_) {}
+        }
+    } catch (_) {}
     const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
     let nearestItem = getNearestItem(bot);
     let pickedUp = 0;
     // QUIET VACUUM (2026-09-27): one walk to the nearest stack, short loiter
     // for magnet pickup — no per-item GoalFollow spam, no chatter. Drops land
     // within 2 blocks of a dug wall; walking over once collects them.
+    // BLIND-VACUUM (2026-09-28): when eyes see nothing, step onto the last
+    // dug spot anyway (drops land within ~2 blocks) and loiter for the
+    // magnet — then compare RCON pack counts. Never trust the entity list.
+    let _vacuumAt = null;
+    try { _vacuumAt = bot._lastDigPos ? { ...bot._lastDigPos } : null; } catch (_) {}
     if (nearestItem) {
         try {
             await goToGoal(bot, new pf.goals.GoalNear(nearestItem.position.x, nearestItem.position.y, nearestItem.position.z, 1));
@@ -4279,7 +4299,25 @@ export async function pickupNearbyItems(bot) {
         try { await new Promise(resolve => setTimeout(resolve, 800)); } catch (_) {}
         const after = getNearestItem(bot);
         if (!after) pickedUp = 1;
+    } else if (_vacuumAt) {
+        try {
+            await goToGoal(bot, new pf.goals.GoalNear(_vacuumAt.x, _vacuumAt.y, _vacuumAt.z, 1));
+        } catch (_) {}
+        try { await new Promise(resolve => setTimeout(resolve, 1200)); } catch (_) {}
     }
+    // RCON verdict: any watched material rising in the server-held pack
+    // means the vacuum worked, even with zero entity handles seen.
+    try {
+        if (_before) {
+            const { rconItemCount } = await import('../../utils/rcon.js');
+            for (const n of Object.keys(_before)) {
+                let _now = 0;
+                try { _now = await rconItemCount(bot.username, n); } catch (_) {}
+                if (_now > (_before[n] || 0)) { pickedUp = _now - (_before[n] || 0); break; }
+            }
+        }
+    } catch (_) {}
+    if (pickedUp > 0) { try { bot._lastDigPos = null; } catch (_) {} }
     return true;
 }
 
@@ -4479,6 +4517,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                 } catch (_) {}
             }
         } catch (_) {}
+        if (_broke) { try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {} }
         await pickupNearbyItems(bot);
         if (_broke) log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
         else log(bot, `Dig finished but ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)} is still there (server truth) — moving on.`);
