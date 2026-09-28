@@ -4525,20 +4525,22 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             }
             throw e;
         }
-        // SERVER-TRUTH VERDIGT (2026-09-28): the client world lies on 26.3 —
-        // block_change packets are never applied, so re-reading blockAt
-        // after bot.dig still shows the old block even when the server
-        // broke it. Confirm via RCON `if block ... air`; RCON-silent
-        // (guest) falls back to the client re-read.
+        // SERVER-TRUTH VERDIGT (2026-09-28, fixed like collectBlock: the
+        // old `_rv === null` guest-branch never ran — RCON returns empty on
+        // no-match). 3-way: air-match -> broke, explicit name match ->
+        // failed, both silent -> client re-read.
         let _broke = false;
         try {
             const _rv = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
             if (_rv && String(_rv).length > 0) _broke = true;
-            else if (_rv === null) {
-                try {
-                    const _after = bot.blockAt(block.position);
-                    if (!_after || _after.name === 'air' || _after.name !== _beforeName) _broke = true;
-                } catch (_) {}
+            else {
+                const _rvB = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:${_beforeName}`);
+                if (!(_rvB && String(_rvB).length > 0)) {
+                    try {
+                        const _after = bot.blockAt(block.position);
+                        if (!_after || _after.name === 'air' || _after.name !== _beforeName) _broke = true;
+                    } catch (_) {}
+                }
             }
         } catch (_) {}
         if (_broke) { try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {} }
