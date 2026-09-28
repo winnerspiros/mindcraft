@@ -4145,6 +4145,13 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     const dt = bot.digTime ? bot.digTime(block) : null;
                     if (Number.isFinite(dt) && dt >= 0) _expectedMs = Math.min(20000, Math.max(1500, dt + 3000));
                 } catch (_) {}
+                // 26.3 TICK-PROOF: gametime BEFORE the swing (paired with the
+                // timeout read) proves ticks advanced across the dig window.
+                let _g0 = NaN;
+                try {
+                    const _t0 = await opRcon(`time query gametime`);
+                    if (_t0) _g0 = parseInt(String(_t0).replace(/[^0-9]/g, ''), 10);
+                } catch (_) {}
                 try {
                     // FINISH-THE-SWING (2026-09-27): competing actions set interrupt_code
                     // mid-dig (log: collectBlocks interrupting collectBlocks) and the old
@@ -4225,7 +4232,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                             const _g1 = _t1 ? parseInt(String(_t1).replace(/[^0-9]/g, ''), 10) : NaN;
                             const _w0 = bot._lastDigStartWall || 0;
                             const _wMs = _w0 ? Date.now() - _w0 : -1;
-                            if (Number.isFinite(_g1)) log(bot, `Dig diag: startWallAge~${_wMs}ms gametime=${_g1} wallNow=${Date.now()} for ${block.name} at ${block.position.x},${block.position.y},${block.position.z}.`);
+                            if (Number.isFinite(_g1)) log(bot, `Dig diag: ticks advanced=${Number.isFinite(_g0) ? _g1 - _g0 : '?'} (g0=${Number.isFinite(_g0) ? _g0 : '?'} g1=${_g1}) for ${block.name} at ${block.position.x},${block.position.y},${block.position.z}.`);
                         } catch (_) {}
                         log(bot, `Dig timed out on ${block.name}, moving on.`);
                         return false;
