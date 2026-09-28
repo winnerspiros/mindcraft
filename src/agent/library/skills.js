@@ -4214,6 +4214,18 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                             success = true;
                             break;
                         }
+                        // 26.3 TICK-PROOF: stamp server gametime around the failed
+                        // dig — if gameTicks barely advanced across the whole
+                        // START..STOP window, the server tick loop starved and
+                        // vanilla progress(elapsed+1) could never reach 0.7 no
+                        // matter how correct the packets were. Proves starvation
+                        // vs gate, per dig, with zero extra wire during the dig.
+                        try {
+                            const _t1 = await opRcon(`time query gametime`);
+                            const _g1 = _t1 ? parseInt(String(_t1).replace(/[^0-9]/g, ''), 10) : NaN;
+                            const _w0 = bot._lastDigStartWall || Date.now();
+                            if (Number.isFinite(_g1)) log(bot, `Dig diag: wall~${Date.now() - _w0}ms gametime=${_g1} for ${block.name} at ${block.position.x},${block.position.y},${block.position.z}.`);
+                        } catch (_) {}
                         log(bot, `Dig timed out on ${block.name}, moving on.`);
                         return false;
                     }
