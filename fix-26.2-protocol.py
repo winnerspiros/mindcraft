@@ -796,7 +796,8 @@ def ensure_mineflayer_seqtruth(base):
         print("[seqtruth] WARNING: digging.js missing")
         return
     s = open(mp).read()
-    if "26.3 SEQ-TRUTH" in s and "STOPWAIT-UPDATE" in s and "AIR-GATE pt2" in s and "ANIM-SUMMARY" in s and "FACE=" in s:
+    if ("26.3 SEQ-TRUTH" in s and "STOPWAIT-UPDATE" in s and "AIR-GATE pt2" in s and "ANIM-SUMMARY" in s and "FACE=" in s
+            and "26.3 RESTOP-SCHED" in s and "SEQ-SKIP" in s and "[dig-effects]" in s):
         print("[seqtruth] seq-truth + all dig-trace present -> no-op")
         return
     if "26.3 SEQ-TRUTH" not in s:
@@ -837,6 +838,18 @@ def ensure_mineflayer_seqtruth(base):
         open(mp, "w").write(s)
         print("[seqtruth] seq-truth base installed")
         s = open(mp).read()
+
+    # SEQ-SKIP: number each new block_dig +2 (server ack is a cumulative
+    # watermark echoing OUR last sequence, so a lost/dup packet is invisible
+    # in a plain ack log; +2 steps make skips visible). Log each ack next to
+    # last-sent with a dup flag (SEQ-RECEIPT).
+    if "26.3 SEQ-SKIP" not in s:
+        s = s.replace("  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 1; return bot._serverAckSeq }",
+                      "  // 26.3 SEQ-SKIP: the server answers every block_dig with a cumulative\n"
+                      "  // ClientboundBlockChangedAckPacket (sgpli tick: sends ackBlockChangesUpTo,\n"
+                      "  // which handlePlayerAction sets to OUR sequence, NOT its own counter).\n"
+                      "  // Number each new block_dig +2 so a lost/reordered STOP shows as a skip.\n"
+                      "  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 2; bot._lastSentSeq = bot._serverAckSeq; return bot._serverAckSeq }", 1)
     # STOP-arrival slack: the client estimate is exact but the server grants only
     # ~150ms grace for STOP to arrive; any 26.3 jitter on this box aborts the
     # dig right at completion. A late STOP still breaks (server had progress);
@@ -945,29 +958,21 @@ def ensure_mineflayer_seqtruth(base):
                       "    } catch (_) {}\n"
                       "    try { console.log(`[dig-trace] FACE=${bot.targetDigFace}`) } catch (_) {}\n"
                       "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
-    # RESTOP: vanilla STOP breaks only at progress(elapsed+1) >= 0.7; an early
-    # STOP logs 'stopped destroying' and the dig dies. Re-send STOP +400ms.
-    # Handle stored on bot._restopTimer; finishDigging cancels it so a stale
-    # re-STOP can never ABORT a fresh dig on another block (pos-mismatch).
-    if "[dig-trace] RESTOP" not in s:
-        s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace",
-                      "    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace\n"
-                      "    // 26.3 RESTOP: vanilla STOP breaks only when progress(elapsed+1) >= 0.7.\n"
-                      "    // A STOP arriving even slightly early logs stopped destroying and the\n"
-                      "    // dig dies with zero further packets. Re-send the identical STOP 400ms\n"
-                      "    // later so the second evaluation runs at full progress. Harmless on air.\n"
-                      "    try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n"
-                      "    try {\n"
-                      "      bot._restopTimer = setTimeout(() => {\n"
-                      "        try {\n"
-                      "          if (bot.targetDigBlock && bot.targetDigBlock.position.equals(block.position)) {\n"
-                      "            bot._client.write('block_dig', { status: 2, location: block.position, face: bot.targetDigFace, sequence: _nextSeq() })\n"
-                      "            try { console.log(`[dig-trace] RESTOP tgt=${block.position}`) } catch (_) {}\n"
-                      "          }\n"
-                      "        } catch (_) {}\n"
-                      "        try { bot._restopTimer = null } catch (_) {}\n"
-                      "      }, 400)\n"
-                      "    } catch (_) {}", 1)
+    # RESTOP-SCHED: vanilla STOP breaks only at progress(elapsed+1) >= 0.7.
+    # The re-STOP is scheduled by _schedRestop on each server resync (proof
+    # the first STOP was processed) — never a wall timer (a second STOP
+    # racing the first is its own failure mode). Handle on bot._restopTimer;
+    # finishDigging cancels it so a stale re-STOP can never ABORT a fresh dig
+    # on another block (pos-mismatch).
+    # RESTOP-SCHED installer: resync-driven re-STOP at the blockUpdate
+    # listener site (proof the first STOP was processed), never a wall
+    # timer at START (a second STOP racing the first is its own failure).
+    if "26.3 RESTOP-SCHED" not in s:
+        _sched_anchor = "    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)"
+        _sched_new = (
+            '    const eventName = `blockUpdate:${block.position}`\n'            "    // 26.3 RESTOP-SCHED: computed from the SERVER's own resync verdict, not\n"            '    // wall time. Every same-type resync is the server answering STOP with\n'            "    // 'not yet' — schedule the re-STOP 400ms after the last resync.\n"            '    try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n'            '    const _schedRestop = () => {\n'            '      try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n'            '      try {\n'            '        bot._restopTimer = setTimeout(() => {\n'            '          try {\n'            '            if (bot.targetDigBlock && bot.targetDigBlock.position.equals(block.position)) {\n'            "              bot._client.write('block_dig', { status: 2, location: block.position, face: bot.targetDigFace, sequence: _nextSeq() })\n"            '              try { console.log(`[dig-trace] RESTOP tgt=${block.position}`) } catch (_) {}\n'            '            }\n'            '          } catch (_) {}\n'            '        }, 400)\n'            '      } catch (_) {}\n'            '    }\n'            '    try {\n'            '      bot._restopResyncFn = (oldB, newB) => {\n'            '        try {\n'            '          if (newB && newB.type !== 0 && block.position.equals(bot.targetDigBlock?.position)) {\n'            '            try { console.log(`[dig-trace] RESYNC-SCHED tgt=${block.position}`) } catch (_) {}\n'            '            _schedRestop()\n'            '          }\n'            '        } catch (_) {}\n'            '      }\n'            '      bot.on(eventName, bot._restopResyncFn)\n'            '    } catch (_) {}\n'            '    bot.on(eventName, onBlockUpdate)\n'        )
+        if _sched_anchor in s:
+            s = s.replace(_sched_anchor, _sched_new, 1)
         s = s.replace("      // 26.3 GHOST-BREAK FIX:",
                       "      // 26.3 RESTOP-CANCEL: finishDigging ran, so the first STOP is out.\n"
                       "      // Kill the +400ms re-STOP so it cannot ABORT a fresh dig that\n"
