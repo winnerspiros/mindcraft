@@ -863,9 +863,8 @@ def ensure_mineflayer_digaim_pt3(base):
     if old3 not in d:
         print("[digaim3] WARNING: digging start anchor not found")
         return
-    new3 = ("    diggingTask = createTask()\n"
-            "    // 26.3: sequence MUST be the live block-change ack counter."
-            " The jar's\n"
+    new3 = (            "    diggingTask = createTask()\n"
+            "    // 26.3: sequence MUST be the live block-change ack counter. The jar's\n"
             "    // handlePlayerAction calls connection.ackBlockChangesUpTo(sequence) FIRST\n"
             "    // — a stale 0 (mineflayer default: field omitted = 0) rewinds her ack\n"
             "    // watermark and the movement gate validates the next moves against a\n"
@@ -878,7 +877,10 @@ def ensure_mineflayer_digaim_pt3(base):
             "    bot._digAimArmed = true\n"
             "    try {\n"
             "      // 26.3 DIG-AIM pt4: aim at the NEAREST POINT on the block (same closest-\n"
-            "      // point math Panda's canBreak checks), not the center.\n"
+            "      // point math Panda's canBreak checks), not the center — center-aims at\n"
+            "      // below-feet/above-head blocks tilt the head past the visible faces and\n"
+            "      // Panda's eye->corner raycasts read occluded. Re-aim up to 3x until HER\n"
+            "      // OWN raycast lands on the block (same geometry Panda verifies).\n"
             "      const _eye = () => bot.entity.position.offset(0, bot.entity.eyeHeight, 0)\n"
             "      const _nearest = () => {\n"
             "        const e = _eye()\n"
