@@ -912,17 +912,12 @@ def ensure_mineflayer_seqtruth(base):
     # the raycast face; vanilla stores it as destroyDirection).
     if "[dig-trace] FACE=" not in s:
         s = s.replace("    bot._client.write('block_dig', {\n      status: 0, // start digging",
-                      "    // 26.3 FACE-SYNC: derive the START face from the actual aim\n"
-                      "    // geometry (nearest-point delta dominant axis), not the TOP\n"
-                      "    // default — a TOP face on a side-visible block is a protocol\n"
-                      "    // lie the server raycast path also validates.\n"
+                      "    // 26.3 FACE-SYNC: send the face her OWN raycast actually hit\n"
+                      "    // (same geometry Panda verifies server-side), not the TOP\n"
+                      "    // default. Falls back to TOP only when no ray lands.\n"
                       "    try {\n"
-                      "      const _eye = bot.entity.position.offset(0, bot.entity.eyeHeight, 0)\n"
-                      "      const _c = { x: block.position.x + 0.5 - _eye.x, y: block.position.y + 0.5 - _eye.y, z: block.position.z + 0.5 - _eye.z }\n"
-                      "      const _ax = Math.abs(_c.x), _ay = Math.abs(_c.y), _az = Math.abs(_c.z)\n"
-                      "      if (_ay >= _ax && _ay >= _az) bot.targetDigFace = _c.y > 0 ? 1 : 0\n"
-                      "      else if (_ax >= _az) bot.targetDigFace = _c.x > 0 ? 4 : 5\n"
-                      "      else bot.targetDigFace = _c.z > 0 ? 2 : 3\n"
+                      "      const _rayF = bot.blockAtEntityCursor(bot.entity, 4.5)\n"
+                      "      if (_rayF && _rayF.position && _rayF.position.equals(block.position) && Number.isFinite(_rayF.face)) bot.targetDigFace = _rayF.face\n"
                       "    } catch (_) {}\n"
                       "    try { console.log(`[dig-trace] FACE=${bot.targetDigFace}`) } catch (_) {}\n"
                       "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
