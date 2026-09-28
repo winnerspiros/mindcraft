@@ -4177,28 +4177,63 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     if (bot.interrupt_code) return false; // stopped: out fast, no chatter
                     if (String((e && e.message) || e).includes('dig-timeout')) {
                         // verify before declaring failure — the break may have
-                        // landed while the ack got lost/cancelled.
+                        // landed while the ack got lost/cancelled. Client
+                        // re-read LIES on 26.3 (block_change never applied),
+                        // so check RCON `if block ... air` first.
+                        let _landed = false;
                         try {
-                            const after = bot.blockAt(block.position);
-                            if (!after || after.name === 'air' || after.name !== block.name) {
-                                log(bot, `Broke ${block.name} (ack lost, verified on re-read).`);
-                                await pickupNearbyItems(bot);
-                                success = true;
-                                break;
+                            const _rv2 = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
+                            if (_rv2 && String(_rv2).length > 0) _landed = true;
+                            else if (_rv2 === null) {
+                                try {
+                                    const _after2 = bot.blockAt(block.position);
+                                    if (!_after2 || _after2.name === 'air' || _after2.name !== block.name) _landed = true;
+                                } catch (_) {}
                             }
                         } catch (_) {}
+                        if (_landed) {
+                            log(bot, `Broke ${block.name} (ack lost, verified on server).`);
+                            await pickupNearbyItems(bot);
+                            success = true;
+                            break;
+                        }
                         log(bot, `Dig timed out on ${block.name}, moving on.`);
                         return false;
                     }
                     throw e;
                 }
                 if (bot.interrupt_code) return false;
-                await pickupNearbyItems(bot);
-                // BARITONE PORT (MineProcess drop-loiter 250ms: keep the
-                // target in the goal set briefly so drops get vacuumed
-                // instead of left on the ground behind her.)
-                try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
-                success = true;
+                // SERVER-TRUTH VERDIGT (2026-09-28): the client world lies on
+                // 26.3 — block_change packets are never applied, so blockAt
+                // still shows the old block after a real break, and bot.dig
+                // resolves via a foraged blockUpdate event. Confirm via RCON
+                // `if block ... air` before claiming success; fall back to
+                // the client re-read only when RCON is silent (guest).
+                try {
+                    const _rv = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
+                    if (_rv && String(_rv).length > 0) {
+                        await pickupNearbyItems(bot);
+                        try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
+                        success = true;
+                    } else if (_rv === null) {
+                        // no RCON (guest survival): client re-read only
+                        let _ok = false;
+                        try { const _after = bot.blockAt(block.position); if (!_after || _after.name !== block.name) _ok = true; } catch (_) {}
+                        if (_ok) {
+                            await pickupNearbyItems(bot);
+                            try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
+                            success = true;
+                        } else {
+                            log(bot, `Dig finished but ${block.name} is still there — moving on.`);
+                        }
+                    } else {
+                        log(bot, `Dig finished but ${block.name} is still there (server truth) — moving on.`);
+                    }
+                } catch (_) {
+                    await pickupNearbyItems(bot);
+                    try { await waitForCond(async () => false, 250, 250); await pickupNearbyItems(bot); } catch (_) {}
+                    success = true;
+                }
             }
             if (success)
                 collected++;
@@ -4428,13 +4463,26 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             }
             throw e;
         }
-        // verify the break landed (state flips count, not just air)
+        // SERVER-TRUTH VERDIGT (2026-09-28): the client world lies on 26.3 —
+        // block_change packets are never applied, so re-reading blockAt
+        // after bot.dig still shows the old block even when the server
+        // broke it. Confirm via RCON `if block ... air`; RCON-silent
+        // (guest) falls back to the client re-read.
+        let _broke = false;
         try {
-            const after = bot.blockAt(block.position);
-            if (after && after.name !== _beforeName) { /* broken or changed: success, fall through to the log below */ }
+            const _rv = await opRcon(`execute as ${bot.username} at @s if block ${block.position.x} ${block.position.y} ${block.position.z} minecraft:air`);
+            if (_rv && String(_rv).length > 0) _broke = true;
+            else if (_rv === null) {
+                try {
+                    const _after = bot.blockAt(block.position);
+                    if (!_after || _after.name === 'air' || _after.name !== _beforeName) _broke = true;
+                } catch (_) {}
+            }
         } catch (_) {}
         await pickupNearbyItems(bot);
-        log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
+        if (_broke) log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
+        else log(bot, `Dig finished but ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)} is still there (server truth) — moving on.`);
+        return _broke;
     }
     else {
         log(bot, `Skipping block at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)} because it is ${block.name}.`);
