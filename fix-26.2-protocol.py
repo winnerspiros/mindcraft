@@ -914,6 +914,25 @@ def ensure_mineflayer_seqtruth(base):
         s = s.replace("    bot._client.write('block_dig', {\n      status: 0, // start digging",
                       "    try { console.log(`[dig-trace] FACE=${bot.targetDigFace}`) } catch (_) {}\n"
                       "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
+    # RESTOP: vanilla STOP breaks only at progress(elapsed+1) >= 0.7; an early
+    # STOP logs 'stopped destroying' and the dig dies. Re-send STOP +400ms.
+    if "[dig-trace] RESTOP" not in s:
+        s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace",
+                      "    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK: STOP grace\n"
+                      "    // 26.3 RESTOP: vanilla STOP breaks only when progress(elapsed+1) >= 0.7.\n"
+                      "    // A STOP arriving even slightly early logs stopped destroying and the\n"
+                      "    // dig dies with zero further packets. Re-send the identical STOP 400ms\n"
+                      "    // later so the second evaluation runs at full progress. Harmless on air.\n"
+                      "    try {\n"
+                      "      setTimeout(() => {\n"
+                      "        try {\n"
+                      "          if (bot.targetDigBlock && bot.targetDigBlock.position.equals(block.position)) {\n"
+                      "            bot._client.write('block_dig', { status: 2, location: block.position, face: bot.targetDigFace, sequence: _nextSeq() })\n"
+                      "            try { console.log(`[dig-trace] RESTOP tgt=${block.position}`) } catch (_) {}\n"
+                      "          }\n"
+                      "        } catch (_) {}\n"
+                      "      }, 400)\n"
+                      "    } catch (_) {}", 1)
     open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
