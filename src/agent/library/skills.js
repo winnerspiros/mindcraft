@@ -3910,6 +3910,20 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             blocks = [...blocks].sort((a, b) => a.position.distanceTo(bp0) - b.position.distanceTo(bp0));
         } catch (_) {}
         let block = blocks[0];
+        // 26.3 DIRT-FIRST SPLIT (2026-09-28, supersedes the bare-hands probe
+        // below): the brain's explicit dirt goal is buried under a stone twin
+        // in nearest-first order, so every turn digs the failing stone and
+        // dirt is never attempted. When the goal is dirt-class, prefer the
+        // nearest dirt-class candidate within reach — the stone gets its turn
+        // after dirt proves the pipeline.
+        try {
+            if (/dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud/i.test(blockType)) {
+                const _eye = bot.entity.position.offset(0, 1.62, 0);
+                const _dc = blocks.filter(b => /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud/i.test(b.name || ''));
+                _dc.sort((a, b) => a.position.distanceTo(_eye) - b.position.distanceTo(_eye));
+                if (_dc.length) block = _dc[0];
+            }
+        } catch (_) {}
         // 26.3 BARE-HANDS SPLIT (2026-09-28): dirt-class blocks need no tool.
         // If bare hands break dirt, the tool path is the fault; if they fail
         // too, it is position/mode, not items. Select an empty hotbar slot
