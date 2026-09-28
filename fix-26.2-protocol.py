@@ -908,6 +908,17 @@ def ensure_mineflayer_seqtruth(base):
                       "      try { bot.removeListener('blockBreakProgressObserved', bot._digProgFn) } catch (_) {}\n"
                       "      try { bot.removeListener('blockBreakProgressEnd', bot._digProgEndFn) } catch (_) {}\n"
                       "      try { console.log(`[dig-trace] ANIM-SUMMARY tgt=${block.position} n=${_animStages.length} stages=${_animStages.join(',') || 'NONE'}`) } catch (_) {}", 1)
+    # SWING-GAP: mineflayer swings every 350ms; vanilla idles ~1/6 ticks.
+    # Pure spam reduction (swingArm is cosmetic punch; progress reads dig
+    # speed, not attack strength) — fewer packets per dig on a 1-OCPU box.
+    if "26.3 SWING-GAP" not in s:
+        s = s.replace("    bot.targetDigBlock = block\n    bot.swingArm()",
+                      "    bot.targetDigBlock = block\n"
+                      "    // 26.3 SWING-GAP: vanilla idles ~1 swing/6 ticks; 350ms spam\n"
+                      "    // is pure packet load on a 1-OCPU tick loop. Swing /1500ms.\n"
+                      "    bot.swingArm()", 1)
+        s = s.replace("    swingInterval = setInterval(() => {\n      bot.swingArm()\n    }, 350)",
+                      "    swingInterval = setInterval(() => {\n      bot.swingArm()\n    }, 1500)", 1)
     # FACE log: which face value the START actually carries (TOP=1 default vs
     # the raycast face; vanilla stores it as destroyDirection).
     if "[dig-trace] FACE=" not in s:
