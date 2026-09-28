@@ -878,6 +878,8 @@ def ensure_mineflayer_seqtruth(base):
                       "      // 26.3 AIR-GATE pt2: same-type resyncs (stone->stone) must NOT\n"
                       "      // finish the dig — only air resolves. Resync = keep swinging.\n"
                       "      if (newBlock?.type !== 0) return\n"
+                      "      // Defensive: the world may send (null, null) on unload — never resolve.\n"
+                      "      if (!newBlock) return\n"
                       "      // vanilla server never actually interrupt digging, but some server send block update", 1)
     if "[dig-trace] VALIDFACES" not in s:
         s = s.replace("          await bot.lookAt(closest.targetPos, forceLook)\n          bot.targetDigFace = closest.face",
