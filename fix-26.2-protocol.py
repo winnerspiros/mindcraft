@@ -688,13 +688,14 @@ def ensure_mineflayer_move_diff(base):
 
 def ensure_mineflayer_digaim(base):
     """26.3 DIG-AIM FIX: the server raycasts block digs from ITS OWN stored
-    yaw/pitch — never the client's local angles. sendPacketLook dropped
-    force-looks (dig/place aim) inside the 2.5s post-teleport hold, so the
-    server still faced spawn when START/STOP arrived and Panda's canBreak
-    raycast silently cancelled every dig. Now: stash the latest force-look
-    during the hold (frozen included); updatePosition overwrites its mutable
-    yaw/pitch from the stash and sends normally (frozen-gated already).
-    Handles both fresh installs (const yaw) and live files (let yaw).
+    yaw/pitch — never the client's local angles. Two cooperating hunks:
+    (1) bot.look(force) stashes notchian aim in bot._pendingForceLook instead
+    of returning silently (old code set local angles only, and
+    updatePosition saw zero drift so it sent NOTHING — the server kept the
+    stale spawn-facing yaw and Panda's canBreak raycast cancelled every dig).
+    (2) sendPacketLook stashes during the frozen/2.5s hold; updatePosition
+    flushes the stash into mutable yaw/pitch and forces the look send
+    (frozen-gated already). Handles fresh (const yaw) and live (let yaw).
     Marker-idempotent."""
     mp = os.path.join(base, "mineflayer", "lib", "plugins", "physics.js")
     if not os.path.exists(mp):
@@ -704,15 +705,44 @@ def ensure_mineflayer_digaim(base):
     if "bot._pendingForceLook" in s:
         print("[digaim] dig-aim flush present -> no-op")
         return
-    old = ("    if (!shouldUsePhysics) return\n"
-           "    if (performance.now() - lastPosSend < 2500) return")
+    old = ("    if (force) {\n"
+           "      lastSentYaw = yaw\n"
+           "      lastSentPitch = pitch\n"
+           "      return\n"
+           "    }")
     if old not in s:
+        print("[digaim] WARNING: force anchor not found")
+        return
+    new = ("    if (force) {\n"
+           "      lastSentYaw = yaw\n"
+           "      lastSentPitch = pitch\n"
+           "      // 26.3 DIG-AIM FIX pt2: force-look (dig/place aim) must reach the wire.\n"
+           "      try {\n"
+           "        bot._pendingForceLook = {\n"
+           "          yaw: Math.fround(conv.toNotchianYaw(yaw)),\n"
+           "          pitch: Math.fround(conv.toNotchianPitch(pitch)),\n"
+           "          onGround: bot.entity.onGround\n"
+           "        }\n"
+           "      } catch (_) {}\n"
+           "      return\n"
+           "    }")
+    s = s.replace(old, new, 1)
+    # sendPacketLook's hold (NOT bot.lookAt's stare-gate further down, which
+    # shares the two lines but is followed by "return false"). Disambiguate
+    # with the PRECEDING comment, unique to sendPacketLook.
+    old_h = ("    // jitter every stare look by 0-30ms so pairs can't phase-lock.\n"
+             "    if (!shouldUsePhysics) return\n"
+             "    if (performance.now() - lastPosSend < 2500) return")
+    old_h_live = "    if (!shouldUsePhysics || performance.now() - lastPosSend < 2500) { bot._pendingForceLook"
+    new_h = ("    // jitter every stare look by 0-30ms so pairs can't phase-lock.\n"
+             "    if (!shouldUsePhysics || performance.now() - lastPosSend < 2500) { bot._pendingForceLook = { yaw, pitch, onGround }; return }")
+    if old_h_live in s:
+        print("[digaim] hold hunk present -> keep")
+    elif old_h in s:
+        s = s.replace(old_h, new_h, 1)
+    else:
         print("[digaim] WARNING: hold anchor not found")
         return
-    new = ("    if (!shouldUsePhysics) { bot._pendingForceLook = { yaw, pitch, onGround }; return }\n"
-           "    if (performance.now() - lastPosSend < 2500) { bot._pendingForceLook = { yaw, pitch, onGround }; return }")
-    s = s.replace(old, new, 1)
-    # fresh installs declare const yaw/pitch — must be mutable for the flush
     s = s.replace("    const yaw = Math.fround(conv.toNotchianYaw(lastSentYaw))",
                   "    let yaw = Math.fround(conv.toNotchianYaw(lastSentYaw))", 1)
     s = s.replace("    const pitch = Math.fround(conv.toNotchianPitch(lastSentPitch))",
@@ -727,6 +757,7 @@ def ensure_mineflayer_digaim(base):
             "    // 26.3 DIG-AIM FIX: flush a stashed force-look into the send angles FIRST\n"
             "    // (frozen-gated via updatePosition) so dig/place aim always reaches the\n"
             "    // wire — the server raycasts from its own yaw/pitch, never local.\n"
+            "    let _forceFlushed = false\n"
             "    if (bot._pendingForceLook) {\n"
             "      try {\n"
             "        yaw = bot._pendingForceLook.yaw\n"
@@ -734,10 +765,16 @@ def ensure_mineflayer_digaim(base):
             "        // keep the drift tracker in sync so the next tick sees no phantom delta\n"
             "        lastSentYaw = conv.fromNotchianYaw(yaw)\n"
             "        lastSentPitch = conv.fromNotchianPitch(pitch)\n"
+            "        _forceFlushed = true\n"
             "      } catch (_) {}\n"
             "      bot._pendingForceLook = null\n"
             "    }\n")
     s = s.replace(old3, new3, 1)
+    old4 = "    const lookUpdated = lastSent.yaw !== yaw || lastSent.pitch !== pitch"
+    if old4 not in s:
+        print("[digaim] WARNING: lookUpdated anchor not found")
+        return
+    s = s.replace(old4, "    const lookUpdated = _forceFlushed || lastSent.yaw !== yaw || lastSent.pitch !== pitch", 1)
     open(mp, "w").write(s)
     print("[digaim] dig-aim flush installed")
 
