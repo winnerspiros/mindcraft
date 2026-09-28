@@ -4530,6 +4530,14 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
         } catch (e) {
             try { bot.stopDigging(); } catch (_) {}
             if (String((e && e.message) || e).includes('dig-timeout')) {
+                // 26.3 TICK-PROOF (same as collectBlock): gametime stamp proves
+                // starvation vs gate per dig.
+                try {
+                    const _t1 = await opRcon(`time query gametime`);
+                    const _g1 = _t1 ? parseInt(String(_t1).replace(/[^0-9]/g, ''), 10) : NaN;
+                    const _w0 = bot._lastDigStartWall || Date.now();
+                    if (Number.isFinite(_g1)) log(bot, `Dig diag: wall~${Date.now() - _w0}ms gametime=${_g1} for ${block.name} at ${block.position.x},${block.position.y},${block.position.z}.`);
+                } catch (_) {}
                 log(bot, `Dig timed out on ${block.name}, moving on.`);
                 return false;
             }
