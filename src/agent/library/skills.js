@@ -3910,7 +3910,38 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             blocks = [...blocks].sort((a, b) => a.position.distanceTo(bp0) - b.position.distanceTo(bp0));
         } catch (_) {}
         let block = blocks[0];
-        await equipRightTool(bot, block);
+        // 26.3 BARE-HANDS SPLIT (2026-09-28): dirt-class blocks need no tool.
+        // If bare hands break dirt, the tool path is the fault; if they fail
+        // too, it is position/mode, not items. Select an empty hotbar slot
+        // (no container click — the 26.3 click channel is suspect, so move
+        // nothing; just change the selected slot so the server reads fist).
+        const _bareCls = /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i;
+        let _bareHands = false;
+        if (_bareCls.test(block.name || '')) {
+            try {
+                const { rconInventory } = await import('../../utils/rcon.js');
+                const inv = await rconInventory(bot.username);
+                const names = (inv || []).map(e => e.name);
+                // hotbar slot indexes in Inventory[] are Slot 0..8; find one
+                // the server says is empty (no entry), else keep tool path.
+                const held = new Set((inv || []).filter(e => e.slot >= 0 && e.slot <= 8).map(e => e.slot));
+                let emptySlot = -1;
+                for (let hs = 0; hs <= 8; hs++) { if (!held.has(hs)) { emptySlot = hs; break; } }
+                if (emptySlot >= 0) {
+                    try { bot.setQuickBarSlot(emptySlot); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 800));
+                    try {
+                        const { rconCommand } = await import('../../utils/rcon.js');
+                        const _sv = String(await rconCommand(`data get entity ${bot.username} SelectedItem`) || '');
+                        if (/air/i.test(_sv) || !/minecraft:/.test(_sv)) {
+                            _bareHands = true;
+                            log(bot, `Bare-hands split: fist selected (slot ${emptySlot}) for ${block.name}.`);
+                        }
+                    } catch (_) {}
+                }
+            } catch (_) {}
+        }
+        if (!_bareHands) await equipRightTool(bot, block);
         // 26.3 FALLBACK (added 21:3x): equipForBlock reads bot.inventory.items()
         // (client Slot decode, often [] even when kitted) and can leave the
         // sword/fist held — then canHarvest fails on ores she HAS the pick for

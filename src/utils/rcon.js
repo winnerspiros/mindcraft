@@ -125,12 +125,12 @@ export async function rconInventory(name, bust=false) {
     let out;
     try { out = await rconCommand(`data get entity ${safe} Inventory`); }
     catch (e) { return null; }
-    // entries look like {Slot: 5b, id: "minecraft:dirt", count: 1} — capture id+count pairs
+    // entries look like {Slot: 5b, id: "minecraft:dirt", count: 1} — capture slot+id+count
     const inv = [];
     try {
-        const re = /id:\s*"minecraft:([a-z_]+)"[^}]*?count:\s*(\d+)/g;
+        const re = /Slot:\s*(\d+)b,\s*id:\s*"minecraft:([a-z_]+)"[^}]*?count:\s*(\d+)/g;
         let m;
-        while ((m = re.exec(String(out)))) inv.push({ name: m[1], count: parseInt(m[2], 10) });
+        while ((m = re.exec(String(out)))) inv.push({ slot: parseInt(m[1], 10), name: m[2], count: parseInt(m[3], 10) });
     } catch (_) {}
     _invCache[safe] = { t: now, inv };
     return inv;
