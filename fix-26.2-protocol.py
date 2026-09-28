@@ -796,43 +796,47 @@ def ensure_mineflayer_seqtruth(base):
         print("[seqtruth] WARNING: digging.js missing")
         return
     s = open(mp).read()
-    if "26.3 SEQ-TRUTH" in s:
-        print("[seqtruth] seq-truth present -> no-op")
+    if "26.3 SEQ-TRUTH" in s and "STOPWAIT-UPDATE" in s and "AIR-GATE pt2" in s and "ANIM-SUMMARY" in s and "FACE=" in s:
+        print("[seqtruth] seq-truth + all dig-trace present -> no-op")
         return
-    old = ("  bot.targetDigBlock = null\n"
-           "  bot.targetDigFace = null\n"
-           "  bot.lastDigTime = null\n")
-    if old not in s:
-        print("[seqtruth] WARNING: inject anchor not found")
-        return
-    new = ("  bot.targetDigBlock = null\n"
-           "  bot.targetDigFace = null\n"
-           "  bot.lastDigTime = null\n"
-           "  // 26.3 SEQ-TRUTH: the block_dig sequence must echo the server's live\n"
-           "  // acknowledge counter, not a client-side increment. Track it here.\n"
-           "  bot._serverAckSeq = 0\n"
-           "  try {\n"
-           "    bot._client.on('acknowledge_player_digging', (packet) => {\n"
-           "      try {\n"
-           "        const v = Number(packet.sequenceId)\n"
-           "        if (Number.isFinite(v)) {\n"
-           "          bot._serverAckSeq = v\n"
-           "          try { console.log(`[dig-trace] SRV-ACK seq=${v}`) } catch (_) {}\n"
-           "        }\n"
-           "      } catch (_) {}\n"
-           "    })\n"
-           "  } catch (_) {}\n"
-           "  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 1; return bot._serverAckSeq }\n")
-    s = s.replace(old, new, 1)
-    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n    })",
-                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n    })")
-    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n        })",
-                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n        })")
-    s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1) // 26.3 ack watermark",
-                  "sequence: _nextSeq() // 26.3 SEQ-TRUTH")
-    if "_nextSeq() // 26.3 SEQ-TRUTH" not in s:
-        print("[seqtruth] WARNING: sequence sites not replaced")
-        return
+    if "26.3 SEQ-TRUTH" not in s:
+        old = ("  bot.targetDigBlock = null\n"
+               "  bot.targetDigFace = null\n"
+               "  bot.lastDigTime = null\n")
+        if old not in s:
+            print("[seqtruth] WARNING: inject anchor not found")
+            return
+        new = ("  bot.targetDigBlock = null\n"
+               "  bot.targetDigFace = null\n"
+               "  bot.lastDigTime = null\n"
+               "  // 26.3 SEQ-TRUTH: the block_dig sequence must echo the server's live\n"
+               "  // acknowledge counter, not a client-side increment. Track it here.\n"
+               "  bot._serverAckSeq = 0\n"
+               "  try {\n"
+               "    bot._client.on('acknowledge_player_digging', (packet) => {\n"
+               "      try {\n"
+               "        const v = Number(packet.sequenceId)\n"
+               "        if (Number.isFinite(v)) {\n"
+               "          bot._serverAckSeq = v\n"
+               "          try { console.log(`[dig-trace] SRV-ACK seq=${v}`) } catch (_) {}\n"
+               "        }\n"
+               "      } catch (_) {}\n"
+               "    })\n"
+               "  } catch (_) {}\n"
+               "  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 1; return bot._serverAckSeq }\n")
+        s = s.replace(old, new, 1)
+        s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n    })",
+                      "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n    })")
+        s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1)\n        })",
+                      "sequence: _nextSeq() // 26.3 SEQ-TRUTH\n        })")
+        s = s.replace("sequence: (bot._blockDigSeq = (bot._blockDigSeq || 0) + 1) // 26.3 ack watermark",
+                      "sequence: _nextSeq() // 26.3 SEQ-TRUTH")
+        if "_nextSeq() // 26.3 SEQ-TRUTH" not in s:
+            print("[seqtruth] WARNING: sequence sites not replaced")
+            return
+        open(mp, "w").write(s)
+        print("[seqtruth] seq-truth base installed")
+        s = open(mp).read()
     # STOP-arrival slack: the client estimate is exact but the server grants only
     # ~150ms grace for STOP to arrive; any 26.3 jitter on this box aborts the
     # dig right at completion. A late STOP still breaks (server had progress);
@@ -904,6 +908,12 @@ def ensure_mineflayer_seqtruth(base):
                       "      try { bot.removeListener('blockBreakProgressObserved', bot._digProgFn) } catch (_) {}\n"
                       "      try { bot.removeListener('blockBreakProgressEnd', bot._digProgEndFn) } catch (_) {}\n"
                       "      try { console.log(`[dig-trace] ANIM-SUMMARY tgt=${block.position} n=${_animStages.length} stages=${_animStages.join(',') || 'NONE'}`) } catch (_) {}", 1)
+    # FACE log: which face value the START actually carries (TOP=1 default vs
+    # the raycast face; vanilla stores it as destroyDirection).
+    if "[dig-trace] FACE=" not in s:
+        s = s.replace("    bot._client.write('block_dig', {\n      status: 0, // start digging",
+                      "    try { console.log(`[dig-trace] FACE=${bot.targetDigFace}`) } catch (_) {}\n"
+                      "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
     open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
