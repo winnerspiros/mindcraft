@@ -850,18 +850,18 @@ def ensure_mineflayer_seqtruth(base):
                       "  // which handlePlayerAction sets to OUR sequence, NOT its own counter).\n"
                       "  // Number each new block_dig +2 so a lost/reordered STOP shows as a skip.\n"
                       "  const _nextSeq = () => { bot._serverAckSeq = (bot._serverAckSeq || 0) + 2; bot._lastSentSeq = bot._serverAckSeq; return bot._serverAckSeq }", 1)
-    # STOP-TIME (2026-09-29, REPLACES NET-SLACK): the old waitTime+1500 fired
-    # ~1.6s late on 150ms gravel — server verdicts proved every STOP landed
-    # after isDestroyingBlock was already cleared (ABORT path). Vanilla STOP
-    # breaks at progress(elapsed+1)>=0.7, i.e. around waitTime: fire ~100ms
-    # BEFORE the gate qualifies; the +1500ms stays only as settle fallback.
-    if "26.3 STOP-TIME (2026-09-29" not in s:
-        s = s.replace("    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100) + 1500) // 26.3 STOP-TIME (2026-09-29)",
-                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
+    # STOP-TIME FINAL (2026-09-29): full state machine re-read. The server
+    # computes progress ITSELF as getDestroyProgress*(gameTicks-start+1);
+    # STOP gate needs >=0.7. Early STOP (waitTime-100) evaluates ~0.05 ->
+    # "stopped destroying" -> delayed-tick limbo. Send STOP LATE
+    # (waitTime+400) so the gate reads destroyed on arrival.
+    if "26.3 STOP-TIME (2026-09-29" not in s or "waitTime + 400" not in s:
+        s = s.replace("    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)",
+                      "    waitTimeout = setTimeout(finishDigging, waitTime + 400) // 26.3 STOP-TIME (2026-09-29, final)", 1)
         s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK",
-                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
+                      "    waitTimeout = setTimeout(finishDigging, waitTime + 400) // 26.3 STOP-TIME (2026-09-29, final)", 1)
         s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime)",
-                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
+                      "    waitTimeout = setTimeout(finishDigging, waitTime + 400) // 26.3 STOP-TIME (2026-09-29, final)", 1)
     # timer-fired marker (distinguishes full-wait timeout from early abort)
     if "[dig-trace] TIMER-FIRED" not in s:
         s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
