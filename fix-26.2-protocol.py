@@ -873,10 +873,12 @@ def ensure_mineflayer_seqtruth(base):
     if "[dig-trace] TIMER-FIRED waitTime=${waitTime} held=" not in s:
         s = s.replace("try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime}`) } catch (_) {}",
                       "try { console.log(`[dig-trace] TIMER-FIRED waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround} eye=${bot.blockAt(bot.entity.position.offset(0, bot.entity.eyeHeight, 0))?.name} feet=${bot.blockAt(bot.entity.position)?.name}`) } catch (_) {}", 1)
-    # STOP-WAIT: after STOP is sent, hold the dig open ~8s for the server's
-    # own block_change instead of ABORTing our own completed dig.
-    # 26.3 AIR-GATE: a same-type block_change (stone->stone) is a server
-    # resync, NOT an ack — only air (type 0) breaks the wait.
+    # STOP-WAIT (corrected 2026-09-29): after the waitTime-100 STOP is sent,
+    # hold ~8s for the server's own block_change INSTEAD of scheduling any
+    # re-STOP. History: a resync-driven re-STOP was added here, verdicts
+    # proved it ABORTed the dig (lands with isDestroyingBlock=false), then it
+    # was no-op'd. This installer now only ensures the hold exists, never any
+    # re-STOP scheduler.
     if "[dig-trace] STOPWAIT-UPDATE" not in s:
         s = s.replace("    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)",
                       "    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)\n"
