@@ -1541,8 +1541,11 @@ def ensure_loaded_gate(base):
     """2026-09-29 LOADED-GATE: the jar drops dig packets while
     hasClientLoaded() is false; only player_loaded opens it and the fork
     never sends it. Re-apply hunk in src/agent/agent.js after fresh checkouts.
-    Marker-idempotent."""
-    ap = os.path.join(base, "src", "agent", "agent.js")
+    Marker-idempotent. base may be the node_modules dir or the repo root."""
+    import glob as _glob
+    cands = [os.path.join(base, "src", "agent", "agent.js"),
+             os.path.join(os.path.dirname(base.rstrip(os.sep)), "src", "agent", "agent.js")]
+    ap = next((c for c in cands if os.path.exists(c)), cands[0])
     if not os.path.exists(ap):
         print(f"[loadedgate] WARNING: {ap} missing")
         return

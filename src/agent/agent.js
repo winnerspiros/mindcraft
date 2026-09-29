@@ -288,6 +288,25 @@ export class Agent {
                         console.log('[LoadedGate] player_loaded sent (respawn).');
                     });
                 } catch (_) {}
+
+                // 26.3 LOADED-GATE (2026-09-29): the jar drops dig/START packets
+                // while hasClientLoaded() is false (waitingForRespawn or the
+                // 60-tick clientLoadedTimeoutTimer); it only clears when the
+                // client sends player_loaded (handleAcceptPlayerLoad), and the
+                // fork never sends it. Death re-arms the block. Send it once
+                // here (post-settle) + on every respawn so the gate opens.
+                try {
+                    this.bot._client.write('player_loaded', {});
+                    console.log('[LoadedGate] player_loaded sent (spawn).');
+                } catch (e) {
+                    console.log('[LoadedGate] send failed:', String((e && e.message) || e).slice(0, 80));
+                }
+                try {
+                    this.bot.on('respawn', () => {
+                        try { this.bot._client.write('player_loaded', {}); } catch (_) {}
+                        console.log('[LoadedGate] player_loaded sent (respawn).');
+                    });
+                } catch (_) {}
                             
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
