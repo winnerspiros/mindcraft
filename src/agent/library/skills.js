@@ -9216,6 +9216,18 @@ export async function summonMob(bot, entityType, count = 1) {
     // No count cap by design — she is the judger. Her summoning notes teach
     // what each mob costs (lag, destruction, deaths); the number is her call.
     count = Math.max(1, Math.floor(Number(count) || 1));
+    // BOSS GATE 2026-09-29: wither/ender_dragon are grief engines (8 withers
+    // were live on the server, UwU died 5+ times to skulls, digs wedged into
+    // death-races). Refuse unless the brain passes explicit consent AND cap
+    // at 1. Consent arrives as a 4th arg `consent` from the command layer.
+    const bossGate = /^(wither|ender_dragon)$/i.test(resolved || '');
+    const consent = String(arguments[4] ?? arguments[3] ?? '').toLowerCase();
+    if (bossGate && consent !== 'boss-ok') {
+        const msg = `No boss fights without a yes — ${resolved} griefs the land and kills me too. Ask again with consent if you really mean it.`;
+        log(bot, msg);
+        return msg;
+    }
+    if (bossGate) count = 1;
     if (!resolved) {
         const s = suggestEntityNames(bot, entityType);
         const msg = `Invalid entity type: ${entityType}.${s.length ? ` Did you mean: ${s.join(', ')}?` : ''}`;
