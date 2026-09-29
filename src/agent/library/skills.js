@@ -4190,6 +4190,51 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     const dt = bot.digTime ? bot.digTime(block) : null;
                     if (Number.isFinite(dt) && dt >= 0) _expectedMs = Math.min(20000, Math.max(1500, dt + 3000));
                 } catch (_) {}
+                // HAND-GATE 2026-09-29 (collect path): same server-hand check
+                // as breakBlockAt — the server computes progress from the
+                // SERVER hand, and her slot keeps landing on food/chest at dig
+                // time. Wrong hand = /100 speed, STOP 0.7 gate never qualifies.
+                // Verify via RCON BEFORE the swing; force once via RCON
+                // replace; still wrong => fail honestly. Logs [tool-proof]
+                // srv/cli/waitTime every dig for the join.
+                try {
+                    const { rconCommand: _rg, rconInventory: _ri } = await import('../../utils/rcon.js');
+                    const _bn = block.name || '';
+                    const _wc = /log|wood|plank/i.test(_bn) ? 'axe'
+                        : /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i.test(_bn) ? 'shovel'
+                        : /leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(_bn) ? null
+                        : 'pickaxe';
+                    if (_wc) {
+                        let _h = '';
+                        try { _h = String(await _rg(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                        const _hh = (_h.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                        const _ct0 = (() => { try { return bot.heldItem ? bot.heldItem.name : 'NONE'; } catch (_) { return '?'; } })();
+                        const _wt0 = (() => { try { return bot.digTime(block); } catch (_) { return '?'; } })();
+                        if (!_hh.includes(_wc)) {
+                            log(bot, `Hand-gate: holding ${_hh || 'nothing'} for ${_bn} — forcing ${_wc}.`);
+                            try {
+                                const _inv = await _ri(bot.username);
+                                const _names = (_inv || []).map(e => e.name);
+                                const _pk = _names.find(n => n.includes(_wc) && /diamond|iron|stone|netherite/.test(n))
+                                    || _names.find(n => n.includes(_wc));
+                                if (_pk) {
+                                    await _rg(`item replace entity ${bot.username} weapon.mainhand with minecraft:${_pk} 1`);
+                                    await new Promise(r => setTimeout(r, 800));
+                                }
+                            } catch (_) {}
+                            let _h2 = '';
+                            try { _h2 = String(await _rg(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                            const _hh2 = (_h2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                            try { bot.output += `[tool-proof] srv=${_hh2 || 'nothing'} cli=${_ct0} waitTime=${_wt0} tgt=${block.position}\n`; } catch (_) {}
+                            if (!_hh2.includes(_wc)) {
+                                log(bot, `Hand-gate: still holding ${_hh2 || 'nothing'} — skipping ${_bn} instead of swinging wrong.`);
+                                return false;
+                            }
+                        } else {
+                            try { bot.output += `[tool-proof] srv=${_hh || 'nothing'} cli=${_ct0} waitTime=${_wt0} tgt=${block.position}\n`; } catch (_) {}
+                        }
+                    }
+                } catch (_) { /* RCON down => proceed, old behavior */ }
                 // 26.3 TICK-PROOF: gametime BEFORE the swing (paired with the
                 // timeout read) proves ticks advanced across the dig window.
                 let _g0 = NaN;
