@@ -1453,6 +1453,49 @@ def ensure_pathfinder_walker(base):
     print("[walker] run-up installed")
 
 
+def ensure_mineflayer_toolproof(base):
+    """2026-09-29 TOOL-PROOF: per-dig join of server hand vs client tool.
+    waitTime is computed from the CLIENT hand while the server computes
+    progress from the SERVER hand — a mismatch (beef in server hand, pick in
+    client) means the STOP 0.7 progress gate never qualifies and the dig
+    resyncs forever. Two cooperating hunks: (1) digging.js snapshots the
+    client tool at START and prints it on the dig-effects line; (2) the
+    skill-layer hand-gate logs [tool-proof] srv/cli/waitTime per dig.
+    Only (1) lives here (node_modules); (2) lives in skills.js.
+    Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print(f"[toolproof] WARNING: {mp} missing")
+        return
+    s = open(mp).read()
+    if "2026-09-29 TOOL-PROOF" in s:
+        print("[toolproof] tool-proof present -> no-op")
+        return
+    old = ("    const waitTime = bot.digTime(block)\n"
+           "    if (waitTime === Infinity) {\n"
+           "      throw new Error(`dig time for ${block?.name ?? block} is Infinity`)\n"
+           "    }")
+    if old not in s:
+        print("[toolproof] WARNING: waitTime anchor not found")
+        return
+    new = (old + "\n"
+           "    // 2026-09-29 TOOL-PROOF: snapshot the CLIENT tool at START so the\n"
+           "    // dig-effects line can be joined against the per-dig RCON hand read.\n"
+           "    // waitTime is computed from the CLIENT hand — if it says 300ms while\n"
+           "    // the server holds beef, client and server hands disagree and the STOP\n"
+           "    // 0.7 gate never qualifies. One journal line per dig, auto-quiet.\n"
+           "    try { bot._digStartClientTool = bot.heldItem ? bot.heldItem.name : 'NONE' } catch (_) { try { bot._digStartClientTool = '?' } catch (_) {} }")
+    s = s.replace(old, new, 1)
+    old2 = "try { bot.output += `[dig-effects] waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} onGround=${bot.entity.onGround}"
+    if old2 not in s:
+        print("[toolproof] WARNING: dig-effects anchor not found")
+        return
+    new2 = "try { bot.output += `[dig-effects] waitTime=${waitTime} held=${bot.heldItem ? bot.heldItem.name + ':' + bot.heldItem.type : 'NONE'} startTool=${bot._digStartClientTool || '?'} onGround=${bot.entity.onGround}"
+    s = s.replace(old2, new2, 1)
+    open(mp, "w").write(s)
+    print("[toolproof] tool-proof installed")
+
+
 def ensure_mineflayer_driver_arbiter(base):
     """BOTCRAFT PORT (dirtyInputs backpressure v2): AI stamps bot._dirtyInputs on
     every control write; the physics tick clears it after simulating; loops
@@ -2142,6 +2185,7 @@ def main():
     ensure_pathfinder_baritone_goals(BASE)
     ensure_pathfinder_baritone_astar(BASE)
     ensure_mineflayer_driver_arbiter(BASE)
+    ensure_mineflayer_toolproof(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)
