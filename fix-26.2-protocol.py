@@ -855,11 +855,13 @@ def ensure_mineflayer_seqtruth(base):
     # after isDestroyingBlock was already cleared (ABORT path). Vanilla STOP
     # breaks at progress(elapsed+1)>=0.7, i.e. around waitTime: fire ~100ms
     # BEFORE the gate qualifies; the +1500ms stays only as settle fallback.
-    if "26.3 STOP-TIME (2026-09-29)" not in s:
+    if "26.3 STOP-TIME (2026-09-29" not in s:
+        s = s.replace("    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100) + 1500) // 26.3 STOP-TIME (2026-09-29)",
+                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
         s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime + 1500) // 26.3 NET-SLACK",
-                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100) + 1500) // 26.3 STOP-TIME (2026-09-29)", 1)
+                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
         s = s.replace("    waitTimeout = setTimeout(finishDigging, waitTime)",
-                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100) + 1500) // 26.3 STOP-TIME (2026-09-29)", 1)
+                      "    waitTimeout = setTimeout(finishDigging, Math.max(50, waitTime - 100)) // 26.3 STOP-TIME (2026-09-29, corrected)", 1)
     # timer-fired marker (distinguishes full-wait timeout from early abort)
     if "[dig-trace] TIMER-FIRED" not in s:
         s = s.replace("    function finishDigging () {\n      clearInterval(swingInterval)",
