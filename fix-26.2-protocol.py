@@ -1550,7 +1550,7 @@ def ensure_loaded_gate(base):
         print(f"[loadedgate] WARNING: {ap} missing")
         return
     s = open(ap).read()
-    if "2026-09-29 LOADED-GATE" in s and "player_loaded" in s:
+    if s.count("2026-09-29 LOADED-GATE") >= 1 and "player_loaded" in s:
         print("[loadedgate] loaded-gate present -> no-op")
         return
     anchor = "this._suffocationInterval = setInterval(() => this._checkSuffocation(), 300);"

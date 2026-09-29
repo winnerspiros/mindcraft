@@ -307,7 +307,7 @@ export class Agent {
                         console.log('[LoadedGate] player_loaded sent (respawn).');
                     });
                 } catch (_) {}
-                            
+
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
               
