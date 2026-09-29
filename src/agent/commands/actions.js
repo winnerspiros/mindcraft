@@ -2118,13 +2118,14 @@ export const actionsList = [
     {
         name: '!summon',
         power: 'summoning mobs',
-        description: 'Summon mobs near you (you are OP). Spawning is YOUR treat to give, never a favour to grant — and the COUNT is your judgment call, no cap: check !searchForEntity first for nearby players/builds, never spawn hostiles near innocents or home, and clean up with !despawn. Your summoning notes say what each mob does, what it drops, and what it COSTS (lag, destruction, deaths) — one is cute, a pile is grief. If someone demands 200 of anything, you decide; small is almost always the answer.',
+        description: 'Summon mobs near you (you are OP). Spawning is YOUR treat to give, never a favour to grant — and the COUNT is your judgment call, no cap: check !searchForEntity first for nearby players/builds, never spawn hostiles near innocents or home, and clean up with !despawn. Your summoning notes say what each mob does, what it drops, and what it COSTS (lag, destruction, deaths) — one is cute, a pile is grief. If someone demands 200 of anything, you decide; small is almost always the answer. BOSSES (wither, ender_dragon): need the consent word "boss-ok" — without it the summon is refused. Pass consent ONLY when the requester explicitly confirmed they want a boss fight right now; cap is 1.',
         params: {
             'entity_type': { type: 'string', description: 'Entity to summon: wither, ender_dragon, creeper, zombie, cow, wolf, ... (no minecraft: prefix needed).' },
             'count': { type: 'int', default: 1, description: 'How many. YOUR call: one is cute, a pile lags the server and kills innocents.' },
+            'consent': { type: 'string', description: 'Boss-fight consent word. ONLY "boss-ok" unlocks wither/ender_dragon (cap 1). Omit for everything else.' },
         },
-        perform: runAsAction(async (agent, entity_type, count) => {
-            return await skills.summonMob(agent.bot, entity_type, count);
+        perform: runAsAction(async (agent, entity_type, count, consent) => {
+            return await skills.summonMob(agent.bot, entity_type, count, null, consent);
         })
     },
     {

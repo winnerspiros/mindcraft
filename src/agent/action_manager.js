@@ -175,6 +175,18 @@ export class ActionManager {
             console.error("Code execution triggered catch:", err);
             // Log the full stack trace
             console.error(err.stack);
+            // 2026-09-29: a stop()-ABORT that loses the diggingTask race lands
+            // here ('Digging aborted' / 'Digging aborted (death)') — that is a
+            // stop/death race, NOT an action failure. Record nothing, kill
+            // nothing, return it as an interrupt so the loop carries on.
+            // cleanKill here turned every mid-dig interrupt and every wither
+            // death into a systemd restart loop (3 crashes on 09-29).
+            const msg = String((err && err.message) || err || '');
+            if (/digging aborted/i.test(msg)) {
+                try { this.agent.reliability?.clearInFlight(); } catch (_) {}
+                this.agent.clearBotLogs();
+                return { success: false, message: 'interrupted (' + msg + ')', interrupted: true, timedout: false };
+            }
             await this.stop();
             err = err.toString();
 
