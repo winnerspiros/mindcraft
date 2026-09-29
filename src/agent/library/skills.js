@@ -4592,7 +4592,16 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                 let hand = '';
                 try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
                 const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
-                if (!handHas.includes(wantCls)) {
+                // TOOL-PROOF join (pass-through path): server hand was already
+                // right, so log the join without forcing anything.
+                if (handHas.includes(wantCls)) {
+                    try {
+                        const ct = bot.heldItem ? bot.heldItem.name : 'NONE';
+                        let wt = '?';
+                        try { wt = bot.digTime(block); } catch (_) {}
+                        bot.output += `[tool-proof] srv=${handHas || 'nothing'} cli=${ct} waitTime=${wt} tgt=${block.position}\n`;
+                    } catch (_) {}
+                } else {
                     log(bot, `Hand-gate: holding ${handHas || 'nothing'} for ${_beforeName} — forcing ${wantCls}.`);
                     try {
                         const { rconInventory } = await import('../../utils/rcon.js');
@@ -4606,6 +4615,16 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                             let hand2 = '';
                             try { hand2 = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
                             const handHas2 = (hand2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                            // TOOL-PROOF join: one line per dig with server
+                            // hand + client tool + client-computed waitTime
+                            // (computed below from the client hand). If these
+                            // disagree, the STOP 0.7 gate never qualifies.
+                            try {
+                                const ct = bot.heldItem ? bot.heldItem.name : 'NONE';
+                                let wt = '?';
+                                try { wt = bot.digTime(block); } catch (_) {}
+                                bot.output += `[tool-proof] srv=${handHas2 || 'nothing'} cli=${ct} waitTime=${wt} tgt=${block.position}\n`;
+                            } catch (_) {}
                             if (!handHas2.includes(wantCls)) {
                                 log(bot, `Hand-gate: still holding ${handHas2 || 'nothing'} — skipping ${_beforeName} instead of swinging wrong.`);
                                 return false;
