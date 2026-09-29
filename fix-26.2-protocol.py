@@ -958,27 +958,15 @@ def ensure_mineflayer_seqtruth(base):
                       "    } catch (_) {}\n"
                       "    try { console.log(`[dig-trace] FACE=${bot.targetDigFace}`) } catch (_) {}\n"
                       "    bot._client.write('block_dig', {\n      status: 0, // start digging", 1)
-    # RESTOP-SCHED: vanilla STOP breaks only at progress(elapsed+1) >= 0.7.
-    # The re-STOP is scheduled by _schedRestop on each server resync (proof
-    # the first STOP was processed) — never a wall timer (a second STOP
-    # racing the first is its own failure mode). Handle on bot._restopTimer;
-    # finishDigging cancels it so a stale re-STOP can never ABORT a fresh dig
-    # on another block (pos-mismatch).
-    # RESTOP-SCHED installer: resync-driven re-STOP at the blockUpdate
-    # listener site (proof the first STOP was processed), never a wall
-    # timer at START (a second STOP racing the first is its own failure).
+    # RESTOP-SCHED (REMOVED 2026-09-29): server verdicts proved the re-STOP
+    # ABORTs the dig it meant to save (lands while isDestroyingBlock=false,
+    # takes the ABORT path, clears the armed delayed-destroy). Vanilla sends
+    # ONE START + ONE STOP per swing. Installer now a no-op that only ensures
+    # the live no-op _schedRestop shape; never reinstalls the re-STOP.
     if "26.3 RESTOP-SCHED" not in s:
-        _sched_anchor = "    const eventName = `blockUpdate:${block.position}`\n    bot.on(eventName, onBlockUpdate)"
-        _sched_new = (
-            '    const eventName = `blockUpdate:${block.position}`\n'            "    // 26.3 RESTOP-SCHED: computed from the SERVER's own resync verdict, not\n"            '    // wall time. Every same-type resync is the server answering STOP with\n'            "    // 'not yet' — schedule the re-STOP 400ms after the last resync.\n"            '    try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n'            '    const _schedRestop = () => {\n'            '      try { if (bot._restopTimer) { try { clearTimeout(bot._restopTimer) } catch (_) {} } } catch (_) {}\n'            '      try {\n'            '        bot._restopTimer = setTimeout(() => {\n'            '          try {\n'            '            if (bot.targetDigBlock && bot.targetDigBlock.position.equals(block.position)) {\n'            "              bot._client.write('block_dig', { status: 2, location: block.position, face: bot.targetDigFace, sequence: _nextSeq() })\n"            '              try { console.log(`[dig-trace] RESTOP tgt=${block.position}`) } catch (_) {}\n'            '            }\n'            '          } catch (_) {}\n'            '        }, 400)\n'            '      } catch (_) {}\n'            '    }\n'            '    try {\n'            '      bot._restopResyncFn = (oldB, newB) => {\n'            '        try {\n'            '          if (newB && newB.type !== 0 && block.position.equals(bot.targetDigBlock?.position)) {\n'            '            try { console.log(`[dig-trace] RESYNC-SCHED tgt=${block.position}`) } catch (_) {}\n'            '            _schedRestop()\n'            '          }\n'            '        } catch (_) {}\n'            '      }\n'            '      bot.on(eventName, bot._restopResyncFn)\n'            '    } catch (_) {}\n'            '    bot.on(eventName, onBlockUpdate)\n'        )
-        if _sched_anchor in s:
-            s = s.replace(_sched_anchor, _sched_new, 1)
-        s = s.replace("      // 26.3 GHOST-BREAK FIX:",
-                      "      // 26.3 RESTOP-CANCEL: finishDigging ran, so the first STOP is out.\n"
-                      "      // Kill the +400ms re-STOP so it cannot ABORT a fresh dig that\n"
-                      "      // started on another block in the meantime (pos-mismatch ABORT).\n"
-                      "      try { if (bot._restopTimer) { clearTimeout(bot._restopTimer); bot._restopTimer = null } } catch (_) {}\n"
-                      "      // 26.3 GHOST-BREAK FIX:", 1)
+        print("[seqtruth] WARNING: restop anchor block missing (fresh digging.js?) — skipping restop install (removed)")
+    elif "_schedRestop = () =>" in s and "REMOVED 2026-09-29: no-op" not in s:
+        print("[seqtruth] WARNING: live re-STOP present but installer removed — hand-patch digging.js to no-op _schedRestop")
     open(mp, "w").write(s)
     print("[seqtruth] seq-truth installed")
 
