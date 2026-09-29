@@ -1537,6 +1537,48 @@ def ensure_mineflayer_stopproof(base):
     print("[stopproof] stop-proof installed")
 
 
+def ensure_loaded_gate(base):
+    """2026-09-29 LOADED-GATE: the jar drops dig packets while
+    hasClientLoaded() is false; only player_loaded opens it and the fork
+    never sends it. Re-apply hunk in src/agent/agent.js after fresh checkouts.
+    Marker-idempotent."""
+    ap = os.path.join(base, "src", "agent", "agent.js")
+    if not os.path.exists(ap):
+        print(f"[loadedgate] WARNING: {ap} missing")
+        return
+    s = open(ap).read()
+    if "2026-09-29 LOADED-GATE" in s and "player_loaded" in s:
+        print("[loadedgate] loaded-gate present -> no-op")
+        return
+    anchor = "this._suffocationInterval = setInterval(() => this._checkSuffocation(), 300);"
+    if anchor not in s:
+        print("[loadedgate] WARNING: spawn anchor not found")
+        return
+    hunk = anchor + """
+
+                // 26.3 LOADED-GATE (2026-09-29): the jar drops dig/START packets
+                // while hasClientLoaded() is false (waitingForRespawn or the
+                // 60-tick clientLoadedTimeoutTimer); it only clears when the
+                // client sends player_loaded (handleAcceptPlayerLoad), and the
+                // fork never sends it. Death re-arms the block. Send it once
+                // here (post-settle) + on every respawn so the gate opens.
+                try {
+                    this.bot._client.write('player_loaded', {});
+                    console.log('[LoadedGate] player_loaded sent (spawn).');
+                } catch (e) {
+                    console.log('[LoadedGate] send failed:', String((e && e.message) || e).slice(0, 80));
+                }
+                try {
+                    this.bot.on('respawn', () => {
+                        try { this.bot._client.write('player_loaded', {}); } catch (_) {}
+                        console.log('[LoadedGate] player_loaded sent (respawn).');
+                    });
+                } catch (_) {}"""
+    s = s.replace(anchor, hunk, 1)
+    open(ap, "w").write(s)
+    print("[loadedgate] loaded-gate installed")
+
+
 def ensure_mineflayer_driver_arbiter(base):
     """BOTCRAFT PORT (dirtyInputs backpressure v2): AI stamps bot._dirtyInputs on
     every control write; the physics tick clears it after simulating; loops
@@ -2228,6 +2270,7 @@ def main():
     ensure_mineflayer_driver_arbiter(BASE)
     ensure_mineflayer_toolproof(BASE)
     ensure_mineflayer_stopproof(BASE)
+    ensure_loaded_gate(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)
