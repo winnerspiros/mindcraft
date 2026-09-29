@@ -4574,6 +4574,50 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
             } catch (_) {}
         } catch (_) {}
         const _beforeName = block.name;
+        // HAND-GATE 2026-09-29: the server computes progress from the SERVER
+        // hand, and her selected slot keeps landing on food/chest at dig time
+        // (RCON SelectedItem read cooked_beef while digging stone). Wrong
+        // hand = /100 speed instead of /30, so STOP's 0.7 progress gate never
+        // qualifies and the dig resyncs forever. Verify via RCON BEFORE the
+        // swing; wrong class => force the right tool into hand via RCON
+        // replace (silent, proven) and re-verify once. Still wrong => fail
+        // honestly instead of burning 25s swinging with beef.
+        try {
+            const { rconCommand } = await import('../../utils/rcon.js');
+            const wantCls = /log|wood|plank/i.test(_beforeName) ? 'axe'
+                : /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i.test(_beforeName) ? 'shovel'
+                : /leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(_beforeName) ? null
+                : 'pickaxe';
+            if (wantCls) {
+                let hand = '';
+                try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                if (!handHas.includes(wantCls)) {
+                    log(bot, `Hand-gate: holding ${handHas || 'nothing'} for ${_beforeName} — forcing ${wantCls}.`);
+                    try {
+                        const { rconInventory } = await import('../../utils/rcon.js');
+                        const inv = await rconInventory(bot.username);
+                        const names = (inv || []).map(e => e.name);
+                        const pick = names.find(n => n.includes(wantCls) && /diamond|iron|stone|netherite/.test(n))
+                            || names.find(n => n.includes(wantCls));
+                        if (pick) {
+                            await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
+                            await new Promise(r => setTimeout(r, 800));
+                            let hand2 = '';
+                            try { hand2 = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                            const handHas2 = (hand2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                            if (!handHas2.includes(wantCls)) {
+                                log(bot, `Hand-gate: still holding ${handHas2 || 'nothing'} — skipping ${_beforeName} instead of swinging wrong.`);
+                                return false;
+                            }
+                        } else {
+                            log(bot, `Hand-gate: no ${wantCls} anywhere — skipping ${_beforeName}.`);
+                            return false;
+                        }
+                    } catch (_) {}
+                }
+            }
+        } catch (_) { /* RCON down => proceed, old behavior */ }
         try {
             await Promise.race([
                 // pt4: no digFace — digging.js armed nearest-point aim only
