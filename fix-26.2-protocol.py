@@ -1496,6 +1496,47 @@ def ensure_mineflayer_toolproof(base):
     print("[toolproof] tool-proof installed")
 
 
+def ensure_mineflayer_stopproof(base):
+    """2026-09-29 STOP-PROOF: the wire tap only covered the aim window, so the
+    STOP line never proved the FINISH packet reached the wire. Keep the tap
+    through the whole dig: clear the trace after the aim->START log (fresh
+    window for STOP), restore the original write in the STOPWAIT settle and
+    in stopDigging's abort path. Marker-idempotent."""
+    mp = os.path.join(base, "mineflayer", "lib", "plugins", "digging.js")
+    if not os.path.exists(mp):
+        print(f"[stopproof] WARNING: {mp} missing")
+        return
+    s = open(mp).read()
+    if "2026-09-29 STOP-PROOF" in s:
+        print("[stopproof] stop-proof present -> no-op")
+        return
+    old = "    try { bot._client.write = _origWrite } catch (_) {}"
+    if old not in s:
+        print("[stopproof] WARNING: write-restore anchor not found")
+        return
+    s = s.replace(old,
+        "    try { _trace.length = 0 } catch (_) {} // STOP-PROOF: aim pkts logged above; fresh window for the STOP verdict below", 1)
+    old2 = "      try { console.log(`[dig-trace] ANIM-SUMMARY tgt=${block.position} n=${_animStages.length} stages=${_animStages.join(',') || 'NONE'}`) } catch (_) {}"
+    if old2 not in s:
+        print("[stopproof] WARNING: anim-summary anchor not found")
+        return
+    s = s.replace(old2,
+        old2 + "\n      try { bot._client.write = _origWrite } catch (_) {} // STOP-PROOF restore: tap covered aim..STOP verdict", 1)
+    old3 = ("      swingInterval = null\n"
+            "      waitTimeout = null\n"
+            "      bot._client.write('block_dig', {")
+    if old3 not in s:
+        print("[stopproof] WARNING: abort anchor not found")
+        return
+    s = s.replace(old3,
+        ("      swingInterval = null\n"
+         "      waitTimeout = null\n"
+         "      try { bot._client.write = _origWrite } catch (_) {} // STOP-PROOF restore on abort too\n"
+         "      bot._client.write('block_dig', {"), 1)
+    open(mp, "w").write(s)
+    print("[stopproof] stop-proof installed")
+
+
 def ensure_mineflayer_driver_arbiter(base):
     """BOTCRAFT PORT (dirtyInputs backpressure v2): AI stamps bot._dirtyInputs on
     every control write; the physics tick clears it after simulating; loops
@@ -2186,6 +2227,7 @@ def main():
     ensure_pathfinder_baritone_astar(BASE)
     ensure_mineflayer_driver_arbiter(BASE)
     ensure_mineflayer_toolproof(BASE)
+    ensure_mineflayer_stopproof(BASE)
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)
