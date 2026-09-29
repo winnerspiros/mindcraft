@@ -1550,8 +1550,17 @@ def ensure_loaded_gate(base):
         print(f"[loadedgate] WARNING: {ap} missing")
         return
     s = open(ap).read()
-    if s.count("2026-09-29 LOADED-GATE") >= 1 and "player_loaded" in s:
+    # no-op ONLY when exactly one hunk is live (anchor once + one marker).
+    # Zero markers = fresh checkout -> install. 2+ markers = stale dupe ->
+    # fall through and let the FileNotFoundError-free path below... (install
+    # is skipped; dedupe happens by hand, then the gate no-ops again).
+    n_mark = s.count("LOADED-GATE (2026-09-29)")
+    n_hunk = s.count("player_loaded sent (spawn)")
+    if n_mark == 1 and n_hunk == 1 and "player_loaded" in s and s.count("this._suffocationInterval = setInterval(() => this._checkSuffocation(), 300);") == 1:
         print("[loadedgate] loaded-gate present -> no-op")
+        return
+    if n_mark >= 1 or n_hunk >= 1:
+        print(f"[loadedgate] WARNING: {n_mark} markers / {n_hunk} hunks live (dupe?) — NOT reinstalling; dedupe by hand")
         return
     anchor = "this._suffocationInterval = setInterval(() => this._checkSuffocation(), 300);"
     if anchor not in s:
