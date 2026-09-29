@@ -30,6 +30,16 @@ export class ActionManager {
         // saw interrupt_code, so a follow loop sleeping in setTimeout(500) ate
         // the whole 10s and died (05:37 suicide in front of the user). Now the
         // timer only starts after the action had a chance to notice.
+        // 2026-09-29: NEVER stopDigging from the manager. Digging-abort races
+        // the diggingTask promise: the abort REJECTS it, the rejection escapes
+        // the action body, and _executeAction's catch (or an un-awaited throw)
+        // exits the process. The dig's own 25s race + STOPWAIT-UPDATE path
+        // already ends every swing; an interrupt just sets the flag and lets
+        // the race report failure. requestInterrupt() already skips the ABORT
+        // for non-dig interrupters (swing-safe), so nothing is lost here.
+        const savedStopDigging = this.agent.bot.stopDigging;
+        try { this.agent.bot.stopDigging = () => {}; } catch (_) {}
+        try {
         this.agent.requestInterrupt();
         await new Promise(resolve => setTimeout(resolve, 700));
         if (!this.executing) return;
@@ -42,6 +52,9 @@ export class ActionManager {
             await new Promise(resolve => setTimeout(resolve, 300));
         }
         clearTimeout(timeout);
+        } finally {
+            try { this.agent.bot.stopDigging = savedStopDigging; } catch (_) {}
+        }
     } 
 
     cancelResume() {
