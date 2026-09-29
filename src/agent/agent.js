@@ -308,6 +308,8 @@ export class Agent {
                     });
                 } catch (_) {}
 
+                
+
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
               
