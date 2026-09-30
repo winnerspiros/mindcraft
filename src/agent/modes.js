@@ -321,7 +321,7 @@ const modes_list = [
                 return;
             }
             const enemy = world.getNearestEntityWhere(agent.bot,
-                entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 14);
+                entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 16);
             if (enemy) {
                 // 26.3: close-range bypass (see cowardice) — within 5 blocks just
                 // fight; the strict no-dig path check sat out real attacks.
@@ -329,7 +329,7 @@ const modes_list = [
                 if ((close || await world.isClearPath(agent.bot, enemy))) {
                     say(agent, `Fighting ${enemy.name}!`);
                     execute(this, agent, async () => {
-                        await skills.defendSelf(agent.bot, 14);
+                        await skills.defendSelf(agent.bot, 16);
                     });
                 }
                 return;

@@ -1718,10 +1718,47 @@ export const actionsList = [
         })
     },
     {
+        name: '!describe',
+        description: 'Report what is around you right now: nearby entities (players, mobs) with distance, the ground and sky, and the surface blocks nearby. Read-only — it never moves, digs, or attacks. Note: the server hides real ores behind stone in your view, so a "stone" reading may be disguised ore; verify before you dig.',
+        params: {'radius': { type: 'int', description: 'How far to look, in blocks.', default: 16, domain: [4, 48] }},
+        perform: runAsAction(async (agent, radius) => {
+            const bot = agent.bot;
+            const s = await skills.surveySurroundings(bot, radius || 16);
+            const parts = [];
+            if (s.entities.length) {
+                parts.push('Nearby: ' + s.entities.map(e => {
+                    const kind = e.player ? 'player' : (e.hostile ? 'hostile mob' : 'mob');
+                    return `${e.name.replace(/_/g, ' ')} (${kind}, ${e.dist}m)`;
+                }).join(', '));
+            } else {
+                parts.push('Nothing alive within range.');
+            }
+            parts.push(`Ground under me: ${s.ground}. Sky: ${s.sky}.` +
+                (s.time != null ? ` Time of day: ${s.time}.` : ''));
+            const bl = Object.entries(s.blocks).sort((a, b) => b[1] - a[1]).slice(0, 8)
+                .map(([n, c]) => `${n.replace(/_/g, ' ')} x${c}`);
+            if (bl.length) parts.push('Surface nearby: ' + bl.join(', ') + '.');
+            if (s.notes && s.notes.length) parts.push('(' + s.notes.join('; ') + ')');
+            return parts.join('\n');
+        })
+    },
+    {
         name: '!defendSelf',
         description: 'Attack any hostile mob within range that is hurting you.',
-        params: {'range': { type: 'float', default: 9, description: 'How far to look for threats (optional).', domain: [0, 64] }},
+        params: {'range': { type: 'float', default: 16, description: 'How far to look for threats (optional). 16 matches defendBlind, so a pillager closing from bow range is inside the scan.', domain: [0, 64] }},
         perform: runAsAction(async (agent, range) => {
+            // SELF-INTERRUPT FIX (2026-09-30): when self_defense mode is
+            // ALREADY fighting, !defendSelf used to interrupt it and then
+            // re-scan with eyes only — and under 26.3 entity-withholding that
+            // scan is empty, so it reported "No enemies nearby" while a
+            // pillager was actively shooting her. Chain instead: the running
+            // mode owns the fight; re-entering just cancels the old one.
+            const modes = agent.bot?.modes?.modes || {};
+            const sd = modes['self_defense'];
+            if (sd && sd.active) {
+                console.log('!defendSelf: self_defense already fighting — not re-entering.');
+                return;
+            }
             await skills.defendSelf(agent.bot, range);
         })
     },
