@@ -2,6 +2,7 @@ import * as mc from "../../utils/mcdata.js";
 import * as world from './world.js';
 import { canOp } from '../../utils/server_context.js';
 import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
+import * as K from '../../utils/mcknowledge.js';
 
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
@@ -2649,10 +2650,29 @@ function _craftingShortfall(bot, itemName) {
     return bestMissing || [];
 }
 
+// ENSURE A STATION EXISTS (2026-09-30): enchanting, brewing and the anvil all
+// REFUSED to work unless the block was already standing in the world, even when
+// she was holding one. Only the crafting table and furnace ever placed their
+// own — and those had the reach bug. One helper for all of them: find a nearby
+// one, else place the one she is carrying within reach, else say what she needs.
+export async function ensureStation(bot, blockName, range = 16) {
+    let b = world.getNearestBlock(bot, blockName, range);
+    if (b) return b;
+    const have = world.getInventoryCounts(bot)[blockName] || 0;
+    if (have > 0) {
+        const pos = nearestReachableSpot(bot, blockName);
+        try { await placeBlock(bot, blockName, pos.x, pos.y, pos.z); } catch (_) {}
+        b = world.getNearestBlock(bot, blockName, range);
+        if (b) return b;
+    }
+    return null;
+}
+
 // A spot she can actually place a block on: within 2 blocks of her feet, on
 // top of something solid, with air where the block would go. Falls back to the
 // block directly under her, which is always in reach.
-function nearestReachableSpot(bot) {
+// `notOn` optionally excludes an existing block name at the target cell.
+function nearestReachableSpot(bot, notOn = null) {
     const p = bot.entity.position;
     const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
     const solid = (x, y, z) => { try { const b = bot.blockAt(new Vec3(x, y, z)); return b && b.boundingBox === 'block' && b.name !== 'air'; } catch (_) { return false; } };
@@ -2662,6 +2682,7 @@ function nearestReachableSpot(bot) {
         for (let dx = -2; dx <= 2; dx++) {
             for (let dz = -2; dz <= 2; dz++) {
                 const x = bx + dx, y = by + dy, z = bz + dz;
+                if (notOn) { try { if (bot.blockAt(new Vec3(x, y, z))?.name === notOn) continue; } catch (_) {} }
                 if (air(x, y, z) && solid(x, y - 1, z)) return new Vec3(x, y, z);
             }
         }
@@ -2833,10 +2854,13 @@ export async function smeltItem(bot, itemName, num=1) {
         // Try to place furnace
         let hasFurnace = world.getInventoryCounts(bot)['furnace'] > 0;
         if (hasFurnace) {
-            let pos = world.getNearestFreeSpace(bot, 1, furnaceRange);
-            await placeBlock(bot, 'furnace', pos.x, pos.y, pos.z);
+            // Same reach bug the crafting table had: getNearestFreeSpace can
+            // return a cell 3 blocks OVERHEAD, placeBlock then does nothing and
+            // the furnace is never found. Place within reach instead.
+            let pos = nearestReachableSpot(bot, 'furnace');
+            try { await placeBlock(bot, 'furnace', pos.x, pos.y, pos.z); } catch (_) {}
             furnaceBlock = world.getNearestBlock(bot, 'furnace', furnaceRange);
-            placedFurnace = true;
+            placedFurnace = !!furnaceBlock;   // only claim it if it really landed
         }
     }
     if (!furnaceBlock){
@@ -2870,28 +2894,64 @@ export async function smeltItem(bot, itemName, num=1) {
         return false;
     }
 
-    // fuel the furnace
+    // FUEL (2026-09-30): she now understands burn time, picks the best fuel she
+    // owns, and GOES AND MAKES some when she has none, instead of just giving
+    // up. She also says how long the batch will take and whether the fuel will
+    // actually last, so the wait is explained rather than mysterious.
     if (!furnace.fuelItem()) {
-        let fuel = mc.getSmeltingFuel(bot);
+        let fuel = mc.getSmeltingFuel(bot);          // best by burn seconds
         if (!fuel) {
-            log(bot, `You have no fuel to smelt ${itemName}, you need coal, charcoal, or wood.`);
-            if (placedFurnace)
-                await collectBlock(bot, 'furnace', 1);
+            // Nothing burnable in her pack — make some, or go get some.
+            const make = K.fuelSheCouldMake(bot.inventory.items());
+            if (make && !make.needsFurnace) {
+                log(bot, `No fuel, but I can make ${make.make} from ${make.need} ${String(make.from).replace(/_/g, ' ')}.`);
+                await craftRecipe(bot, make.make, 1, true);
+                fuel = mc.getSmeltingFuel(bot);
+            } else if (make && make.needsFurnace && furnace) {
+                // charcoal: smelt a log in the furnace we are already standing at
+                log(bot, `No fuel — smelting a ${String(make.from).replace(/_/g, ' ')} into charcoal first.`);
+                try {
+                    await furnace.putInput(mc.getItemId(make.from), null, 1);
+                    await wait(bot, Math.ceil((K.SMELT_SECONDS + 2000) / 1000) * 1000);
+                    const out = await furnace.takeOutput();
+                    for (const o of (out || [])) {
+                        if (o.name === 'charcoal') {
+                            await bot.equip(o.type, 'hand').catch(() => {});
+                            await furnace.putFuel(o.type, null, 1).catch(() => {});
+                        }
+                    }
+                } catch (_) {}
+                fuel = mc.getSmeltingFuel(bot);
+            }
+        }
+        if (!fuel) {
+            // Last resort: gather wood, which is always fuel.
+            log(bot, `I have nothing to burn. I need coal, charcoal, or wood — going to get some.`);
+            try {
+                await goToNearestBlock(bot, 'oak_log', 2, 32);
+                await collectBlock(bot, 'oak_log', 1);
+            } catch (_) {}
+            fuel = mc.getSmeltingFuel(bot);
+        }
+        if (!fuel) {
+            log(bot, `Still no fuel for ${itemName}. I need coal, charcoal, or wood — I could not find any nearby.`);
+            if (placedFurnace) await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        log(bot, `Using ${fuel.name} as fuel.`);
 
-        const put_fuel = Math.ceil(num / mc.getFuelSmeltOutput(fuel.name));
-
-        if (fuel.count < put_fuel) {
-            log(bot, `You don't have enough ${fuel.name} to smelt ${num} ${itemName}; you need ${put_fuel}.`);
-            if (placedFurnace)
-                await collectBlock(bot, 'furnace', 1);
+        const secs = K.fuelSeconds(fuel.name);
+        const per = K.smeltsPerFuel(fuel.name);
+        const need = Math.max(1, Math.ceil(num / Math.max(1, per)));
+        const est = K.estimateSmeltSeconds({ num });
+        log(bot, `Using ${fuel.name} as fuel (${secs}s of burn each). Smelting ${num} ${itemName} takes about ${est}s.`);
+        if (fuel.count < need) {
+            log(bot, `I need ${need} ${fuel.name} for ${num} ${itemName} but only have ${fuel.count}.`);
+            if (placedFurnace) await collectBlock(bot, 'furnace', 1);
             return false;
         }
-        await furnace.putFuel(fuel.type, null, put_fuel);
-        log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
-        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
+        await furnace.putFuel(fuel.type, null, need);
+        log(bot, `Added ${need} ${mc.getItemName(fuel.type)} to furnace fuel.`);
+        console.log(`Added ${need} ${mc.getItemName(fuel.type)} to furnace fuel.`)
     }
     // put the items in the furnace
     await furnace.putInput(mc.getItemId(itemName), null, num);
@@ -9227,9 +9287,11 @@ export async function enchantItem(bot, itemName, choice=null) {
      * @returns {Promise<boolean>} true if enchanted, false otherwise.
      * @example await skills.enchantItem(bot, "diamond_sword");
      **/
-    const tableBlock = world.getNearestBlock(bot, 'enchanting_table', 32);
+    // Place the table she is CARRYING instead of refusing: she used to demand
+    // one already be standing in the world even with it in her pack.
+    const tableBlock = await ensureStation(bot, 'enchanting_table', 32);
     if (!tableBlock) {
-        log(bot, 'No enchanting table nearby. Craft one (4 obsidian + 2 diamond + 1 book) and place it.');
+        log(bot, 'No enchanting table nearby and I do not have one. I need 4 obsidian, 2 diamond and 1 book to craft it.');
         return false;
     }
     await goToNearestBlock(bot, 'enchanting_table', 4, 32);
@@ -9292,11 +9354,19 @@ export async function useAnvil(bot, action, itemName1, itemName2=null, rename=nu
      * @returns {Promise<boolean>} true if the anvil action succeeded.
      * @example await skills.useAnvil(bot, "combine", "diamond_sword", "enchanted_book");
      **/
-    const anvilBlock = world.getNearestBlock(bot, 'anvil', 16)
+    // Any anvil tier counts, and she places the one she is carrying rather
+    // than demanding one already be standing there.
+    let anvilBlock = world.getNearestBlock(bot, 'anvil', 16)
         || world.getNearestBlock(bot, 'chipped_anvil', 16)
         || world.getNearestBlock(bot, 'damaged_anvil', 16);
     if (!anvilBlock) {
-        log(bot, 'No anvil nearby. Craft one (3 iron_block + 4 iron_ingot) and place it.');
+        for (const tier of ['anvil', 'chipped_anvil', 'damaged_anvil']) {
+            anvilBlock = await ensureStation(bot, tier, 16);
+            if (anvilBlock) break;
+        }
+    }
+    if (!anvilBlock) {
+        log(bot, 'No anvil nearby and I do not have one. I need 3 iron blocks and 4 iron ingots to craft it.');
         return false;
     }
     await goToPosition(bot, anvilBlock.position.x, anvilBlock.position.y, anvilBlock.position.z, 3);
@@ -9331,7 +9401,14 @@ export async function useAnvil(bot, action, itemName1, itemName2=null, rename=nu
         log(bot, `Anvil ${action} done for ${itemName1}.`);
         return true;
     } catch (err) {
-        log(bot, `Anvil failed: ${err.message}`);
+        // Renaming/combining costs XP levels. That is correct game behaviour, not
+        // a failure, so say what is needed instead of leaving a bare false.
+        if (/not have enough xp/i.test(String(err && err.message))) {
+            const need = action === 'rename' ? 1 : 2;
+            log(bot, `The anvil needs XP levels — ${need} for a ${action}. I have ${bot.experience ? bot.experience.level : 0}. I need to gain a little experience first.`);
+        } else {
+            log(bot, `Anvil failed: ${err.message}`);
+        }
         return false;
     }
 }
@@ -9487,7 +9564,7 @@ export async function brewPotion(bot, ingredientName, count=1) {
      * @example await skills.brewPotion(bot, "sugar", 3);
      **/
     count = Math.max(1, Math.min(3, parseInt(count) || 1));
-    const stand = world.getNearestBlock(bot, 'brewing_stand', 16);
+    const stand = await ensureStation(bot, 'brewing_stand', 16);
     if (!stand) {
         log(bot, 'No brewing_stand nearby. Craft one (1 blaze_rod + 3 cobblestone) and place it.');
         return false;

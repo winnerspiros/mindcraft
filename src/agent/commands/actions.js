@@ -1719,6 +1719,35 @@ export const actionsList = [
         })
     },
     {
+        name: '!fuel',
+        description: 'Report what you can burn in a furnace, how long each lasts, what it can smelt, and the best choice for a given job. Read-only.',
+        params: {'smelt': { type: 'int', description: 'Optional: how many items you want to smelt, to check the fuel will last.', default: 0, domain: [0, 2304] }},
+        perform: runAsAction(async (agent, smelt) => {
+            const items = agent.bot.inventory.items();
+            const opts = mc_knowledge.fuelOptions(items);
+            const out = [];
+            if (!opts.length) {
+                out.push('I have nothing I can burn right now.');
+                const make = mc_knowledge.fuelSheCouldMake(items);
+                if (make) out.push(`I could make ${mc_knowledge.displayName(make.make)} from ${make.need} ${mc_knowledge.displayName(make.from)}.`);
+                else out.push('I need coal, charcoal, or wood.');
+                return out.join(' ');
+            }
+            out.push('I can burn: ' + opts.map(f => `${mc_knowledge.displayName(f.name)} x${f.count} (${f.seconds}s each, smelts ${f.smelts})`).join(', ') + '.');
+            out.push('Best choice right now: ' + mc_knowledge.displayName(opts[0].name) + '.');
+            if (smelt > 0) {
+                const best = opts[0];
+                const c = mc_knowledge.fuelCovers(best.name, best.count, smelt);
+                const secs = mc_knowledge.estimateSmeltSeconds({ num: smelt });
+                out.push(`To smelt ${smelt} takes about ${secs}s.`);
+                out.push(c.covers
+                    ? `My ${mc_knowledge.displayName(best.name)} will cover it.`
+                    : `I would be ${c.shortBy} short — I need more ${mc_knowledge.displayName(best.name)}.`);
+            }
+            return out.join(' ');
+        })
+    },
+    {
         name: '!myGear',
         description: 'Report exactly what you are carrying and wearing, read from the server rather than your own (broken) inventory view: every item with its count, each armor slot, your offhand, and what is missing.',
         perform: runAsAction(async (agent) => {
