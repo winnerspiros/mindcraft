@@ -1,4 +1,5 @@
 import minecraftData from 'minecraft-data';
+import * as mcknowledge from './mcknowledge.js';
 import settings from '../agent/settings.js';
 import { createBot } from 'mineflayer';
 import prismarine_items from 'prismarine-item';
@@ -452,14 +453,18 @@ export function isSmeltable(itemName) {
     return itemName.includes('raw') || itemName.includes('log') || misc_smeltables.includes(itemName);
 }
 
+// 2026-09-30: replaced the hardcoded three-tier list with the real burn-time
+// table in mcknowledge. The old version ranked by name pattern, so it would
+// happily pick a single plank over a block of coal, and it did not know that
+// sticks beat planks or that a coal_block lasts 800s. bestFuelIn() judges by
+// seconds of burn, so the genuinely best fuel wins without a preference list.
 export function getSmeltingFuel(bot) {
-    let fuel = bot.inventory.items().find(i => i.name === 'coal' || i.name === 'charcoal' || i.name === 'blaze_rod')
-    if (fuel)
-        return fuel;
-    fuel = bot.inventory.items().find(i => i.name.includes('log') || i.name.includes('planks'))
-    if (fuel)
-        return fuel;
-    return bot.inventory.items().find(i => i.name === 'coal_block' || i.name === 'lava_bucket');
+    const best = mcknowledge.bestFuelIn(bot.inventory.items());
+    if (best) {
+        const item = bot.inventory.items().find(i => i.name === best.name);
+        if (item) return item;
+    }
+    return null;
 }
 
 export function getFuelSmeltOutput(fuelName) {
