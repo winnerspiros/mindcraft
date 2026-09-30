@@ -158,11 +158,11 @@ export const actionsList = [
         name: '!searchForBlock',
         description: 'Find and go to the nearest block of a given type in a given range.',
         params: {
-            'type': { type: 'BlockName', description: 'The block type to go to.' },
-            'search_range': { type: 'float', description: 'The range to search for the block. Minimum 32.', domain: [10, 512] }
+            'block_type': { type: 'BlockName', description: 'The block type to go to.' },
+            'range': { type: 'float', description: 'The range to search for the block. Minimum 32.', domain: [10, 512], default: 32 }
         },
         perform: runAsAction(async (agent, block_type, range) => {
-            if (range < 32) {
+            if (typeof range !== 'number' || range < 32) {
                 skills.log(agent.bot, `Minimum search range is 32.`);
                 range = 32;
             }
@@ -173,8 +173,8 @@ export const actionsList = [
         name: '!searchForEntity',
         description: 'Find and go to the nearest entity of a given type in a given range.',
         params: {
-            'type': { type: 'string', description: 'The type of entity to go to.' },
-            'search_range': { type: 'float', description: 'The range to search for the entity.', domain: [32, 512] }
+            'entity_type': { type: 'string', description: 'The type of entity to go to.' },
+            'range': { type: 'float', description: 'The range to search for the entity.', domain: [32, 512], default: 32 }
         },
         perform: runAsAction(async (agent, entity_type, range) => {
             await skills.goToNearestEntity(agent.bot, entity_type, 4, range);
@@ -1466,7 +1466,7 @@ export const actionsList = [
     {
         name: '!stay',
         description: 'Stay in the current location no matter what. Pauses all modes.',
-        params: {'type': { type: 'int', description: 'The number of seconds to stay. -1 for forever.', domain: [-1, Number.MAX_SAFE_INTEGER] }},
+        params: {'seconds': { type: 'int', description: 'The number of seconds to stay. -1 for forever.', domain: [-1, Number.MAX_SAFE_INTEGER], default: -1 }},
         perform: runAsAction(async (agent, seconds) => {
             await skills.stay(agent.bot, seconds);
         })
@@ -2316,7 +2316,9 @@ export const actionsList = [
         params: {
             'entity_type': { type: 'string', description: 'Entity to summon: wither, ender_dragon, creeper, zombie, cow, wolf, ... (no minecraft: prefix needed).' },
             'count': { type: 'int', default: 1, description: 'How many. YOUR call: one is cute, a pile lags the server and kills innocents.' },
-            'consent': { type: 'string', description: 'Boss-fight consent word. ONLY "boss-ok" unlocks wither/ender_dragon (cap 1). Omit for everything else.' },
+            // NOTE: without a `default` this counts as REQUIRED, so plain
+            // `!summon("cow")` was rejected with "requires at least 2 args".
+            'consent': { type: 'string', default: '', description: 'Boss-fight consent word. ONLY "boss-ok" unlocks wither/ender_dragon (cap 1). Omit for everything else.' },
         },
         perform: runAsAction(async (agent, entity_type, count, consent) => {
             return await skills.summonMob(agent.bot, entity_type, count, null, consent);
