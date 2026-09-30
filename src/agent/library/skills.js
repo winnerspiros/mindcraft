@@ -2752,6 +2752,13 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
             } else {
                 log(bot, `${itemName} has no craftable recipe — find it, loot it, or trade for it instead.`);
             }
+            // The shortfall is empty but the craft still failed: RCON says she
+            // HAS everything and mineflayer's own matcher still refused, because
+            // 26.3's client inventory view is broken. Say that honestly instead
+            // of letting it look like she is missing materials.
+            if (!missing.length) {
+                log(bot, `I have the materials for ${itemName} (server confirms), but my own inventory view on this version is broken so I cannot use the crafting grid. Ask your beloved to craft it, or try again after a relog.`);
+            }
         }
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
