@@ -4,6 +4,7 @@ import * as buildsense from '../library/buildsense.js';
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import { researchBuildTopic } from '../../utils/research.js';
+import * as mc_knowledge from '../../utils/mcknowledge.js';
 import { addBrowserViewer, removeBrowserViewer, isViewerOn } from '../vision/browser_viewer.js';
 import Vec3 from 'vec3';
 import settings from '../settings.js';
@@ -1718,6 +1719,34 @@ export const actionsList = [
         })
     },
     {
+        name: '!findCave',
+        description: 'Find a real cave near you — an enclosed space with a rock floor, at least 2 blocks of headroom and rock overhead — and walk to it. Refuses trees, overhangs and player-built roofs; a 1-wide tunnel does not count as a cave. Limited to the chunks you can see (~64 blocks).',
+        params: {'range': { type: 'int', description: 'Search area around you, in blocks.', default: 32, domain: [8, 64] }},
+        perform: runAsAction(async (agent, range) => {
+            const c = await skills.findCave(agent.bot, range || 32);
+            if (!c) return 'No cave in the chunks I can see. There may be one further out — I only see about 64 blocks.';
+            return `Went to the cave at (${c.x}, ${c.y}, ${c.z}) — ${c.floor} blocks of floor, ${c.headroom} high.`;
+        })
+    },
+    {
+        name: '!whatIs',
+        description: 'Look up any Minecraft block, item or entity by name and report what it is — its proper name, what tool digs it, what it drops, its size, whether it is hostile. Works for things you cannot currently see.',
+        params: {'name': { type: 'string', description: 'Block, item or entity name, e.g. "diamond ore", "pillager", "oak log".' }},
+        perform: runAsAction(async (agent, name) => {
+            const d = mc_knowledge.describeThing(name);
+            if (!d) return `I have never heard of "${name}" — it is not in the Minecraft registry.`;
+            const bits = [`${d.display} (${d.name}, ${d.kind})`];
+            if (d.material) bits.push(`mined with ${d.material.replace('mineable/', '')}`);
+            if (d.hardness != null) bits.push(`hardness ${d.hardness}`);
+            if (d.drops && d.drops.length) bits.push(`drops ${d.drops.join(', ')}`);
+            if (d.category) bits.push(d.category === 'hostile' ? 'a hostile mob' : d.category);
+            if (d.width != null) bits.push(`${d.width} wide x ${d.height} high`);
+            if (d.lightLevel) bits.push(`emits light ${d.lightLevel}`);
+            if (d.shape && d.shape !== 'block') bits.push(`shape: ${d.shape}`);
+            return bits.join('; ') + '.';
+        })
+    },
+    {
         name: '!describe',
         description: 'Report what is around you right now: nearby entities (players, mobs) with distance, the ground and sky, and the surface blocks nearby. Read-only — it never moves, digs, or attacks. Note: the server hides real ores behind stone in your view, so a "stone" reading may be disguised ore; verify before you dig.',
         params: {'radius': { type: 'int', description: 'How far to look, in blocks.', default: 16, domain: [4, 48] }},
@@ -1728,12 +1757,14 @@ export const actionsList = [
             if (s.entities.length) {
                 parts.push('Nearby: ' + s.entities.map(e => {
                     const kind = e.player ? 'player' : (e.hostile ? 'hostile mob' : 'mob');
-                    return `${e.name.replace(/_/g, ' ')} (${kind}, ${e.dist}m)`;
+                    // proper registry display name, not the raw snake_case id
+                    const label = e.player ? mc_knowledge.displayPlayer(bot, e.name) : mc_knowledge.displayName(e.name);
+                    return `${label} (${kind}, ${e.dist}m)`;
                 }).join(', '));
             } else {
                 parts.push('Nothing alive within range.');
             }
-            parts.push(`Ground under me: ${s.ground}. Sky: ${s.sky}.` +
+            parts.push(`Ground under me: ${mc_knowledge.displayName(s.ground)}. Sky: ${s.sky}.` +
                 (s.time != null ? ` Time of day: ${s.time}.` : ''));
             const bl = Object.entries(s.blocks).sort((a, b) => b[1] - a[1]).slice(0, 8)
                 .map(([n, c]) => `${n.replace(/_/g, ' ')} x${c}`);
