@@ -1719,6 +1719,23 @@ export const actionsList = [
         })
     },
     {
+        name: '!myFurnace',
+        description: 'Tell you about the furnace you use: where it is, whether it is still there, what is in it and what you have made. Read-only.',
+        perform: runAsAction(async (agent) => {
+            const skills = await import('../library/skills.js');
+            return await skills.checkFurnace(agent.bot);
+        })
+    },
+    {
+        name: '!collectFurnace',
+        description: 'Go to the furnace you remember and take out the finished items, plus anything left waiting.',
+        params: {'item': { type: 'string', description: 'Optional: the specific item you want from the furnace.', default: 'any' }},
+        perform: runAsAction(async (agent, item) => {
+            const skills = await import('../library/skills.js');
+            return await skills.collectFurnace(agent.bot, item === 'any' ? null : item);
+        })
+    },
+    {
         name: '!fuel',
         description: 'Report what you can burn in a furnace, how long each lasts, what it can smelt, and the best choice for a given job. Read-only.',
         params: {'smelt': { type: 'int', description: 'Optional: how many items you want to smelt, to check the fuel will last.', default: 0, domain: [0, 2304] }},
