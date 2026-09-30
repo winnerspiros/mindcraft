@@ -139,6 +139,104 @@ export async function rconNearbyEntities(name, radius = 24) {
     return list;
 }
 
+// ---- PLAYER APPEARANCE (2026-09-30) ------------------------------------
+// She cannot see ANY of this client-side on 26.3: bot.entities and
+// bot.players are withheld, so equipment, carried items and head rotation are
+// all invisible to her. RCON is the only source. Verified live against 26.3:
+//
+//   Rotation  -> [yaw, pitch]                        (camelCase, works)
+//   equipment -> {offhand, head, chest, legs, feet}  (LOWERCASE in 26.3;
+//                capital-E "Equipment" returns "Found no elements matching")
+//   Inventory -> [{Slot: Nb, id: "minecraft:x", count: N}]
+//
+// NOT AVAILABLE in 26.3 (all return "Found no elements matching"):
+//   SelectedItem, HandItems, ArmorItems, items
+// ...so which SLOT a player has selected cannot be read. She can see what they
+// carry and what they wear, never what is in their main hand right now.
+//
+// Enchantments / custom names / lore are extra keys on the SAME stack NBT, so
+// they arrive inline with no extra call. Keep the raw string: a caller that
+// wants to report "Sharpness V" needs the unmodified payload.
+//
+// CACHED DELIBERATELY AGGRESSIVELY: a full inventory is a large NBT payload per
+// player, and equipment changes on a human timescale (seconds to minutes), not
+// a tick scale. 5s for gear, 1.2s for rotation.
+const _gearCache = {};
+const GEAR_CACHE_MS = 5000;
+const _rotCache = {};
+const ROT_CACHE_MS = 1200;
+
+// Strip "minecraft:" and return {id, count} from a stack snippet like
+// {id: "minecraft:diamond_sword", count: 1} — or null if absent.
+function parseStack(frag) {
+    if (!frag) return null;
+    const id = String(frag).match(/id:\s*"([^"]+)"/);
+    if (!id) return null;
+    const c = String(frag).match(/count:\s*(\d+)/);
+    return { id: id[1].replace(/^minecraft:/, ''), count: c ? parseInt(c[1], 10) : 1, raw: String(frag) };
+}
+
+// What a player is WEARING (armor + offhand) and CARRYING (inventory summary).
+export async function rconPlayerGear(name) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safe) return null;
+    const now = Date.now();
+    if (_gearCache[safe] && now - _gearCache[safe].t < GEAR_CACHE_MS) return _gearCache[safe].v;
+    const v = { name: safe, wearing: {}, offhand: null, carrying: [], raw: {} };
+    // equipment (LOWERCASE on 26.3) — each slot is {id, count}
+    try {
+        const eq = String(await rconCommand(`data get entity ${safe} equipment`, 5000));
+        v.raw.equipment = eq;
+        // Parse WITHOUT backslash escapes: an earlier version used
+        // new RegExp(slot + ':\\s*\\{...\\}') and the escapes were silently
+        // stripped when the file was written, producing the literal pattern
+        // ":s*{([^}]*)}" which never matched — so armor read as {} while the
+        // offhand (a plain regex literal) worked. String-slicing on the slot
+        // name has no escape sequences to lose.
+        for (const slot of ['head', 'chest', 'legs', 'feet']) {
+            const key = slot + ': {';
+            const i = eq.indexOf(key);
+            if (i < 0) continue;
+            const start = i + key.length;
+            const end = eq.indexOf('}', start);
+            if (end < 0) continue;
+            const s = parseStack(eq.slice(start, end));
+            if (s) v.wearing[slot] = s;
+        }
+        const om = eq.match(/offhand:\s*\{([^}]*)\}/);
+        if (om) v.offhand = parseStack(om[1]);
+    } catch (_) {}
+    // Inventory — [{Slot: Nb, id: "minecraft:x", count: N}, ...]
+    try {
+        const inv = String(await rconCommand(`data get entity ${safe} Inventory`, 5000));
+        v.raw.inventory = inv;
+        const re = /\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"([^"]+)"\s*,?\s*count:\s*(\d+)\s*,?/g;
+        let m;
+        while ((m = re.exec(inv)) !== null) {
+            v.carrying.push({ slot: parseInt(m[1], 10), id: m[2].replace(/^minecraft:/, ''), count: parseInt(m[3], 10) });
+        }
+    } catch (_) {}
+    _gearCache[safe] = { t: now, v };
+    return v;
+}
+
+// Head rotation: {yaw, pitch} in degrees. She uses this for "where are they
+// LOOKING", which she cannot derive client-side on 26.3.
+export async function rconPlayerRotation(name) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safe) return null;
+    const now = Date.now();
+    if (_rotCache[safe] && now - _rotCache[safe].t < ROT_CACHE_MS) return _rotCache[safe].v;
+    let v = null;
+    try {
+        const out = String(await rconCommand(`data get entity ${safe} Rotation`, 4000));
+        const m = out.match(/\[(-?[\d.]+)f?,\s*(-?[\d.]+)f?\]/);
+        if (m) v = { yaw: parseFloat(m[1]), pitch: parseFloat(m[2]) };
+    } catch (_) {}
+    _rotCache[safe] = { t: now, v };
+    return v;
+}
+
 // Server-truth inventory (2026-09-27): client items() is blind on 26.3 (Slot
 // decode bug reads 0 [] while RCON holds a real kit), so placement/dig verbs
 // that gate on carried blocks must consult the server. Cached a few seconds

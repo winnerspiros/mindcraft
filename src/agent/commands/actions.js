@@ -1719,6 +1719,61 @@ export const actionsList = [
         })
     },
     {
+        name: '!whoIs',
+        description: 'Look at who is nearby and report what they are: how far away, which way they are facing, what they are wearing, what they are carrying, and whether they are armed. Read-only.',
+        params: {
+            'name': { type: 'string', description: 'Player name, or leave empty for everyone nearby.' },
+            'radius': { type: 'int', description: 'How far to look, in blocks.', default: 24, domain: [4, 64] }
+        },
+        perform: runAsAction(async (agent, name, radius) => {
+            const bot = agent.bot;
+            const R = radius || 24;
+            const { rconNearbyEntities, rconPlayerGear, rconPlayerRotation } = await import('../../utils/rcon.js');
+            const near = await rconNearbyEntities(bot.username, R);
+            // players only: mob names never carry gear/rotation
+            let targets = near.filter(e => e.name !== String(bot.username).toLowerCase());
+            if (name) {
+                const want = String(name).toLowerCase();
+                targets = targets.filter(e => e.name === want);
+                if (!targets.length) return `${name} is not within ${R} blocks of me.`;
+            }
+            if (!targets.length) return `Nobody within ${R} blocks.`;
+            const out = [];
+            for (const t of targets) {
+                const me = bot.entity.position;
+                const d = Math.hypot(t.x - me.x, t.y - me.y, t.z - me.z);
+                const label = mc_knowledge.displayPlayer(bot, t.name);
+                const bits = [`${label} (${d.toFixed(1)}m)`];
+                const gear = await rconPlayerGear(t.name);
+                const rot = await rconPlayerRotation(t.name);
+                if (rot) {
+                    // yaw 0 = south (+z), 90 = west (-x); report compass-ish
+                    const dirs = ['south', 'south-west', 'west', 'north-west', 'north', 'north-east', 'east', 'south-east'];
+                    const idx = Math.round(((rot.yaw % 360) + 360) % 360 / 45) % 8;
+                    bits.push(`facing ${dirs[idx]}${Math.abs(rot.pitch) > 20 ? (rot.pitch < 0 ? ' and up' : ' and down') : ''}`);
+                }
+                if (gear) {
+                    const w = gear.wearing || {};
+                    const worn = ['head', 'chest', 'legs', 'feet']
+                        .filter(s => w[s]).map(s => `${s}: ${mc_knowledge.displayName(w[s].id)}`);
+                    if (worn.length) bits.push(`wearing ${worn.join(', ')}`);
+                    if (gear.offhand) bits.push(`offhand ${mc_knowledge.displayName(gear.offhand.id)}`);
+                    const carry = (gear.carrying || []).map(c => `${mc_knowledge.displayName(c.id)}${c.count > 1 ? ' x' + c.count : ''}`);
+                    if (carry.length) bits.push(`carrying ${carry.join(', ')}`);
+                    const swords = carry.some(c => /sword|axe$/i.test(c));
+                    if (swords) bits.push('ARMED');
+                    // enchantment/NBT keys ride along on the raw stack
+                    const ench = (gear.raw && gear.raw.inventory || '').match(/enchantments:\s*\[[^\]]*\]/);
+                    if (ench) bits.push('has enchantments');
+                    const named = (gear.raw && gear.raw.inventory || '').match(/custom_name:\s*"([^"]+)"/);
+                    if (named) bits.push(`named "${named[1]}"`);
+                }
+                out.push(bits.join('; ') + '.');
+            }
+            return out.join('\n');
+        })
+    },
+    {
         name: '!findCave',
         description: 'Find a real cave near you — an enclosed space with a rock floor, at least 2 blocks of headroom and rock overhead — and walk to it. Refuses trees, overhangs and player-built roofs; a 1-wide tunnel does not count as a cave. Limited to the chunks you can see (~64 blocks).',
         params: {'range': { type: 'int', description: 'Search area around you, in blocks.', default: 32, domain: [8, 64] }},
