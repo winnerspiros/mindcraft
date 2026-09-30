@@ -1,7 +1,7 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from './world.js';
 import { canOp } from '../../utils/server_context.js';
-import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities, rconCountAll } from '../../utils/rcon.js';
+import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
 
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
@@ -2593,31 +2593,6 @@ const craftingStack = new Set();
  * asking players for intermediate items it can craft itself. Base items
  * (logs, ingots, ...) have no recipe and terminate the recursion.
  */
-// RCON-TRUTH COUNT (2026-09-30): client inventory is BLIND on 26.3 (the Slot
-// decode bug), so world.getInventoryCounts() returns 0 for everything and every
-// crafting gate said "you don't have the materials" while the server held them.
-// Prefer the server; fall back to the client only when RCON is unavailable
-// (survival server) or returns nothing at all.
-//
-// KNOWN LIMIT, stated rather than hidden: this fixes every DECISION (does she
-// have the inputs, which variant is sourceable, what is she missing, does she
-// own a table). It cannot fix bot.recipesFor(), which is mineflayer's own
-// matcher and reads the client inventory to decide what it can execute — so the
-// final craft can still be refused client-side even with RCON proving the
-// materials are there. Closing that needs a server-side craft path, not a
-// read.
-async function truthCount(bot, itemName) {
-    try {
-        const c = await rconCountAll(bot.username, itemName);
-        if (c && c.total > 0) return c.total;
-        // RCON reachable and genuinely zero is a real answer — but on a server
-        // where RCON is off, rconCountAll returns zeros too, so confirm with
-        // the client before believing the zero.
-        if (canOp()) return 0;
-    } catch (_) {}
-    try { return (world.getInventoryCounts(bot) || {})[itemName] || 0; } catch (_) { return 0; }
-}
-
 async function ensureCraftingPrereqs(bot, itemName, num = 1) {
     if (craftingStack.has(itemName)) return;   // cycle guard
     craftingStack.add(itemName);
@@ -2633,17 +2608,17 @@ async function ensureCraftingPrereqs(bot, itemName, num = 1) {
             let sourceable = true;
             for (const [ingName, ingPerExec] of Object.entries(ingredients)) {
                 const need = ingPerExec * num;
-                if (await truthCount(bot, ingName) >= need) continue;
+                if ((world.getInventoryCounts(bot)[ingName] || 0) >= need) continue;
 
                 const ingRecipes = mc.getItemCraftingRecipes(ingName);
                 if (!ingRecipes || ingRecipes.length === 0) { sourceable = false; break; } // base ingredient — can't craft it
 
                 const ingCraftedCount = ingRecipes[0][1].craftedCount || 1;
-                const have = await truthCount(bot, ingName);
+                const have = world.getInventoryCounts(bot)[ingName] || 0;
                 const ingExecs = Math.ceil((need - have) / ingCraftedCount);
 
                 await craftRecipe(bot, ingName, ingExecs, true);
-                if (await truthCount(bot, ingName) < need) { sourceable = false; break; }
+                if ((world.getInventoryCounts(bot)[ingName] || 0) < need) { sourceable = false; break; }
             }
             if (sourceable) return;  // this variant is fully sourced
         }
@@ -2655,10 +2630,7 @@ async function ensureCraftingPrereqs(bot, itemName, num = 1) {
 // Voyager-style craft feedback: report the EXACT per-ingredient shortfall for
 // the recipe that needs the fewest missing items (so "craft a chest" says
 // "2 more oak_planks" instead of a vague ingredient list).
-// ASYNC now: it used bot.inventory.count(), which is BLIND on 26.3, so the
-// "you still need: ..." message always said she needed everything she was
-// actually holding. Now asks the server via truthCount.
-async function _craftingShortfall(bot, itemName) {
+function _craftingShortfall(bot, itemName) {
     const itemId = mc.getItemId(itemName);
     if (itemId == null) return [];
     let allRecipes = [];
@@ -2669,7 +2641,7 @@ async function _craftingShortfall(bot, itemName) {
         for (const d of (recipe.delta || [])) {
             if (d.count >= 0) continue; // only consumed ingredients (negative delta)
             const nm = mc.getItemName(d.id);
-            const have = await truthCount(bot, nm);
+            const have = bot.inventory.count(d.id, d.metadata);
             if (have < -d.count) missing.push(`${-d.count - have} more ${nm.replace(/_/g, ' ')}`);
         }
         if (!bestMissing || missing.length < bestMissing.length) bestMissing = missing;
@@ -2711,7 +2683,7 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
         if (craftingTable === null){
 
             // Try to place crafting table
-            let hasTable = (await truthCount(bot, 'crafting_table')) > 0;   // RCON truth, not the blind client
+            let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
             if (hasTable) {
                 let pos = world.getNearestFreeSpace(bot, 1, 6);
                 await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
@@ -2725,7 +2697,7 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
                 // No crafting table handy — craft one from planks (multi-step),
                 // then place it and use it.
                 await craftRecipe(bot, 'crafting_table', 1);
-                if ((await truthCount(bot, 'crafting_table')) > 0) {
+                if (world.getInventoryCounts(bot)['crafting_table'] > 0) {
                     let pos = world.getNearestFreeSpace(bot, 1, 6);
                     await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
                     craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
@@ -2746,18 +2718,11 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
     }
     if (!recipes || recipes.length === 0) {
         if (!quiet) {
-            const missing = await _craftingShortfall(bot, itemName);
+            const missing = _craftingShortfall(bot, itemName);
             if (missing.length) {
                 log(bot, `You can't craft ${itemName} yet. You still need: ${missing.join(', ')}. Gather these (or ask your beloved for them).`);
             } else {
                 log(bot, `${itemName} has no craftable recipe — find it, loot it, or trade for it instead.`);
-            }
-            // The shortfall is empty but the craft still failed: RCON says she
-            // HAS everything and mineflayer's own matcher still refused, because
-            // 26.3's client inventory view is broken. Say that honestly instead
-            // of letting it look like she is missing materials.
-            if (!missing.length) {
-                log(bot, `I have the materials for ${itemName} (server confirms), but my own inventory view on this version is broken so I cannot use the crafting grid. Ask your beloved to craft it, or try again after a relog.`);
             }
         }
         if (placedTable) {
