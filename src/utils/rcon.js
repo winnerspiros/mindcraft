@@ -340,7 +340,11 @@ export async function rconEnsureKit(name) {
     const actions = [];
     for (const [piece, slot] of Object.entries(ARMOR_SLOT))
         if (!have.has(piece)) actions.push(`item replace entity ${safe} ${slot} with minecraft:${piece} 1`);
-    if (!have.has('diamond_sword')) actions.push(`item replace entity ${safe} weapon.mainhand with minecraft:diamond_sword 1`);
+    // 26.3 equipment has NO mainhand slot (only offhand/head/chest/legs/feet), so
+    // `item replace ... weapon.mainhand` is not a valid recovery path. If the
+    // sword is ever genuinely missing, GIVE it — that lands in the inventory,
+    // which is where she carries it anyway.
+    if (!have.has('diamond_sword')) actions.push(`give ${safe} minecraft:diamond_sword 1`);
     if (!have.has('shield')) actions.push(`item replace entity ${safe} weapon.offhand with minecraft:shield 1`);
     for (const [item, n] of KIT_GIVE)
         if (!have.has(item)) actions.push(`give ${safe} minecraft:${item} ${n}`);
