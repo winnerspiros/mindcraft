@@ -1,7 +1,17 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from './world.js';
 import { canOp } from '../../utils/server_context.js';
-import { rconPlayerPos, rconCommand, rconInventory, rconItemCount } from '../../utils/rcon.js';
+import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
+
+// Hostile mob types, as a Set. Declared up here (not next to defendBlind)
+// because both the combat paths AND the perception survey need it, and RCON
+// rows carry no `type` field for mc.isHostile() to judge. Sorted-ish order is
+// irrelevant; the survey uses it as a classifier, combat uses it as a filter.
+const BLIND_FIGHT_TYPES = new Set(['zombie', 'skeleton', 'spider', 'creeper', 'enderman',
+    'witch', 'pillager', 'vindicator', 'evoker', 'ravager', 'phantom', 'drowned',
+    'husk', 'stray', 'bogged', 'breeze', 'slime', 'cave_spider', 'silverfish',
+    'wither', 'ghast', 'blaze', 'ender_dragon', 'zombified_piglin', 'hoglin',
+    'piglin', 'zombified_piglin', 'giant', 'warden', 'wither_skeleton']);
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
@@ -3111,22 +3121,110 @@ export async function rconLocateHostile(bot, names, radius=64) {
      * @param {number} radius, search distance (default 64).
      * @returns {{name,pos,dist}|null} nearest match with a real Vec3, or null.
      **/
-    const list = Array.isArray(names) ? names : [names];
-    let best = null;
+    // names may be an array, a Set (BLIND_FIGHT_TYPES) or a single string.
+    const want = new Set((Array.isArray(names) ? [...names] : (names instanceof Set ? [...names] : [names])).map(s => String(s)));
     if (!canOp()) return null; // survival server: no console — eyes only
-    for (const n of list) {
-        let out = null;
-        try { out = await rconCommand(`execute as ${bot.username} at @s run data get entity @e[type=${n},limit=1,sort=nearest,distance=..${radius}] Pos`); }
-        catch (_) { continue; }
-        const m = String(out || '').match(/\[(-?[\d.]+)d,\s*(-?[\d.]+)d,\s*(-?[\d.]+)d\]/);
-        if (!m) continue;
-        const pos = new Vec3(parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3]));
+    // SINGLE-SOCKET SWEEP (2026-09-30): one
+    // `execute as @e[distance=..N] at @s run data get entity @s Pos` returns
+    // EVERY entity near her at once (verified live: 22 entities, one call),
+    // where the old per-type loop opened one socket per mob type (19 sockets,
+    // 30-90ms) and could not distinguish "read failed" from "nothing there".
+    // Now filter the one read in JS. Read-only, no cheats, no kills.
+    let near = [];
+    try { near = await rconNearbyEntities(bot.username, radius); }
+    catch (e) { log(bot, `RCON locate failed: ${e.message}`); return null; }
+    if (!Array.isArray(near) || near.length === 0) return null;
+    let best = null;
+    for (const e of near) {
+        if (!e || !want.has(String(e.name))) continue;
+        const pos = new Vec3(e.x, e.y, e.z);
         let d = Infinity;
         try { d = bot.entity.position.distanceTo(pos); } catch (_) {}
-        if (!best || d < best.dist) best = { name: n, pos, dist: d };
+        if (!best || d < best.dist) best = { name: e.name, pos, dist: d };
         if (bot.interrupt_code) break;
     }
     return best;
+}
+
+// SURROUNDINGS SURVEY (2026-09-30): the perception layer. Two sources, because
+// 26.3 breaks them in different ways:
+//   ENTITIES — withheld from bot.entities entirely, so they come from RCON
+//     (rconNearbyEntities, one socket, everything in range). Authoritative.
+//   BLOCKS — NOT withheld, so the client copy is fine and is what her whole
+//     dig/build code already trusts (bot.blockAt). Read client-side.
+// ANTI-XRAY CAVEAT, verified in config/meowantixray.yml: engine-mode 2 with
+// enforce-engine-mode-2 replaces hidden ores (diamond/gold/iron/coal/lapis/
+// redstone/emerald/copper, clay, obsidian, chest, mossy_cobblestone, ancient
+// debris, nether ores, raw metal blocks) with stone/deepslate/oak_planks in the
+// CLIENT's view. So a block survey is honest about terrain and structure but
+// can report "stone" where an ore really is. Ores must be verified with RCON
+// (or by digging) — never trust a survey for ore. That is the same decoy rule
+// the dig path already follows.
+export async function surveySurroundings(bot, radius = 16) {
+    const me = bot.entity && bot.entity.position;
+    const out = { entities: [], blocks: {}, ground: null, sky: null, time: null, notes: [] };
+    if (!me) return out;
+
+    // --- entities: RCON truth (client often blind) ---
+    let near = [];
+    try { near = await rconNearbyEntities(bot.username, radius); } catch (_) {}
+    const seen = new Set();
+    for (const e of near) {
+        const d = Math.hypot(e.x - me.x, e.y - me.y, e.z - me.z);
+        // RCON names are lowercased by rconNearbyEntities; player keys are not.
+        const isPlayer = e.name === String(bot.username || '').toLowerCase() ||
+            !!(bot.players && Object.keys(bot.players).some(k => k.toLowerCase() === e.name));
+        // clientside entities are a bonus (things RCON's distance filter missed)
+        let extra = [];
+        try {
+            extra = Object.values(bot.entities || {}).filter(x => x && x.position &&
+                Number.isFinite(x.position.x) && !seen.has(x.name));
+        } catch (_) {}
+        for (const x of extra) {
+            const dd = x.position.distanceTo(me);
+            if (dd > radius) continue;
+            const nm = x.username || x.name;
+            if (seen.has(nm)) continue;
+            seen.add(nm);
+            out.entities.push({ name: nm, dist: +dd.toFixed(1), hostile: !!(x.type === 'hostile' || x.type === 'mob') });
+        }
+        seen.add(e.name);
+        out.entities.push({
+            name: e.name,
+            dist: +d.toFixed(1),
+            hostile: BLIND_FIGHT_TYPES.has(String(e.name)),
+            player: !!isPlayer,
+        });
+    }
+    out.entities.sort((a, b) => a.dist - b.dist);
+
+    // --- blocks: client-side truth, ground ring + what's underfoot ---
+    const R = Math.min(8, Math.max(1, Math.floor(radius / 2)));
+    const bx = Math.floor(me.x), by = Math.floor(me.y), bz = Math.floor(me.z);
+    const bump = (n) => { if (n && n !== 'air' && n !== 'cave_air' && n !== 'void_air') out.blocks[n] = (out.blocks[n] || 0) + 1; };
+    try {
+        for (let dx = -R; dx <= R; dx++)
+            for (let dz = -R; dz <= R; dz++) {
+                // walk down to the first solid block = the surface she stands on
+                for (let dy = 0; dy >= -6; dy--) {
+                    const b = bot.blockAt(new Vec3(bx + dx, by + dy, bz + dz));
+                    if (b && b.name && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'void_air') {
+                        bump(b.name);
+                        break;
+                    }
+                }
+            }
+        const under = bot.blockAt(new Vec3(bx, by - 1, bz));
+        out.ground = under && under.name !== 'air' ? under.name : 'air/none';
+        const sky = bot.blockAt(new Vec3(bx, by + 12, bz));
+        out.sky = sky && sky.name === 'air' ? 'open' : (sky ? sky.name : 'unknown');
+    } catch (e) { out.notes.push('block read failed: ' + e.message); }
+    try { out.time = (bot.time && typeof bot.time.timeOfDay === 'number') ? bot.time.timeOfDay : null; } catch (_) {}
+
+    // ore honesty note — only when something suspicious is actually underfoot
+    const OREY = ['stone', 'deepslate', 'oak_planks'];
+    if (OREY.includes(out.ground)) out.notes.push('standing on stone/deepslate — could be disguised ore (anti-xray)');
+    return out;
 }
 
 // Things that fly and snipe from past sword range — chasing them on foot is
@@ -3244,14 +3342,41 @@ export async function defendSelf(bot, range=9) {
     } catch (_) {}
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
 
+    // EYES-EMPTY FALLBACK (2026-09-30): 26.3 withholds entities, so this scan
+    // returns null on a live ground threat and the old code walked straight to
+    // "No enemies nearby" while being shot. The flyer RCON probe above is
+    // wither-only, so ground hostiles had NO server-truth path at all — only
+    // the self_defense mode's separate blind fight had one. Same fix here:
+    // ask RCON for the nearest ground hostile and fight that.
+    let _rconTruth = false;
+    if (!enemy) {
+        let r = null;
+        try { r = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
+        if (r) {
+            enemy = { name: r.name, position: r.pos, velocity: new Vec3(0, 0, 0),
+                      height: r.name === 'creeper' ? 1.7 : 1.95, id: `rcon:${r.name}` };
+            _rconTruth = true;
+            log(bot, `Eyes empty but server says a ${String(r.name).replace(/_/g, ' ')} is ${r.dist.toFixed(1)} blocks away — engaging.`);
+        }
+    }
     // Opening volley: a couple arrows at a distant enemy ONCE, before closing to
     // melee. Never inside the loop below — looping arrows at something she can't
     // reach is how she burned through (and spam-/gave) stacks of arrows.
-    if (enemy && bot.entity.position.distanceTo(enemy.position) >= 6) {
+    // NOT for a synthetic RCON target: shootBow needs a real entity handle.
+    if (enemy && !_rconTruth && bot.entity.position.distanceTo(enemy.position) >= 6) {
         try { await shootBow(bot, enemy, 2, true); } catch (e) { console.warn('bow opening failed:', e.message); }
     }
 
+    // FIGHT BUDGET: the loop below has no natural exit once we fight a
+    // synthetic RCON target — RCON keeps reporting a live hostile, so
+    // `while (enemy)` never clears. A pillager she can't reach (ledge, wall,
+    // water) would spin here forever, starving every other mode. Cap it.
+    const _fightT0 = Date.now(), FIGHT_BUDGET_MS = 45000;
     while (enemy) {
+        if (Date.now() - _fightT0 > FIGHT_BUDGET_MS) {
+            log(bot, `Fight budget spent (${FIGHT_BUDGET_MS / 1000}s) — disengaging.`);
+            break;
+        }
         bot.armorManager.equipAll(); // keep armor on every fight, don't fight naked
         await equipHighestAttack(bot);
         // CROWD-CONTROL kiting (vendored pattern from sampritchard03's fork):
@@ -3291,7 +3416,17 @@ export async function defendSelf(bot, range=9) {
         try { _eid = enemy.id ?? enemy.uuid ?? enemy.username ?? enemy.name; } catch (_) {}
         const _now = Date.now();
         if (_eid == null || _now - (bot._meleeHitAt[_eid] || 0) >= 600) {
-            bot.pvp.attack(enemy);
+            if (_rconTruth) {
+                // No entity handle exists (26.3 withheld it) — pvp.attack needs
+                // one and does nothing without it. Face the RCON point and
+                // swing: vanilla resolves the hit by reach server-side.
+                try {
+                    await bot.lookAt(new Vec3(enemy.position.x, enemy.position.y + 1.4, enemy.position.z));
+                    bot.swingArm('right');
+                } catch (_) {}
+            } else {
+                try { bot.pvp.attack(enemy); } catch (_) {}
+            }
             if (_eid != null) bot._meleeHitAt[_eid] = _now;
             attacked = true;
         }
@@ -3310,6 +3445,28 @@ export async function defendSelf(bot, range=9) {
             } catch (_) { return true; }
         }, 150, 50);
         enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), range);
+        // Eyes still empty but we were fighting server truth: re-ask RCON
+        // instead of dropping the target. Without this the blind target was
+        // discarded after one 150ms wait and the loop exited in under a
+        // second — the fight never actually happened.
+        if (!enemy && _rconTruth) {
+            // Re-ask the WHOLE type list, not just the type we first found: the
+            // first locate can be an unrelated mob (a zombie between us and the
+            // pillager actually shooting), and pinning to that one name would
+            // re-resolve a threat that isn't the threat. One transient RCON
+            // miss must NOT end the fight — that was the original "no enemies
+            // while being shot" bug. Retry a few times, then give up.
+            let r2 = null;
+            for (let a = 0; a < 3 && !r2; a++) {
+                try { r2 = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
+                if (!r2) await new Promise(r3 => setTimeout(r3, 400));
+            }
+            if (!r2) { bot.pvp.stop(); break; }   // threat genuinely gone
+            enemy = { name: r2.name, position: r2.pos, velocity: new Vec3(0, 0, 0),
+                      height: r2.name === 'creeper' ? 1.7 : 1.95, id: `rcon:${r2.name}` };
+        } else if (!enemy) {
+            _rconTruth = false;   // eyes recovered to "nothing hostile"
+        }
         if (bot.interrupt_code) {
             bot.pvp.stop();
             return false;
@@ -3330,9 +3487,6 @@ export async function defendSelf(bot, range=9) {
 // at the RCON position when no handle renders. Survival-safe: RCON locate
 // fails fast off-home (canOp false) and the whole thing becomes eyes-only.
 // Stops when HP stabilizes (threat dead) or interrupt arrives.
-const BLIND_FIGHT_TYPES = ['zombie', 'skeleton', 'spider', 'creeper', 'enderman',
-    'witch', 'pillager', 'vindicator', 'evoker', 'ravager', 'phantom', 'drowned',
-    'husk', 'stray', 'bogged', 'breeze', 'slime', 'cave_spider', 'silverfish'];
 export async function defendBlind(bot, range = 16) {
     bot.modes.pause('self_defense');
     bot.modes.pause('cowardice');
@@ -3342,7 +3496,14 @@ export async function defendBlind(bot, range = 16) {
     const t0 = Date.now(), BUDGET = 30000;
     let swung = false;
     while (Date.now() - t0 < BUDGET) {
-        if (bot.interrupt_code || bot.health <= 0) break;
+        // A pre-set interrupt flag means something ELSE claimed the wheel
+        // (another mode, the brain, a stop) — do not fight through it, but say
+        // why, because "never found the attacker" was indistinguishable from
+        // this and hid every real cause.
+        if (bot.interrupt_code || bot.health <= 0) {
+            log(bot, `Blind fight stopped early: interrupt=${!!bot.interrupt_code} health=${bot.health}`);
+            break;
+        }
         // live handle first (it may render mid-fight)
         let foe = null;
         try {
@@ -3369,7 +3530,10 @@ export async function defendBlind(bot, range = 16) {
         try { r = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
         if (!r) { await new Promise(r2 => setTimeout(r2, 600)); continue; }
         const _rk = `${Math.round(r.pos.x)},${Math.round(r.pos.y)},${Math.round(r.pos.z)}`;
-        if (Date.now() - (bot._blindSwingAt[_rk] || 0) < 600) continue;
+        if (Date.now() - (bot._blindSwingAt[_rk] || 0) < 600) {
+            await new Promise(r2 => setTimeout(r2, 200));
+            continue;
+        }
         try {
             const d = bot.entity.position.distanceTo(r.pos);
             if (d > 3.5) await goToPosition(bot, r.pos.x, r.pos.y, r.pos.z, 2);
