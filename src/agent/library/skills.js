@@ -3,6 +3,7 @@ import * as world from './world.js';
 import { canOp } from '../../utils/server_context.js';
 import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
 import * as K from '../../utils/mcknowledge.js';
+import * as L from './furnace_ledger.js';
 
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
@@ -2976,17 +2977,33 @@ export async function smeltItem(bot, itemName, num=1) {
             break;
         }
     }
-    // take all remaining in input/fuel slots
-    if (furnace.inputItem()) {
-        await furnace.takeInput();
-    }
-    if (furnace.fuelItem()) {
-        await furnace.takeFuel();
-    }
+    // LEAVE IT RUNNING (2026-09-30): a player who puts a batch in does not
+    // necessarily stand there. If we are not finishing the whole batch here,
+    // we leave the furnace loaded and burning, remember exactly where it is and
+    // what is in it, and let the collect-furnace skill fetch it when done.
+    const unfinished = total < num;
 
+    // take back anything left in input/fuel only when we are done with it
+    if (!unfinished) {
+        if (furnace.inputItem()) {
+            await furnace.takeInput();
+        }
+        if (furnace.fuelItem()) {
+            await furnace.takeFuel();
+        }
+    }
     await bot.closeWindow(furnace);
 
-    if (placedFurnace) {
+    if (furnaceBlock) {
+        L.rememberFurnace(bot, furnaceBlock.position, { origin: placedFurnace ? 'crafted' : 'found', placedByHer: placedFurnace });
+        if (total > 0) L.noteSmelt(bot, furnaceBlock.position, itemName, total);
+    }
+
+    if (unfinished) {
+        log(bot, `I left the furnace running at ${Math.floor(furnaceBlock.position.x)}, ${Math.floor(furnaceBlock.position.y)}, ${Math.floor(furnaceBlock.position.z)} — ${total} of ${num} done, the rest are still cooking. I will come back for them.`);
+    }
+
+    if (placedFurnace && !unfinished) {
         await collectBlock(bot, 'furnace', 1);
     }
     if (total === 0) {
@@ -2994,11 +3011,143 @@ export async function smeltItem(bot, itemName, num=1) {
         return false;
     }
     if (total < num) {
-        log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}.`);
-        return false;
+        log(bot, `Only smelted ${total} ${mc.getItemName(smelted_item.type)}. The rest are still in the furnace at ${Math.floor(furnaceBlock.position.x)}, ${Math.floor(furnaceBlock.position.y)}, ${Math.floor(furnaceBlock.position.z)}.`);
+        // NOT a failure: the batch is cooking and she knows where. Return an
+        // object so the caller can act on it, while staying truthy-ish for the
+        // boolean callers that just want "did she manage it".
+        return { smelted: total, of: num, waiting: true, at: furnaceBlock.position };
     }
     log(bot, `Successfully smelted ${itemName}, got ${total} ${mc.getItemName(smelted_item.type)}.`);
-    return true;
+    return { smelted: total, of: num, waiting: false, at: furnaceBlock && furnaceBlock.position };
+}
+
+// --- FURNACE LIFECYCLE (2026-09-30) ---------------------------------------
+// A player uses a furnace across many actions, not one smelt at a time: she
+// loads it, walks off, comes back, takes the output, refuels, and eventually
+// the thing she built gets broken or looted. These are the parts that were
+// missing.
+
+export async function collectFurnace(bot, itemName = null) {
+    /**
+     * Goes to the furnace she remembers (or the nearest one) and takes out any
+     * finished output, plus anything left in the input and fuel slots.
+     * Audits the ledger on the way so a furnace that was destroyed or looted is
+     * recorded as lost rather than silently failing forever.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {string} itemName, optional: only collect this output item.
+     * @returns {Promise<boolean>} true if anything was collected.
+     * @example
+     * await skills.collectFurnace(bot, "iron_ingot");
+     **/
+
+    // if the one she remembers is gone, find out what happened before moving on
+    try { L.auditFurnaces(bot); } catch (_) {}
+
+    const known = L.nearestKnownFurnace(bot);
+    let furnaceBlock = world.getNearestBlock(bot, 'furnace', 48) || world.getNearestBlock(bot, 'furnace', 256);
+
+    // prefer the furnace she remembers, if it is in range and still there
+    if (known && known.alive !== false) {
+        let remembered = null;
+        try { remembered = bot.blockAt(new Vec3(known.x, known.y, known.z)); } catch (_) {}
+        if (remembered && /furnace|smoker/.test(remembered.name)) {
+            furnaceBlock = { position: new Vec3(known.x, known.y, known.z), name: remembered.name };
+        } else if (furnaceBlock) {
+            L.markFurnace(bot, { x: known.x, y: known.y, z: known.z }, 'destroyed',
+                `gone when I came back${known.smelted && Object.keys(known.smelted).length ? ' after I had smelted ' + Object.keys(known.smelted).join(', ') : ''}`);
+            log(bot, `The furnace I was using at ${known.x}, ${known.y}, ${known.z} is gone — it was destroyed. I am using this one instead.`);
+        }
+    }
+
+    if (!furnaceBlock) {
+        log(bot, `I do not have a furnace here, and the one I remember is gone.`);
+        return false;
+    }
+
+    await goToPosition(bot, furnaceBlock.position.x, furnaceBlock.position.y, furnaceBlock.position.z, 3);
+
+    const furnace = await bot.openFurnace(furnaceBlock);
+    let got = 0;
+    try {
+        // output first: that is the finished work
+        for (let guard = 0; guard < 8; guard++) {
+            const out = furnace.outputItem();
+            if (!out) break;
+            const item = await furnace.takeOutput();
+            if (!item) break;
+            if (itemName && !item.name.includes(itemName.replace(/_/g, ''))) {
+                log(bot, `The furnace had ${item.count} ${mc.getItemName(item.type)} instead of ${itemName}.`);
+                got += item.count;
+            } else {
+                got += item.count;
+            }
+        }
+        // then anything stranded in input/fuel — she may have left a partial batch
+        if (furnace.inputItem()) {
+            const left = await furnace.takeInput();
+            if (left) { got += left.count || 0; log(bot, `Took back ${left.count} ${mc.getItemName(left.type)} that was still waiting to be smelted.`); }
+        }
+        if (furnace.fuelItem()) {
+            const fuelLeft = await furnace.takeFuel();
+            if (fuelLeft) log(bot, `Took back ${fuelLeft.count} ${mc.getItemName(fuelLeft.type)} fuel that had not been used.`);
+        }
+    } catch (err) {
+        log(bot, `Could not empty the furnace: ${err.message}`);
+    }
+    await bot.closeWindow(furnace);
+
+    if (got > 0) {
+        L.noteSmelt(bot, furnaceBlock.position, itemName || 'output', got);
+        log(bot, `Collected ${got} items from my furnace.`);
+        return true;
+    }
+    log(bot, `My furnace is empty right now.`);
+    return false;
+}
+
+export async function checkFurnace(bot) {
+    /**
+     * Reports on the furnace she remembers without taking anything: is it still
+     * there, is it burning, what is in it, and what she has made in it.
+     * Read-only, and answers the "what happened to my furnace" question.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @returns {Promise<string>} a sentence for chat.
+     * @example
+     * await skills.checkFurnace(bot);
+     **/
+
+    try { L.auditFurnaces(bot); } catch (_) {}
+    const known = L.nearestKnownFurnace(bot);
+    if (!known) return L.describeFurnace(bot);
+
+    let blk = null;
+    try { blk = bot.blockAt(new Vec3(known.x, known.y, known.z)); } catch (_) {}
+    if (!blk || !/furnace|smoker/.test(blk.name)) {
+        L.markFurnace(bot, { x: known.x, y: known.y, z: known.z }, 'destroyed', 'not there when I checked');
+        return L.describeFurnace(bot);
+    }
+
+    const near = bot.entity.position.distanceTo(new Vec3(known.x, known.y, known.z)) <= 4;
+    if (!near) {
+        await goToPosition(bot, known.x, known.y, known.z, 3).catch(() => {});
+    }
+    let detail = L.describeFurnace(bot);
+    try {
+        const furnace = await bot.openFurnace({ position: new Vec3(known.x, known.y, known.z), name: blk.name });
+        const out = furnace.outputItem();
+        const inp = furnace.inputItem();
+        const fu = furnace.fuelItem();
+        const bits = [];
+        if (out) bits.push(`${out.count} ${mc.getItemName(out.type)} ready`);
+        if (inp) bits.push(`${inp.count} ${mc.getItemName(inp.type)} cooking`);
+        if (fu) bits.push(`${fu.count} ${mc.getItemName(fu.type)} fuel`);
+        if (out && !fu) bits.push('it has stopped, I need more fuel');
+        if (bits.length) detail += ' Right now: ' + bits.join(', ') + '.';
+        await bot.closeWindow(furnace);
+    } catch (err) {
+        detail += ` (could not open it: ${err.message})`;
+    }
+    return detail;
 }
 
 export async function clearNearestFurnace(bot) {
