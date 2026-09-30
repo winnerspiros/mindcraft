@@ -279,6 +279,41 @@ export async function rconItemCount(name, item) {
     } catch (_) { return 0; }
 }
 
+// SINGLE AUTHORITATIVE COUNT (2026-09-30): how many of `item` she has, counting
+// the hotbar+main inventory AND worn armor AND offhand. Every client-side
+// count is blind on 26.3, so crafting/prereq/armor checks must use this.
+// `worn` reports whether the matching armor piece is EQUIPPED (not just held).
+export async function rconCountAll(name, item) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    const want = String(item || '').replace(/^minecraft:/, '');
+    if (!safe || !want) return { total: 0, inv: 0, worn: 0, offhand: 0 };
+    const g = await rconPlayerGear(safe);
+    if (!g) return { total: 0, inv: 0, worn: 0, offhand: 0 };
+    let inv = 0;
+    for (const c of (g.carrying || [])) if (c.id === want) inv += c.count;
+    let worn = 0;
+    for (const slot of Object.keys(g.wearing || {})) if (g.wearing[slot].id === want) worn++;
+    const offhand = (g.offhand && g.offhand.id === want) ? 1 : 0;
+    return { total: inv + worn + offhand, inv, worn, offhand };
+}
+
+// Is she WEARING a full set? Returns per-slot booleans so a caller can say
+// "helmet yes, boots no" instead of a bare false.
+export async function rconArmorStatus(name) {
+    const g = await rconPlayerGear(String(name).replace(/[^A-Za-z0-9_]/g, ''));
+    const w = (g && g.wearing) || {};
+    const s = {
+        head: w.head ? w.head.id : null,
+        chest: w.chest ? w.chest.id : null,
+        legs: w.legs ? w.legs.id : null,
+        feet: w.feet ? w.feet.id : null,
+        offhand: g && g.offhand ? g.offhand.id : null,
+    };
+    s.slotsFilled = ['head', 'chest', 'legs', 'feet'].filter(k => s[k]).length;
+    s.complete = s.slotsFilled === 4;
+    return s;
+}
+
 function parseIds(text) {
     const have = new Set();
     const re = /minecraft:([a-z_]+)"/g;
