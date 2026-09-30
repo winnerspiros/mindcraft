@@ -1,0 +1,27 @@
+diff --git a/node_modules/mineflayer/lib/plugins/enchantment_table.js b/node_modules/mineflayer/lib/plugins/enchantment_table.js
+--- a/node_modules/mineflayer/lib/plugins/enchantment_table.js
++++ b/node_modules/mineflayer/lib/plugins/enchantment_table.js
+@@ -72,14 +72,17 @@
+     }
+ 
+     async function enchant (choice) {
+-      if (!ready) await once(enchantmentTable, 'ready')
+       choice = parseInt(choice, 10) // allow string argument
+       assert.notStrictEqual(enchantmentTable.enchantments[choice].level, -1)
+-      bot._client.write('recipe_book_change_settings', {
+-        bookId: 0,
+-        bookOpen: false,
+-        filterActive: false
+-      }) // 26.3: jar 39 place_recipe/enchant slot renamed; enchant table write parked
++      // 26.3: the server has a dedicated enchant_item packet
++      // ({ windowId, enchantment }). The old code wrote
++      // recipe_book_change_settings, which is a DIFFERENT packet and a no-op on
++      // this build, so the click never registered and this promise hung forever
++      // waiting for an updateSlot:0 that never arrived. Write the real packet.
++      bot._client.write('enchant_item', {
++        windowId: enchantmentTable.id,
++        enchantment: choice
++      })
+       const [, newItem] = await once(enchantmentTable, 'updateSlot:0')
+       return newItem
+     }

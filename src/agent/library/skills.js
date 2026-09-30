@@ -2662,9 +2662,20 @@ export async function ensureStation(bot, blockName, range = 16) {
     const have = world.getInventoryCounts(bot)[blockName] || 0;
     if (have > 0) {
         const pos = nearestReachableSpot(bot, blockName);
-        try { await placeBlock(bot, blockName, pos.x, pos.y, pos.z); } catch (_) {}
-        b = world.getNearestBlock(bot, blockName, range);
-        if (b) return b;
+        // placeBlock can fail SILENTLY (swallowed by the empty catch), leaving
+        // the block in her pack and nothing in the world. Retry a few reachable
+        // spots before giving up, and only then report the real reason.
+        for (let attempt = 0; attempt < 3; attempt++) {
+            const p = attempt === 0 ? pos : nearestReachableSpot(bot, blockName, attempt);
+            try { await placeBlock(bot, blockName, p.x, p.y, p.z); } catch (_) {}
+            b = world.getNearestBlock(bot, blockName, range);
+            if (b) return b;
+            // nudge: if she is sitting on the target, step aside first
+            if (attempt === 1) {
+                try { await goToPosition(bot, p.x + 2, p.y, p.z + 2, 1); } catch (_) {}
+            }
+        }
+        log(bot, `I have a ${blockName} but could not place it within reach. Trying again in a moment.`);
     }
     return null;
 }
@@ -2673,21 +2684,25 @@ export async function ensureStation(bot, blockName, range = 16) {
 // top of something solid, with air where the block would go. Falls back to the
 // block directly under her, which is always in reach.
 // `notOn` optionally excludes an existing block name at the target cell.
-function nearestReachableSpot(bot, notOn = null) {
+function nearestReachableSpot(bot, notOn = null, skip = 0) {
     const p = bot.entity.position;
     const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
     const solid = (x, y, z) => { try { const b = bot.blockAt(new Vec3(x, y, z)); return b && b.boundingBox === 'block' && b.name !== 'air'; } catch (_) { return false; } };
     const air = (x, y, z) => { try { const b = bot.blockAt(new Vec3(x, y, z)); return !b || b.name === 'air' || b.name === 'cave_air'; } catch (_) { return false; } };
-    // ring search at her level and one below, never above her head
+    // Collect every reachable cell first, then return the `skip`-th one. Returning
+    // the first match made retries pick the identical cell over and over, so a
+    // placement that failed once would fail three times identically.
+    const spots = [];
     for (const dy of [0, -1]) {
         for (let dx = -2; dx <= 2; dx++) {
             for (let dz = -2; dz <= 2; dz++) {
                 const x = bx + dx, y = by + dy, z = bz + dz;
                 if (notOn) { try { if (bot.blockAt(new Vec3(x, y, z))?.name === notOn) continue; } catch (_) {} }
-                if (air(x, y, z) && solid(x, y - 1, z)) return new Vec3(x, y, z);
+                if (air(x, y, z) && solid(x, y - 1, z)) spots.push(new Vec3(x, y, z));
             }
         }
     }
+    if (spots.length) return spots[Math.min(skip, spots.length - 1)];
     return new Vec3(bx, by, bz);
 }
 
@@ -9443,7 +9458,10 @@ export async function enchantItem(bot, itemName, choice=null) {
         log(bot, 'No enchanting table nearby and I do not have one. I need 4 obsidian, 2 diamond and 1 book to craft it.');
         return false;
     }
-    await goToNearestBlock(bot, 'enchanting_table', 4, 32);
+    // The table must be within ~3 blocks to right-click. Standing at 4 leaves
+    // the use-look packet out of range, so openEnchantmentTable() never resolves
+    // and the whole call times out. Go right up to it.
+    await goToNearestBlock(bot, 'enchanting_table', 2, 32);
 
     const item = bot.inventory.items().find(i => i.name === itemName)
         || bot.inventory.items().find(i => i.name.includes(itemName));
@@ -9458,9 +9476,53 @@ export async function enchantItem(bot, itemName, choice=null) {
     }
 
     try {
-        const table = await bot.openEnchantmentTable(tableBlock);
-        await table.putTargetItem(item);
-        await table.putLapis(lapis);
+        // Re-read the block fresh: the object returned by ensureStation/getNearestBlock
+        // can be a stale snapshot whose position/state no longer matches what the
+        // server will accept, and openEnchantmentTable() then waits forever.
+        const fresh = bot.blockAt(tableBlock.position);
+        const useBlock = (fresh && fresh.name === 'enchanting_table') ? fresh : tableBlock;
+        await bot.lookAt(useBlock.position.offset(0.5, 0.5, 0.5), true);
+        await wait(bot, 200);
+        const cur = bot.blockAtCursor(5);
+        const table = await Promise.race([
+            bot.openEnchantmentTable(useBlock),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('openEnchantmentTable timed out')), 8000)),
+        ]);
+
+        // putTargetItem/putLapis call bot.moveSlotItem(item.slot, N) using the
+        // item's slot index captured BEFORE the window opened. Once the window is
+        // open those indices no longer address the same cells, so both puts
+        // silently no-op: slot 0 and slot 1 stay null, every enchantment reads
+        // level -1, and the whole thing hangs waiting for a 'ready' that never
+        // comes. Transfer by window slot range instead, which is authoritative.
+        const itemNow = () => bot.inventory.items().find(i => i.name === itemName);
+        const lapisNow = () => bot.inventory.items().find(i => i.name === 'lapis_lazuli');
+        const putTarget = () => bot.transfer({
+            window: table, itemType: item.type, metadata: null, count: 1,
+            sourceStart: table.inventoryStart, sourceEnd: table.inventoryEnd,
+            destStart: 0, destEnd: 1,
+        });
+        const putOneLapis = () => bot.transfer({
+            window: table, itemType: mc.getItemId('lapis_lazuli'), metadata: null, count: 1,
+            sourceStart: table.inventoryStart, sourceEnd: table.inventoryEnd,
+            destStart: 1, destEnd: 2,
+        });
+
+        const it = itemNow();
+        if (!it) { log(bot, `No ${itemName} in inventory to enchant.`); table.close(); return false; }
+        try { await putTarget(); }
+        catch (e) { log(bot, `Could not put ${itemName} in the table: ${e.message}`); table.close(); return false; }
+
+        // One lapis can leave every option at -1. Feed more until the server
+        // commits real enchantments, since the options re-roll as lapis rises.
+        const LAPIS_TARGET = 20;
+        let fed = 0;
+        while (fed < LAPIS_TARGET && (!table.enchantments || table.enchantments.some(e => e.level < 0))) {
+            if (!lapisNow()) break;
+            try { await putOneLapis(); fed++; } catch (_) { break; }
+            await wait(bot, 250);
+        }
+        log(bot, `Fed ${fed} lapis to the table.`);
 
         // wait until the server sends real enchantment levels (the 'ready' event
         // fires once all three choices have a level >= 0)
@@ -9480,6 +9542,19 @@ export async function enchantItem(bot, itemName, choice=null) {
         let idx = choice != null ? parseInt(choice) : choices.reduce((best, c, i) => (c.level > choices[best].level ? i : best), 0);
         if (idx < 0 || idx >= choices.length) idx = 0;
 
+                // The server REJECTS an enchant whose level cost she cannot pay, and it
+        // does so by silently ignoring the packet — no error, no slot update, and
+        // the lapis is consumed anyway. Pick the best option she can actually
+        // AFFORD rather than the highest level on offer.
+        const myLevels = bot.experience ? bot.experience.level : 0;
+        if (choice == null) {
+            const affordable = choices
+                .map((c, i) => ({ c, i }))
+                .filter(x => x.c.level >= 0 && x.c.level <= myLevels)
+                .sort((a, b) => b.c.level - a.c.level);
+            idx = affordable.length ? affordable[0].i : choices.findIndex(c => c.level >= 0);
+            if (idx < 0) idx = 0;
+        }
         await table.enchant(idx);
         await table.takeTargetItem();
         table.close();
@@ -9698,6 +9773,84 @@ export async function breedAnimals(bot, maxDistance=16) {
     return false;
 }
 
+// Water bottles are crafted, not found: glass_bottle + a water source. Brewing
+// used to demand the player hand her pre-filled bottles, so !brewPotion could
+// never work on a fresh world. This fills them the way a player does — walk to
+// water, equip a glass bottle, use it on the source block.
+async function fillWaterBottles(bot, want = 1) {
+    const inv = () => world.getInventoryCounts(bot);
+    const have = () => bot.inventory.items().filter(i => i.name === 'potion').reduce((a, b) => a + b.count, 0);
+    if (have() >= want) return have();
+
+    // glass bottles first: craft if short (3 glass in a V)
+    if ((inv()['glass_bottle'] || 0) < 1) {
+        try { await craftRecipe(bot, 'glass_bottle', Math.max(want, 3), true); } catch (_) {}
+    }
+    if ((inv()['glass_bottle'] || 0) < 1) {
+        log(bot, 'No glass bottles — they come from smelting sand, which needs a furnace.');
+        return 0;
+    }
+
+    // Water metadata 0 is a still SOURCE you can scoop from; 1-7 are FLOWING
+    // and cannot be bottled — getNearestBlock returns the nearest water of any
+    // kind, so check for level 0 and keep looking otherwise.
+    const findSource = (near) => {
+        let best = null;
+        for (let dx = -near; dx <= near; dx++)
+            for (let dy = -4; dy <= 4; dy++)
+                for (let dz = -near; dz <= near; dz++) {
+                    const p = new Vec3(bx + dx, by + dy, bz + dz);
+                    let b; try { b = bot.blockAt(p); } catch (_) { continue; }
+                    if (b && b.name === 'water' && b.metadata === 0) {
+                        const d = p.distanceTo(new Vec3(bx, by, bz));
+                        if (!best || d < best.d) best = { b, d };
+                    }
+                }
+        return best ? best.b : null;
+    };
+    const me = bot.entity.position;
+    const bx = Math.floor(me.x), by = Math.floor(me.y), bz = Math.floor(me.z);
+    const src = world.getNearestBlock(bot, 'water', 32) || null;
+    const real = src && src.metadata === 0 ? src : findSource(24);
+    if (!real) {
+        log(bot, 'No still water source nearby — flowing water cannot be bottled. I need a source block (a pond edge, pool or spring).');
+        return 0;
+    }
+    // goToPosition RETURNS false when it cannot get there — it does not throw.
+    // Ignoring that made this look like a fill failure when it was a walk
+    // failure, and the water was 13 blocks away the whole time.
+    const reached = await goToPosition(bot, real.position.x, real.position.y + 1, real.position.z, 2);
+    const distNow = bot.entity.position.distanceTo(real.position);
+    if (!reached || distNow > 4) {
+        log(bot, `I can see still water at ${real.position.x}, ${real.position.y}, ${real.position.z} but I cannot walk to it from here (${distNow.toFixed(0)}m).`);
+        return 0;
+    }
+
+    let filled = 0;
+    for (let i = 0; i < want; i++) {
+        if ((inv()['glass_bottle'] || 0) < 1) break;
+        if (have() > filled) { filled = have(); continue; }
+        try {
+            // Aim at the TOP FACE of the water, not its side. She stands at the
+            // same y as the source block, so looking at its centre points the
+            // camera into the water's flank and the fill silently does nothing.
+            // Bottle-filling by aiming is unreliable: the cursor lands on the
+            // bank, or on the floor under the water when standing in it, and
+            // the click silently does nothing. The proven path is the same one
+            // scoopAt() already uses for a bucket — useToolOnBlock, which
+            // handles approach, line-of-sight and the blocked-view case.
+            await equip(bot, 'glass_bottle');
+            const used = await useToolOnBlock(bot, 'glass_bottle', real);
+            await wait(bot, 450);
+        } catch (e) {
+            log(bot, `Filling a bottle failed: ${e.message}`);
+            break;
+        }
+        filled = have();
+    }
+    return filled;
+}
+
 export async function brewPotion(bot, ingredientName, count=1) {
     /**
      * Brew potions at the nearest brewing stand. Puts water bottles (or an
@@ -9730,7 +9883,7 @@ export async function brewPotion(bot, ingredientName, count=1) {
         return false;
     }
     const potionId = mc.getItemId('potion');
-    const havePotionBottles = bot.inventory.items().some(i => i.name === 'potion');
+    let havePotionBottles = bot.inventory.items().some(i => i.name === 'potion');
 
     await goToNearestBlock(bot, 'brewing_stand', 3, 16);
 
@@ -9741,9 +9894,30 @@ export async function brewPotion(bot, ingredientName, count=1) {
         const standHasPotion = [0, 1, 2].some(s => w.slots[s] && w.slots[s].type === potionId);
         if (!standHasPotion) {
             if (!havePotionBottles) {
-                log(bot, 'No water bottles to brew. Craft glass_bottle and fill with water first.');
+                // Water bottles are not a thing you find lying around: you fill
+                // an empty glass bottle from a water source. Close the stand and
+                // go and do that, exactly like a player would.
                 w.close();
-                return false;
+                log(bot, 'I have no water bottles — filling glass bottles from water first.');
+                const filled = await fillWaterBottles(bot, count);
+                if (!filled) { log(bot, 'Could not fill any water bottles — I need a water source I can reach.'); return false; }
+                log(bot, `Filled ${filled} water bottle(s).`);
+                havePotionBottles = true;
+                // reopen the stand to continue
+                const w2 = await bot.openBlock(stand);
+                const transfer = { window: w2, itemType: potionId, metadata: null, count, sourceStart: w2.inventoryStart, sourceEnd: w2.inventoryEnd, destStart: 0, destEnd: 3 };
+                await bot.transfer(transfer);
+                await bot.transfer({ window: w2, itemType: ingredient.type, metadata: null, count: 1, sourceStart: w2.inventoryStart, sourceEnd: w2.inventoryEnd, destStart: 3, destEnd: 4 });
+                await bot.transfer({ window: w2, itemType: fuel.type, metadata: null, count: 1, sourceStart: w2.inventoryStart, sourceEnd: w2.inventoryEnd, destStart: 4, destEnd: 5 });
+                log(bot, `Brewing ${count} potion(s) with ${ingredientName}...`);
+                await wait(bot, 22000);
+                let took2 = 0;
+                for (const s of [0, 1, 2]) {
+                    if (w2.slots[s] && w2.slots[s].type === potionId) { await bot.putAway(s); took2++; }
+                }
+                w2.close();
+                log(bot, `Brewed ${took2} potion(s) with ${ingredientName}.`);
+                return took2 > 0;
             }
             await bot.transfer({ window: w, itemType: potionId, metadata: null, count, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 0, destEnd: 3 });
         }
