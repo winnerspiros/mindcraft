@@ -2649,6 +2649,26 @@ function _craftingShortfall(bot, itemName) {
     return bestMissing || [];
 }
 
+// A spot she can actually place a block on: within 2 blocks of her feet, on
+// top of something solid, with air where the block would go. Falls back to the
+// block directly under her, which is always in reach.
+function nearestReachableSpot(bot) {
+    const p = bot.entity.position;
+    const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+    const solid = (x, y, z) => { try { const b = bot.blockAt(new Vec3(x, y, z)); return b && b.boundingBox === 'block' && b.name !== 'air'; } catch (_) { return false; } };
+    const air = (x, y, z) => { try { const b = bot.blockAt(new Vec3(x, y, z)); return !b || b.name === 'air' || b.name === 'cave_air'; } catch (_) { return false; } };
+    // ring search at her level and one below, never above her head
+    for (const dy of [0, -1]) {
+        for (let dx = -2; dx <= 2; dx++) {
+            for (let dz = -2; dz <= 2; dz++) {
+                const x = bx + dx, y = by + dy, z = bz + dz;
+                if (air(x, y, z) && solid(x, y - 1, z)) return new Vec3(x, y, z);
+            }
+        }
+    }
+    return new Vec3(bx, by, bz);
+}
+
 export async function craftRecipe(bot, itemName, num=1, quiet=false) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -2685,8 +2705,15 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
             // Try to place crafting table
             let hasTable = world.getInventoryCounts(bot)['crafting_table'] > 0;
             if (hasTable) {
-                let pos = world.getNearestFreeSpace(bot, 1, 6);
-                await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
+                // Pick a spot at her own feet, not "nearest free space": that
+                // helper only checks air-above-solid and happily returns a cell
+                // 3 blocks OVERHEAD, which is out of place reach. The block then
+                // never went down, getNearestBlock stayed null, and every 3x3
+                // craft died with "Recipe requires craftingTable". Stand on solid
+                // ground and place against the block she is standing on.
+                let pos = nearestReachableSpot(bot);
+                try { await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z); }
+                catch (e) { /* placement refused; the null check below reports it */ }
                 craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
                 if (craftingTable) {
                     recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
@@ -2698,8 +2725,8 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
                 // then place it and use it.
                 await craftRecipe(bot, 'crafting_table', 1);
                 if (world.getInventoryCounts(bot)['crafting_table'] > 0) {
-                    let pos = world.getNearestFreeSpace(bot, 1, 6);
-                    await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z);
+                    let pos = nearestReachableSpot(bot);   // same reach bug as above
+                    try { await placeBlock(bot, 'crafting_table', pos.x, pos.y, pos.z); } catch (_) {}
                     craftingTable = world.getNearestBlock(bot, 'crafting_table', craftingTableRange);
                     if (craftingTable) {
                         recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, craftingTable);
