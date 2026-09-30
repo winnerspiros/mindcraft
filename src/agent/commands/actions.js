@@ -1719,6 +1719,31 @@ export const actionsList = [
         })
     },
     {
+        name: '!myGear',
+        description: 'Report exactly what you are carrying and wearing, read from the server rather than your own (broken) inventory view: every item with its count, each armor slot, your offhand, and what is missing.',
+        perform: runAsAction(async (agent) => {
+            const bot = agent.bot;
+            const { rconPlayerGear, rconArmorStatus } = await import('../../utils/rcon.js');
+            const g = await rconPlayerGear(bot.username);
+            if (!g) return 'I cannot read my own inventory right now.';
+            const a = await rconArmorStatus(bot.username);
+            const out = [];
+            if (g.carrying.length) {
+                out.push('Carrying: ' + g.carrying.map(c => `${mc_knowledge.displayName(c.id)}${c.count > 1 ? ' x' + c.count : ''}`).join(', ') + '.');
+            } else out.push('Carrying: nothing.');
+            const slotName = { head: 'helmet', chest: 'chestplate', legs: 'leggings', feet: 'boots' };
+            const worn = ['head', 'chest', 'legs', 'feet'].map(s => `${slotName[s]}: ${a[s] ? mc_knowledge.displayName(a[s]) : 'none'}`);
+            out.push('Wearing: ' + worn.join(', ') + '.');
+            out.push('Offhand: ' + (a.offhand ? mc_knowledge.displayName(a.offhand) : 'empty') + '.');
+            if (!a.complete) out.push(`(I am missing ${4 - a.slotsFilled} armor piece(s).)`);
+            const ench = (g.raw && g.raw.inventory || '').match(/enchantments:\s*\[[^\]]*\]/);
+            if (ench) out.push('Some of my items are enchanted.');
+            const named = (g.raw && g.raw.inventory || '').match(/custom_name:\s*"([^"]+)"/);
+            if (named) out.push(`I have something named "${named[1]}".`);
+            return out.join('\n');
+        })
+    },
+    {
         name: '!whoIs',
         description: 'Look at who is nearby and report what they are: how far away, which way they are facing, what they are wearing, what they are carrying, and whether they are armed. Read-only.',
         params: {
