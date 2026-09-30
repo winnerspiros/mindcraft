@@ -104,6 +104,41 @@ export async function rconPlayerPos(name) {
     return pos;
 }
 
+// NEARBY ENTITIES (2026-09-30): the whole perception layer depends on this,
+// because 26.3 withholds entities from bot.entities. One `execute as
+// @e[distance=..N] at @s run data get entity @s Pos` returns EVERY entity near
+// the executor in a SINGLE socket (verified: 3 entities, one call) instead of
+// one socket per mob type. READ-ONLY. Returns [{name,x,y,z}]. Cached briefly
+// so a describe/look sweep does not re-read on every leg.
+const _nearCache = {};
+const NEAR_CACHE_MS = 1000;
+export async function rconNearbyEntities(name, radius = 24) {
+    const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
+    if (!safe) return [];
+    const key = `${safe}:${radius}`;
+    const now = Date.now();
+    if (_nearCache[key] && now - _nearCache[key].t < NEAR_CACHE_MS) return _nearCache[key].list;
+    let out;
+    try {
+        out = await rconCommand(
+            `execute as ${safe} at @s run execute as @e[distance=..${Math.max(1, Math.min(64, Math.floor(radius)))}] at @s run data get entity @s Pos`);
+    } catch (e) { return []; }
+    // "Pillager has the following entity data: [x, y, z]UwU has ... [x, y, z]"
+    // — no newlines, so split on the entity name that precedes each bracket.
+    // NAME CASE: RCON reports the DISPLAY name ("Pillager", "UwU"), NOT the
+    // snake_case id ("pillager"). Every caller filters against snake_case, so
+    // this MUST be lowercased here — otherwise every comparison silently fails
+    // and a live pillager reads as "no threat". This bug shipped once already.
+    const list = [];
+    const re = /([A-Za-z_0-9]+) has the following entity data: \[(-?[\d.]+)d,\s*(-?[\d.]+)d,\s*(-?[\d.]+)d\]/g;
+    let m;
+    while ((m = re.exec(String(out || ''))) !== null) {
+        list.push({ name: m[1].toLowerCase(), x: parseFloat(m[2]), y: parseFloat(m[3]), z: parseFloat(m[4]) });
+    }
+    _nearCache[key] = { t: now, list };
+    return list;
+}
+
 // Server-truth inventory (2026-09-27): client items() is blind on 26.3 (Slot
 // decode bug reads 0 [] while RCON holds a real kit), so placement/dig verbs
 // that gate on carried blocks must consult the server. Cached a few seconds
