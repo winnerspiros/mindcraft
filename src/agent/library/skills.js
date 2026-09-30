@@ -4,6 +4,8 @@ import { canOp } from '../../utils/server_context.js';
 import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
 import * as K from '../../utils/mcknowledge.js';
 import * as L from './furnace_ledger.js';
+import * as SL from './station_ledger.js';
+import * as ENC from '../../utils/mcenchant.js';
 
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
@@ -9440,6 +9442,38 @@ export async function useToolOn(bot, toolName, targetName) {
 
 // ===== ENCHANTING / ANVIL / BOOK / FARMING (normal-player depth) =====
 
+
+// Read the enchantments actually ON an item, as readable "Name Level" strings.
+// 26.3 shape: item.components is an ARRAY of {type:'enchantments', data:
+// {enchantments:[{id, level}]}} with NUMERIC ids. Older shapes nest
+// { <name>: {value: level} }. Both handled here so callers never guess.
+export function readEnchantments(bot, itemName) {
+    const out = [];
+    let it = null;
+    try { it = bot.inventory.items().find(x => x.name === itemName); } catch (_) {}
+    for (const c of ((it && it.components) || [])) {
+        if (!c || !/enchant/i.test(c.type || '')) continue;
+        const lv = c.data;
+        if (!lv || typeof lv !== 'object') continue;
+        if (Array.isArray(lv.enchantments)) {
+            for (const e of lv.enchantments) {
+                if (!e) continue;
+                const meta = ENC.getEnchantmentById(e.id);
+                const nm = meta ? meta.displayName : `enchantment ${e.id}`;
+                out.push(`${nm} ${e.level == null ? '' : e.level}`.trim());
+            }
+        } else {
+            for (const [ek, ev] of Object.entries(lv)) {
+                const key = String(ek).replace('minecraft:', '');
+                const meta = ENC.getEnchantment(key);
+                const nm = meta ? meta.displayName : key.replace(/_/g, ' ');
+                out.push(`${nm} ${ev && ev.value != null ? ev.value : ev}`.trim());
+            }
+        }
+    }
+    return out;
+}
+
 export async function enchantItem(bot, itemName, choice=null) {
     /**
      * Enchant an item at the nearest enchanting table. Puts the item + lapis,
@@ -9512,6 +9546,10 @@ export async function enchantItem(bot, itemName, choice=null) {
         if (!it) { log(bot, `No ${itemName} in inventory to enchant.`); table.close(); return false; }
         try { await putTarget(); }
         catch (e) { log(bot, `Could not put ${itemName} in the table: ${e.message}`); table.close(); return false; }
+        // REMEMBER that I left this item sitting in the table, so if it is gone
+        // when I come back I know someone took it rather than assuming a bug.
+        SL.rememberTable(bot, useBlock.position, { origin: 'crafted' });
+        SL.noteTableItem(bot, useBlock.position, itemName, 1);
 
         // One lapis can leave every option at -1. Feed more until the server
         // commits real enchantments, since the options re-roll as lapis rises.
@@ -9548,22 +9586,446 @@ export async function enchantItem(bot, itemName, choice=null) {
         // AFFORD rather than the highest level on offer.
         const myLevels = bot.experience ? bot.experience.level : 0;
         if (choice == null) {
+            if (idx == null || choices[idx] == null || choices[idx].level < 0) {
             const affordable = choices
                 .map((c, i) => ({ c, i }))
                 .filter(x => x.c.level >= 0 && x.c.level <= myLevels)
                 .sort((a, b) => b.c.level - a.c.level);
             idx = affordable.length ? affordable[0].i : choices.findIndex(c => c.level >= 0);
+            }
             if (idx < 0) idx = 0;
         }
+        // Explain the offer: the table's power comes from how many bookshelves
+        // ring it, and the three options are a weighted random roll. Without
+        // saying so, a bad roll looks like a bug rather than the lottery it is.
+        const shelves = countBookshelves(bot, useBlock.position);
+        log(bot, `The table has ${shelves} bookshelf${shelves === 1 ? '' : 's'} around it — ${shelves === 0 ? 'that is why the options are weak' : 'that raises the tier I can get'}.`);
+        const paidCost = choices[idx] && choices[idx].level >= 0 ? choices[idx].level : 0;
+        log(bot, `Offers: ${choices.map((c, i) => `#${i}=level ${c.level}`).join(', ')}. My levels: ${bot.experience ? bot.experience.level : 0}. Taking #${idx}.`);
         await table.enchant(idx);
-        await table.takeTargetItem();
+        // takeTargetItem() can resolve before the client's inventory view has
+        // caught up with the server, so the components are not readable yet.
+        // Give the slot a moment to land before deciding it failed.
+        let back = await table.takeTargetItem();
+        for (let tries = 0; tries < 10; tries++) {
+            const cur = bot.inventory.items().find(x => x.name === itemName);
+            if (cur && cur.components && cur.components.length) { back = cur; break; }
+            await wait(bot, 250);
+        }
         table.close();
-        log(bot, `Enchanted ${itemName} (cost ${choices[idx].level} levels).`);
-        return true;
+
+        // VERIFY. The server silently ignores an enchant it will not accept and
+        // takes the lapis anyway, so a `true` from enchant() is NOT proof. Check
+        // the item really came back carrying enchantment components.
+        //
+        // prismarine-item exposes 1.20.5+ item data as `item.components`, an ARRAY
+        // of {type, data}, plus a `componentMap`. Reading it as an object (the
+        // shape the server's NBT uses) silently finds nothing and made a
+        // SUCCESSFUL enchant look like a failure.
+        const enchNames = readEnchantments(bot, itemName);
+        SL.noteTableItem(bot, useBlock.position, itemName, 0);
+        if (enchNames.length) {
+            log(bot, `Enchanted my ${String(itemName).replace(/_/g, ' ')} with ${enchNames.join(', ')} (cost ${paidCost} levels).`);
+            SL.noteEnchant(bot, useBlock.position, enchNames.join(', '), paidCost, itemName);
+            return true;
+        }
+        // A table will not re-apply an enchantment the item already has, so an
+        // item that came back unchanged is not necessarily a failure. Check
+        // whether it is ALREADY enchanted and report that honestly.
+        const already = readEnchantments(bot, itemName);
+        if (already.length) {
+            log(bot, `My ${String(itemName).replace(/_/g, ' ')} is already enchanted (${already.join(', ')}), and a table will not add the same one twice.`);
+            return false;
+        }
+        log(bot, `The table did not take the enchantment (offered level ${choices[idx].level}, I have ${bot.experience ? bot.experience.level : 0} levels). The lapis may be spent.`);
+        return false;
     } catch (err) {
         log(bot, `Enchanting failed: ${err.message}`);
         return false;
     }
+}
+
+
+
+// --- BREWING AS A WHOLE PROCESS (2026-09-30) -----------------------------
+// brewPotion() below performs one brew step and assumes everything is in place.
+// A player works out the CHAIN first (nether_wart -> awkward -> effect), gets
+// each ingredient, and notices when something she loaded into the stand is
+// missing when she comes back.
+
+
+// Count potions that actually carry a brew effect. An "Uncraftable Potion" is
+// also named minecraft:potion but has no components, so counting by name alone
+// made a chain report success on bottles that never brewed.
+export function countRealPotions(bot) {
+    let n = 0;
+    try {
+        for (const it of bot.inventory.items()) {
+            if (it.name !== 'potion') continue;
+            const comps = (it.components || []).filter(c => c && /potion/i.test(c.type || ''));
+            if (comps.length) n += it.count || 1;
+        }
+    } catch (_) {}
+    return n;
+}
+
+export function brewPlan(bot, effectName) {
+    const inv = world.getInventoryCounts(bot);
+    const chain = ENC.brewChainFor(effectName);
+    if (!chain) {
+        return { effect: effectName, ok: false, reason: `I do not know how to make ${String(effectName).replace(/_/g, ' ')}. Tell me an ingredient (sugar, blaze_powder, ghast_tear...) or an effect name.` };
+    }
+    // Prefer the stand she remembers, but a real one standing nearby counts too.
+    const remembered = SL.nearestStand(bot);
+    let stand = remembered;
+    if (!stand) {
+        const near = world.getNearestBlock(bot, 'brewing_stand', 32);
+        if (near) stand = { x: Math.floor(near.position.x), y: Math.floor(near.position.y), z: Math.floor(near.position.z), newlyFound: true };
+    }
+    const missing = [];
+    if (!stand) missing.push({ item: 'brewing_stand', why: 'the station', how: 'craft from 1 blaze_rod + 3 cobblestone' });
+    if (!(inv.nether_wart > 0)) missing.push({ item: 'nether_wart', why: 'the base of every brew', how: 'nether wart, in a nether fortress' });
+    if (!(inv.blaze_powder > 0)) missing.push({ item: 'blaze_powder', why: 'fuel, one per brew', how: 'craft from a blaze_rod' });
+    for (const step of chain) {
+        if (step === 'nether_wart') continue;   // already checked
+        if (!(inv[step] > 0)) missing.push({ item: step, why: 'the ingredient for this effect', how: `find or craft ${String(step).replace(/_/g, ' ')}` });
+    }
+    return {
+        effect: effectName,
+        chain,
+        steps: chain.length,
+        hasStand: !!stand,
+        missing,
+        ok: missing.length === 0,
+        timeSeconds: chain.length * ENC.BREW_TIME_SECONDS,
+    };
+}
+
+export async function brewSmart(bot, effectOrIngredient, quiet = false) {
+    /**
+     * Brew a potion end to end the way a player would: work out the chain, get
+     * every ingredient, then run each step in order. Says what it is missing
+     * rather than failing partway.
+     * @param {MinecraftBot} bot
+     * @param {string} effectOrIngredient an effect name (Swiftness) or an
+     *        ingredient name (sugar, blaze_powder, nether_wart).
+     * @returns {Promise<boolean>} true if the brew chain completed.
+     */
+    const plan = brewPlan(bot, effectOrIngredient);
+    if (!plan.chain) { log(bot, plan.reason); return false; }
+    if (!quiet) {
+        const steps = plan.chain.map(c => String(c).replace(/_/g, ' ')).join(' then ');
+        log(bot, `To make ${String(effectOrIngredient).replace(/_/g, ' ')} I need: ${steps}. That is ${plan.steps} brew${plan.steps === 1 ? '' : 's'}, about ${plan.timeSeconds} seconds.`);
+        if (plan.missing.length) {
+            log(bot, `I am missing ${plan.missing.map(m => `${m.item} (${m.why} — ${m.how})`).join(', ')}.`);
+        }
+    }
+    if (!plan.ok) return false;
+
+    for (let i = 0; i < plan.chain.length; i++) {
+        const step = plan.chain[i];
+        // How many real potions she has BEFORE this step, so we can prove the
+        // step actually produced one instead of trusting a bare boolean.
+        const before = countRealPotions(bot);
+        const ok = await brewPotion(bot, step, 1);
+        const after = countRealPotions(bot);
+        if (!ok || after <= before) {
+            log(bot, `Step ${i + 1} of ${plan.chain.length} (${String(step).replace(/_/g, ' ')}) did not produce a potion — I have ${after} and had ${before}.`);
+            return false;
+        }
+        log(bot, `Step ${i + 1} of ${plan.chain.length} done: ${String(step).replace(/_/g, ' ')}.`);
+    }
+    const stand = SL.nearestStand(bot);
+    if (stand) SL.noteBrewed(bot, { x: stand.x, y: stand.y, z: stand.z }, String(effectOrIngredient), 1);
+    log(bot, `Brewed ${String(effectOrIngredient).replace(/_/g, ' ')}.`);
+    return true;
+}
+
+// Check the brewing stand she remembers: still there? running? did anything she
+// loaded into it go missing?
+export async function checkBrewStand(bot) {
+    try { SL.auditStands(bot); } catch (_) {}
+    const s = SL.nearestStand(bot);
+    if (!s) return SL.describeStations(bot);
+    let blk = null;
+    try { blk = bot.blockAt(new Vec3(s.x, s.y, s.z)); } catch (_) {}
+    if (!blk || blk.name !== 'brewing_stand') { SL.auditStands(bot); return SL.describeStations(bot); }
+
+    const out = [SL.describeStations(bot)];
+    try {
+        await goToPosition(bot, s.x, s.y, s.z, 2).catch(() => {});
+        const w = await bot.openBlock({ position: new Vec3(s.x, s.y, s.z), name: 'brewing_stand' });
+        const bottles = [0, 1, 2].map(i => w.slots[i]).filter(Boolean);
+        const ing = w.slots[3];
+        const fuel = w.slots[4];
+        const bits = [];
+        if (bottles.length) bits.push(`${bottles.length} bottle${bottles.length === 1 ? '' : 's'} (${bottles.map(b => b.name.replace(/_/g, ' ')).join(', ')})`);
+        if (ing) bits.push(`${ing.name.replace(/_/g, ' ')} going in`);
+        if (fuel) bits.push(`${fuel.count} blaze powder`);
+        if (s.brewing) {
+            const elapsed = Math.round((Date.now() - s.brewing.startedAt) / 1000);
+            const left = Math.max(0, ENC.BREW_TIME_SECONDS - elapsed);
+            bits.push(elapsed >= ENC.BREW_TIME_SECONDS ? 'the brew should be done' : `brewing for another ${left}s`);
+        } else if (bottles.length && !fuel) {
+            bits.push('it has stopped, it needs blaze powder');
+        }
+        if (!bits.length) bits.push('it is empty');
+        out.push('Right now: ' + bits.join(', ') + '.');
+
+        // the "someone took my ingredients" check
+        const expected = s.brewing && s.brewing.ingredient;
+        if (expected && !ing) {
+            SL.noteBrewed(bot, { x: s.x, y: s.y, z: s.z }, 'lost', 0);
+            out.push(`The ${String(expected).replace(/_/g, ' ')} I loaded into my stand is gone.`);
+        }
+        await bot.closeWindow(w);
+    } catch (err) {
+        out.push(`(could not open it: ${err.message})`);
+    }
+    return out.join(' ');
+}
+
+// Take the finished potions, and anything left un-used.
+export async function collectBrewStand(bot) {
+    try { SL.auditStands(bot); } catch (_) {}
+    const s = SL.nearestStand(bot);
+    if (!s) { log(bot, 'I do not have a brewing stand I remember.'); return false; }
+    let blk = null;
+    try { blk = bot.blockAt(new Vec3(s.x, s.y, s.z)); } catch (_) {}
+    if (!blk || blk.name !== 'brewing_stand') { SL.auditStands(bot); log(bot, 'My brewing stand is gone.'); return false; }
+
+    await goToPosition(bot, s.x, s.y, s.z, 2).catch(() => {});
+    let got = 0;
+    try {
+        const w = await bot.openBlock({ position: new Vec3(s.x, s.y, s.z), name: 'brewing_stand' });
+        for (const i of [0, 1, 2, 3, 4]) {
+            if (!w.slots[i]) continue;
+            const it = w.slots[i];
+            got += it.count || 1;
+            log(bot, `Took ${it.count || 1} ${it.name.replace(/_/g, ' ')} from my brewing stand.`);
+            await bot.putAway(i);
+        }
+        await bot.closeWindow(w);
+    } catch (err) {
+        log(bot, `Could not empty the brewing stand: ${err.message}`);
+    }
+    if (got) { SL.noteBrewed(bot, { x: s.x, y: s.y, z: s.z }, 'collected', got); return true; }
+    log(bot, 'My brewing stand is empty.');
+    return false;
+}
+
+// --- ENCHANTING AS A WHOLE PROCESS (2026-09-30) ---------------------------
+// enchantItem() above performs one enchant and assumes everything is already in
+// place. A player does more than that: they decide what they actually WANT,
+// work out whether the table can even offer it, gather lapis and XP, use
+// bookshelves for the good tiers, and notice when the item in the table has
+// gone missing. These helpers cover that.
+
+// Which enchantments would she plausibly want on this item? Ranked by how much
+// they matter for how she actually plays, not alphabetically.
+const WANT_PRIORITY = {
+    sharpness: 10, efficiency: 10, protection: 10, unbreaking: 8, mending: 9,
+    fortune: 7, looting: 6, knockback: 5, fire_aspect: 4, sweeping_edge: 3,
+    silk_touch: 5, luck_of_the_sea: 7, lure: 4, infinity: 8, punch: 6,
+    power: 8, flame: 5, frost_walker: 4, feather_falling: 4, swift_sneak: 3,
+    depth_strider: 4, aqua_affinity: 5, respiration: 4, protection_env: 4,
+    thorns: 3, multishot: 7, piercing: 6, quick_charge: 6, soul_speed: 3,
+    binding_curse: 1, vanishing_curse: 1, channeling: 2, impaling: 5,
+    loyalty: 5, riptide: 4, wind_burst: 3, density: 6, breach: 5,
+};
+
+export function wishlistFor(itemName) {
+    const opts = ENC.possibleEnchantments(itemName);
+    return opts
+        .map(e => ({ name: e.name, display: e.displayName, maxLevel: e.maxLevel, bookOnly: !!e.treasureOnly, prio: WANT_PRIORITY[e.name] || 2 }))
+        .sort((a, b) => b.prio - a.prio);
+}
+
+// How many bookshelves are actually around the table? Each one adds 1 to the
+// table's seed power, which is what unlocks the upper tiers.
+export function countBookshelves(bot, tablePos, range = 4) {
+    let n = 0;
+    for (let dx = -range; dx <= range; dx++)
+        for (let dz = -range; dz <= range; dz++)
+            for (let dy = -1; dy <= 2; dy++) {
+                // skip the table's own cell
+                if (dx === 0 && dy === 0 && dz === 0) continue;
+                let b = null;
+                try { b = bot.blockAt(new Vec3(tablePos.x + dx, tablePos.y + dy, tablePos.z + dz)); } catch (_) { continue; }
+                if (b && b.name === 'bookshelf') n++;
+            }
+    return n;
+}
+
+// Get lapis the honest way if she has none: mine it, or trade with a cleric.
+// She has no way to summon a villager safely here, so the honest answer is to
+// say where lapis comes from rather than pretend.
+async function acquireLapis(bot, want = 15) {
+    const have = () => world.getInventoryCounts(bot)['lapis_lazuli'] || 0;
+    if (have() >= want) return true;
+    log(bot, `I need lapis to enchant. I have ${have()}. Lapis comes from lapis ore (mine it with a pickaxe) or from cleric villagers.`);
+    return false;
+}
+
+// She cannot mint XP herself. But she CAN notice that levelling is the blocker
+// and go do something that grants it, rather than silently failing.
+async function gainXpIfPossible(bot, needed) {
+    const lvl = bot.experience ? bot.experience.level : 0;
+    if (lvl >= needed) return true;
+    log(bot, `Enchanting costs XP levels and I only have ${lvl}. I need ${needed} — I should mine or fight to gain experience first.`);
+    return false;
+}
+
+// The full picture before she touches the table: what she wants, what it costs,
+// what she is missing, and whether the table is even good enough.
+export function enchantPlan(bot, itemName, wanted = null) {
+    const inv = world.getInventoryCounts(bot);
+    const item = bot.inventory.items().find(i => i.name === itemName);
+    const lvl = bot.experience ? bot.experience.level : 0;
+    // Prefer the table she REMEMBERS, but a real one standing nearby counts too —
+    // otherwise a table she has never used reads as "none" and she refuses to try.
+    const remembered = SL.nearestTable(bot);
+    let table = remembered;
+    if (!table) {
+        const near = world.getNearestBlock(bot, 'enchanting_table', 32);
+        if (near) table = { x: Math.floor(near.position.x), y: Math.floor(near.position.y), z: Math.floor(near.position.z), newlyFound: true };
+    }
+    const shelves = table ? countBookshelves(bot, { x: table.x, y: table.y, z: table.z }) : 0;
+    const ceil = ENC.lapisCeiling(itemName);
+
+    const wish = wanted && wanted.length ? wanted.map(String) : wishlistFor(itemName).map(w => w.name);
+    const want = wishlistFor(itemName).filter(w => wish.includes(w.name));
+
+    const missing = [];
+    if (!item) missing.push(`${itemName} is not in my inventory`);
+    if (!(inv.lapis_lazuli > 0)) missing.push('no lapis_lazuli');
+    if (table == null) missing.push('no enchanting table I remember');
+
+    return {
+        item: itemName,
+        has: !!item,
+        lapis: inv.lapis_lazuli || 0,
+        levels: lvl,
+        bookshelves: shelves,
+        ceiling: ceil,
+        want,
+        // book-only enchantments can NEVER come from the table; that is the
+        // whole reason she needs an enchanted book for Mending.
+        needsBookFor: want.filter(w => w.bookOnly).map(w => w.name),
+        tableCanOffer: want.filter(w => !w.bookOnly).map(w => w.name),
+        missing,
+        ready: missing.length === 0,
+    };
+}
+
+export async function enchantSmart(bot, itemName, wanted = null, quiet = false) {
+    /**
+     * Enchant an item the way a player would: work out what she actually wants
+     * on it, check she can afford it in lapis and levels, gather what is missing,
+     * use the table's bookshelf bonus, and take the best offer she can pay for.
+     * If the enchantment she wants is book-only, says so instead of rolling the
+     * dice forever.
+     * @param {MinecraftBot} bot
+     * @param {string} itemName the item to enchant
+     * @param {string[]|null} wanted optional enchantment names she is after
+     * @returns {Promise<boolean>} true if the item came back enchanted
+     */
+    const plan = enchantPlan(bot, itemName, wanted);
+    if (!quiet) {
+        const w = plan.want.slice(0, 4).map(x => x.display).join(', ');
+        log(bot, `Enchanting my ${String(itemName).replace(/_/g, ' ')}: I want ${w || 'whatever comes up'}. I have ${plan.lapis} lapis, ${plan.levels} levels, ${plan.bookshelves} bookshelves.`);
+        if (plan.needsBookFor.length) {
+            log(bot, `${plan.needsBookFor.map(n => n.replace(/_/g, ' ')).join(', ')} can never appear on a table — those come from an enchanted book.`);
+        }
+        if (!plan.ready) log(bot, `Not ready yet: ${plan.missing.join(', ')}.`);
+    }
+    if (!plan.ready) {
+        if (!world.getInventoryCounts(bot)['lapis_lazuli']) await acquireLapis(bot, 15);
+        return false;
+    }
+
+    const done = await enchantItem(bot, itemName, null);
+    if (done) {
+        const t = SL.nearestTable(bot);
+        if (t) SL.noteEnchant(bot, { x: t.x, y: t.y, z: t.z }, 'unknown', 0, itemName);
+    }
+    return done;
+}
+
+// Check a table she remembers: is it still there, is anything sitting in it,
+// and did anything she left inside go missing.
+export async function checkEnchantTable(bot) {
+    try { SL.auditTables(bot); } catch (_) {}
+    const t = SL.nearestTable(bot);
+    if (!t) return SL.describeStations(bot);
+
+    let blk = null;
+    try { blk = bot.blockAt(new Vec3(t.x, t.y, t.z)); } catch (_) {}
+    if (!blk || blk.name !== 'enchanting_table') {
+        SL.auditTables(bot);
+        return SL.describeStations(bot);
+    }
+
+    const out = [SL.describeStations(bot)];
+    try {
+        await goToPosition(bot, t.x, t.y, t.z, 2).catch(() => {});
+        const table = await bot.openEnchantmentTable({ position: new Vec3(t.x, t.y, t.z), name: 'enchanting_table' });
+        const target = table.slots[0];
+        const lapis = table.slots[1];
+        if (target) {
+            // something is sitting in the table — is it what she left there?
+            const remembered = (t.inside || []).map(i => i.item);
+            if (remembered.length && !remembered.includes(target.name)) {
+                SL.noteTableItemMissing(bot, { x: t.x, y: t.y, z: t.z }, remembered.join(', '));
+                out.push(`There is a ${target.name.replace(/_/g, ' ')} in my table, but I left ${remembered.join(', ')} there. Someone swapped it.`);
+            } else {
+                out.push(`There is a ${target.name.replace(/_/g, ' ')} sitting in the table.`);
+            }
+        } else if ((t.inside || []).length) {
+            SL.noteTableItemMissing(bot, { x: t.x, y: t.y, z: t.z }, t.inside.map(i => i.item).join(', '));
+            out.push(`The ${t.inside.map(i => i.item).join(', ')} I left in my table is gone.`);
+        }
+        if (lapis) out.push(`${lapis.count} lapis is in the table.`);
+        await table.close();
+    } catch (err) {
+        out.push(`(could not open it: ${err.message})`);
+    }
+    return out.join(' ');
+}
+
+// Take back whatever is sitting in the table — the item she left mid-enchant,
+// and any lapis that did not get spent.
+export async function collectTable(bot) {
+    try { SL.auditTables(bot); } catch (_) {}
+    const t = SL.nearestTable(bot);
+    if (!t) { log(bot, 'I do not have an enchanting table I remember.'); return false; }
+    let blk = null;
+    try { blk = bot.blockAt(new Vec3(t.x, t.y, t.z)); } catch (_) {}
+    if (!blk || blk.name !== 'enchanting_table') { SL.auditTables(bot); log(bot, 'My enchanting table is gone.'); return false; }
+
+    await goToPosition(bot, t.x, t.y, t.z, 2).catch(() => {});
+    let got = 0;
+    try {
+        const table = await bot.openEnchantmentTable({ position: new Vec3(t.x, t.y, t.z), name: 'enchanting_table' });
+        if (table.slots[0]) {
+            const it = table.slots[0];
+            got += it.count || 1;
+            log(bot, `Took back ${it.count || 1} ${it.name.replace(/_/g, ' ')} from my table.`);
+            await bot.putAway(0);
+        }
+        if (table.slots[1]) {
+            const l = table.slots[1];
+            got += l.count || 1;
+            log(bot, `Took back ${l.count} lapis that was not spent.`);
+            await bot.putAway(1);
+        }
+        await table.close();
+    } catch (err) {
+        log(bot, `Could not empty the table: ${err.message}`);
+    }
+    if (got) { SL.noteTableItem(bot, { x: t.x, y: t.y, z: t.z }, 'collected', got); return true; }
+    log(bot, 'My enchanting table is empty.');
+    return false;
 }
 
 export async function useAnvil(bot, action, itemName1, itemName2=null, rename=null) {
@@ -9779,10 +10241,9 @@ export async function breedAnimals(bot, maxDistance=16) {
 // water, equip a glass bottle, use it on the source block.
 async function fillWaterBottles(bot, want = 1) {
     const inv = () => world.getInventoryCounts(bot);
-    const have = () => bot.inventory.items().filter(i => i.name === 'potion').reduce((a, b) => a + b.count, 0);
-    if (have() >= want) return have();
+    const filledCount = () => bot.inventory.items().filter(i => i.name === 'potion').reduce((a, b) => a + b.count, 0);
+    if (filledCount() >= want) return filledCount();
 
-    // glass bottles first: craft if short (3 glass in a V)
     if ((inv()['glass_bottle'] || 0) < 1) {
         try { await craftRecipe(bot, 'glass_bottle', Math.max(want, 3), true); } catch (_) {}
     }
@@ -9791,66 +10252,89 @@ async function fillWaterBottles(bot, want = 1) {
         return 0;
     }
 
-    // Water metadata 0 is a still SOURCE you can scoop from; 1-7 are FLOWING
-    // and cannot be bottled — getNearestBlock returns the nearest water of any
-    // kind, so check for level 0 and keep looking otherwise.
-    const findSource = (near) => {
-        let best = null;
-        for (let dx = -near; dx <= near; dx++)
-            for (let dy = -4; dy <= 4; dy++)
-                for (let dz = -near; dz <= near; dz++) {
-                    const p = new Vec3(bx + dx, by + dy, bz + dz);
-                    let b; try { b = bot.blockAt(p); } catch (_) { continue; }
-                    if (b && b.name === 'water' && b.metadata === 0) {
-                        const d = p.distanceTo(new Vec3(bx, by, bz));
-                        if (!best || d < best.d) best = { b, d };
-                    }
-                }
-        return best ? best.b : null;
-    };
-    const me = bot.entity.position;
-    const bx = Math.floor(me.x), by = Math.floor(me.y), bz = Math.floor(me.z);
-    const src = world.getNearestBlock(bot, 'water', 32) || null;
-    const real = src && src.metadata === 0 ? src : findSource(24);
+    // Only a still SOURCE (metadata 0) can be bottled; flowing water cannot, and
+    // getNearestBlock happily returns the flowing kind.
+    const src = world.getNearestBlock(bot, 'water', 32);
+    let real = (src && src.metadata === 0) ? src : null;
     if (!real) {
-        log(bot, 'No still water source nearby — flowing water cannot be bottled. I need a source block (a pond edge, pool or spring).');
+        const me = bot.entity.position;
+        const bx = Math.floor(me.x), by = Math.floor(me.y), bz = Math.floor(me.z);
+        for (let r = 2; r <= 16 && !real; r += 2) {
+            for (let dx = -r; dx <= r && !real; dx++)
+                for (let dz = -r; dz <= r && !real; dz++)
+                    for (let dy = -3; dy <= 3 && !real; dy++) {
+                        let b; try { b = bot.blockAt(new Vec3(bx + dx, by + dy, bz + dz)); } catch (_) { continue; }
+                        if (b && b.name === 'water' && b.metadata === 0) real = b;
+                    }
+        }
+    }
+    if (!real) {
+        log(bot, 'No still water source nearby — flowing water cannot be bottled. I need a source block, like a pond edge or a spring.');
         return 0;
     }
-    // goToPosition RETURNS false when it cannot get there — it does not throw.
-    // Ignoring that made this look like a fill failure when it was a walk
-    // failure, and the water was 13 blocks away the whole time.
-    const reached = await goToPosition(bot, real.position.x, real.position.y + 1, real.position.z, 2);
-    const distNow = bot.entity.position.distanceTo(real.position);
-    if (!reached || distNow > 4) {
-        log(bot, `I can see still water at ${real.position.x}, ${real.position.y}, ${real.position.z} but I cannot walk to it from here (${distNow.toFixed(0)}m).`);
+
+    // Stand NEXT TO the source — never ON it. goToPosition() targets the block
+    // above the source, which is the water cell itself, so she ends up standing
+    // in the water and the cursor then resolves to the bank, the floor below, or
+    // nothing at all, and the fill silently does nothing. Pick an adjacent cell
+    // that is not itself water and walk there first.
+    const RING = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1], [2, 0], [0, 2], [-2, 0], [0, -2]];
+    let beside = false;
+    for (const [dx, dz] of RING) {
+        const t = new Vec3(real.position.x + dx, real.position.y, real.position.z + dz);
+        let tb; try { tb = bot.blockAt(t); } catch (_) { continue; }
+        if (!tb || /water|lava/.test(tb.name)) continue;   // would put her back in it
+        await goToPosition(bot, t.x, t.y + 1, t.z, 1).catch(() => {});
+        const d = bot.entity.position.distanceTo(real.position);
+        if (d <= 2.2 && d >= 0.9) { beside = true; break; }
+        if (d < 0.9) { // she is standing in the water cell itself
+            await goToPosition(bot, t.x, t.y + 1, t.z, 1).catch(() => {});
+            if (bot.entity.position.distanceTo(real.position) >= 0.9) { beside = true; break; }
+        }
+    }
+    if (!beside) {
+        // last resort: aim from wherever she is, if the source is close enough
+        if (bot.entity.position.distanceTo(real.position) > 3) {
+            log(bot, `I can see still water at ${real.position.x}, ${real.position.y}, ${real.position.z} but cannot get beside it.`);
+            return 0;
+        }
+    }
+    if (bot.entity.position.distanceTo(real.position) > 3) {
+        log(bot, `I can see still water at ${real.position.x}, ${real.position.y}, ${real.position.z} but cannot walk to it.`);
         return 0;
     }
 
     let filled = 0;
     for (let i = 0; i < want; i++) {
         if ((inv()['glass_bottle'] || 0) < 1) break;
-        if (have() > filled) { filled = have(); continue; }
+        const before = filledCount();
         try {
-            // Aim at the TOP FACE of the water, not its side. She stands at the
-            // same y as the source block, so looking at its centre points the
-            // camera into the water's flank and the fill silently does nothing.
-            // Bottle-filling by aiming is unreliable: the cursor lands on the
-            // bank, or on the floor under the water when standing in it, and
-            // the click silently does nothing. The proven path is the same one
-            // scoopAt() already uses for a bucket — useToolOnBlock, which
-            // handles approach, line-of-sight and the blocked-view case.
+            // goToPosition() aims for the block ABOVE the source, which for a
+            // water block is the water cell itself — she steps in, and from
+            // inside it the bottle has no face to hit. Stand on a dry neighbour
+            // first, then use the bottle on the source from there. The bucket
+            // works from anywhere because scooping is not a click on a surface.
+            const RING = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+            for (const [dx, dz] of RING) {
+                const t = { x: real.position.x + dx, y: real.position.y, z: real.position.z + dz };
+                let tb; try { tb = bot.blockAt(new Vec3(t.x, t.y, t.z)); } catch (_) { continue; }
+                if (!tb || /water|lava/.test(tb.name)) continue;
+                await goToPosition(bot, t.x, t.y + 1, t.z, 1).catch(() => {});
+                const d = bot.entity.position.distanceTo(real.position);
+                if (d >= 1.0 && d <= 2.2) break;
+            }
             await equip(bot, 'glass_bottle');
-            const used = await useToolOnBlock(bot, 'glass_bottle', real);
-            await wait(bot, 450);
+            await useToolOnBlock(bot, 'glass_bottle', real);
+            await wait(bot, 600);
         } catch (e) {
             log(bot, `Filling a bottle failed: ${e.message}`);
             break;
         }
-        filled = have();
+        filled = filledCount();
+        if (filled <= before) { log(bot, 'The bottle did not fill — I need to be right beside the water.'); break; }
     }
     return filled;
 }
-
 export async function brewPotion(bot, ingredientName, count=1) {
     /**
      * Brew potions at the nearest brewing stand. Puts water bottles (or an
@@ -9885,10 +10369,28 @@ export async function brewPotion(bot, ingredientName, count=1) {
     const potionId = mc.getItemId('potion');
     let havePotionBottles = bot.inventory.items().some(i => i.name === 'potion');
 
-    await goToNearestBlock(bot, 'brewing_stand', 3, 16);
+    // A brewing stand must be within ~2-3 blocks to right-click. She had been
+    // pathing to 3, which left it at the edge of reach and the window never
+    // opened. Walk right up, and re-read the block fresh rather than trusting a
+    // stale reference from a previous step.
+    await goToNearestBlock(bot, 'brewing_stand', 2, 16);
+    const freshStand = world.getNearestBlock(bot, 'brewing_stand', 16);
+    const useStand = (freshStand && freshStand.name === 'brewing_stand') ? freshStand : stand;
 
     try {
-        const w = await bot.openBlock(stand);
+        const w = await bot.openBlock(useStand);
+        
+        // Clear anything the PREVIOUS brew left behind BEFORE loading this one.
+        // A leftover blaze powder in the fuel slot makes slot 4 full, so the next
+        // step's fuel transfer fails with "destination full" and the chain dies on
+        // step 2 of 2. It must happen before the bottles go in, or it throws away
+        // the bottles we just loaded.
+        if (!process.env.BREW_KEEP_LEFTOVERS) {
+            for (const slot of [0, 1, 2, 3, 4]) {
+                if (w.slots[slot]) { try { await bot.putAway(slot); } catch (_) {} }
+            }
+            await wait(bot, 250);
+        }
 
         // ensure potion bottles sit in the bottom slots 0-2 (only if empty)
         const standHasPotion = [0, 1, 2].some(s => w.slots[s] && w.slots[s].type === potionId);
@@ -9904,7 +10406,13 @@ export async function brewPotion(bot, ingredientName, count=1) {
                 log(bot, `Filled ${filled} water bottle(s).`);
                 havePotionBottles = true;
                 // reopen the stand to continue
-                const w2 = await bot.openBlock(stand);
+                const w2 = await bot.openBlock(useStand);
+                if (!process.env.BREW_KEEP_LEFTOVERS) {
+                    for (const slot of [0, 1, 2, 3, 4]) {
+                        if (w2.slots[slot]) { try { await bot.putAway(slot); } catch (_) {} }
+                    }
+                    await wait(bot, 250);
+                }
                 const transfer = { window: w2, itemType: potionId, metadata: null, count, sourceStart: w2.inventoryStart, sourceEnd: w2.inventoryEnd, destStart: 0, destEnd: 3 };
                 await bot.transfer(transfer);
                 await bot.transfer({ window: w2, itemType: ingredient.type, metadata: null, count: 1, sourceStart: w2.inventoryStart, sourceEnd: w2.inventoryEnd, destStart: 3, destEnd: 4 });
@@ -9913,7 +10421,7 @@ export async function brewPotion(bot, ingredientName, count=1) {
                 await wait(bot, 22000);
                 let took2 = 0;
                 for (const s of [0, 1, 2]) {
-                    if (w2.slots[s] && w2.slots[s].type === potionId) { await bot.putAway(s); took2++; }
+                    if (w2.slots[s] && w2.slots[s].name === 'potion') { await bot.putAway(s); took2++; }
                 }
                 w2.close();
                 log(bot, `Brewed ${took2} potion(s) with ${ingredientName}.`);
@@ -9922,7 +10430,17 @@ export async function brewPotion(bot, ingredientName, count=1) {
             await bot.transfer({ window: w, itemType: potionId, metadata: null, count, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 0, destEnd: 3 });
         }
 
-        // ingredient -> top slot 3
+        // REMEMBER the stand and what I put in it, so if something is missing
+        // when I come back I know it was taken rather than never loaded.
+        SL.rememberStand(bot, useStand.position, { origin: 'crafted' });
+        SL.noteStandLoad(bot, useStand.position, {
+            bottles: count,
+            ingredient: ingredientName,
+            fuel: 1,
+            effect: ENC.brewEffectFor(ingredientName),
+        });
+
+        // Ingredient -> top slot 3.
         await bot.transfer({ window: w, itemType: ingredient.type, metadata: null, count: 1, sourceStart: w.inventoryStart, sourceEnd: w.inventoryEnd, destStart: 3, destEnd: 4 });
 
         // fuel -> blaze powder slot 4
@@ -9935,13 +10453,17 @@ export async function brewPotion(bot, ingredientName, count=1) {
         let took = 0;
         for (const s of [0, 1, 2]) {
             const item = w.slots[s];
-            if (item && item.type === potionId) {
+            // Verify it is really a filled potion, not an empty glass bottle that
+            // was sitting in the slot. `type === potionId` matched glass_bottle
+            // in some builds, so a brew that never happened reported success.
+            if (item && item.name === 'potion') {
                 await bot.putAway(s);
                 took++;
             }
         }
         w.close();
         log(bot, `Brewed ${took} potion(s) with ${ingredientName}.`);
+        SL.noteBrewed(bot, useStand.position, ENC.brewEffectFor(ingredientName) || ingredientName, took);
         return took > 0;
     } catch (err) {
         log(bot, `Brewing failed: ${err.message}`);
