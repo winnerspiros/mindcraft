@@ -3146,6 +3146,92 @@ export async function rconLocateHostile(bot, names, radius=64) {
     return best;
 }
 
+// FIND CAVE (2026-09-30): a real cave, not findShelter's "any roof". findShelter
+// accepts a tree, an overhang or a player-built roof and calls it shelter; this
+// scores actual air VOLUME with a solid floor, a solid ceiling at least 2 blocks
+// up, and darkness as a bonus signal. Everything is client-side over LOADED
+// chunks, so it inherits the view-distance=4 ceiling (~64 blocks) — the honest
+// answer for "no cave found" is always "none in loaded chunks", never "there is
+// none".
+const CAVE_SOLID_MIN_H = 2;   // headroom: a 1-high crack is not a cave
+const CAVE_MIN_FLOOR = 9;     // floor cells needed to call it a space
+export async function findCave(bot, range = 48) {
+    const pos = bot.entity.position;
+    const px = Math.floor(pos.x), py = Math.floor(pos.y), pz = Math.floor(pos.z);
+    const R = Math.min(32, Math.max(4, Math.floor(range / 2)));
+    const blockAt = (x, y, z) => { try { return bot.blockAt(new Vec3(x, y, z)); } catch (_) { return null; } };
+    const isAir = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air';
+    // Leaves EXCLUDED from the ceiling test on purpose: a tree canopy is a
+    // roof in the boundingBox sense but is not a cave, and accepting it sent
+    // the detector into trees in testing. A real cave needs rock overhead.
+    const isSolid = (b) => b && b.boundingBox === 'block' && b.name !== 'leaves' && !isAir(b);
+    const isRock = (b) => { try { return isSolid(b) && b.boundingBox === 'block'; } catch (_) { return false; } };
+
+    // Walk DOWN from the surface: a cave entrance is a hole in the ground, so
+    // scanning the surface layer alone finds nothing. At each candidate column
+    // we drop a probe and look for the first sizeable void with rock around it.
+    let best = null;
+    for (let dx = -R; dx <= R; dx++) {
+        for (let dz = -R; dz <= R; dz++) {
+            const x = px + dx, z = pz + dz;
+            if (dx * dx + dz * dz > R * R) continue;
+            // Descend at most 28 blocks looking for an enclosed void. The probe
+            // must continue THROUGH solid rock, not stop at it — a cave buried
+            // under a thick stone cap was invisible because the loop `continue`d
+            // on the first solid cell and never reached the void below.
+            for (let dy = 0; dy >= -28; dy--) {
+                const y = py + dy;
+                if (!isAir(blockAt(x, y, z))) continue;      // solid here, keep descending
+                // found an air cell — is it a cave? measure its extent
+                const floorCells = [];
+                // Headroom must STOP at the first non-air cell. Measuring 'air in
+                // the first 4 cells' counted the air BELOW a leaves roof and gave
+                // a tree headroom of 3, which then passed the ceiling test via
+                // the stone above the leaves. A crack under a tree looked like
+                // a cave.
+                let headroom = 0;
+                for (let k = 0; k < 4; k++) {
+                    if (!isAir(blockAt(x, y + k, z))) break;
+                    headroom = k + 1;
+                }
+                if (headroom < CAVE_SOLID_MIN_H) continue;  // too low to stand in
+                // flood-ish sample of the floor plane around this cell
+                for (let ox = -2; ox <= 2; ox++)
+                    for (let oz = -2; oz <= 2; oz++)
+                        if (isAir(blockAt(x + ox, y, z + oz))) floorCells.push(1);
+                if (floorCells.length < CAVE_MIN_FLOOR) continue;  // narrow crack
+                // Require the FIRST solid cell above the headroom to be ROCK.
+                // Scanning 4 deep for 'any rock' accepted a tree: leaves formed
+                // the roof and the stone ABOVE the leaves satisfied the test.
+                let ceil = false, hitLeaves = false;
+                for (let k = headroom; k <= headroom + 3; k++) {
+                    const cb = blockAt(x, y + k, z);
+                    if (isAir(cb)) continue;
+                    if (cb && cb.name === 'leaves') { hitLeaves = true; }
+                    ceil = isRock(cb);
+                    break;   // judge only the first solid cell
+                }
+                if (hitLeaves) continue;   // tree canopy, not a cave
+                if (!ceil) continue;
+                const score = floorCells.length + headroom * 2;
+                if (!best || score > best.score) {
+                    best = { x, y, z, score, headroom, floor: floorCells.length };
+                }
+                break; // one candidate per column is enough
+            }
+        }
+    }
+    if (!best) {
+        log(bot, `No cave in the ${R * 2}-block loaded area around me — the chunks I can see have none.`);
+        return null;
+    }
+    const dist = Math.hypot(best.x - px, best.z - pz);
+    log(bot, `Cave found at (${best.x}, ${best.y}, ${best.z}) — ${dist.toFixed(0)}m away, ${best.floor} floor blocks, ${best.headroom} high. Going.`);
+    try { await goToPosition(bot, best.x, best.y, best.z, 2); }
+    catch (e) { log(bot, `Found the cave but could not reach it: ${e.message}`); return null; }
+    return best;
+}
+
 // SURROUNDINGS SURVEY (2026-09-30): the perception layer. Two sources, because
 // 26.3 breaks them in different ways:
 //   ENTITIES — withheld from bot.entities entirely, so they come from RCON
