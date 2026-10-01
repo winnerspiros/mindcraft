@@ -66,12 +66,6 @@ function powerRefused(agent, playerName, what) {
 
 export { powerRank, powerRefused };
 
-function silentGive(bot, username, itemType, num) {
-    if (!canOp()) return false;
-    bot.chat(`/give ${username} ${itemType} ${num}`);
-    return true;
-}
-
 // Every bot.chat('/<op command>...') in this file routes through opChat:
 // on a survival server (op=false) it refuses instead of firing a command
 // the server would reject — callers fall through to their honest path.
@@ -7050,18 +7044,23 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
         log(bot, `I can't give away ${itemType} — it's part of my kit, never droppable!`);
         return false;
     }
-    // OP cheat-give: spawn the item directly into the target's inventory via /give.
-    // She's op (level 4) so the command resolves; this avoids (a) needing the item
-    // in her own backpack and (b) walking over + tossing, both of which failed here.
-    // 26.3: run it via RCON-side silent path — bot.chat('/give...') broadcasts
-    // the "Gave X N item" feedback to HER chat (visible), and log() below
-    // narrates it to public chat too. The gift itself is silent server-side;
-    // only her cute narration should be heard, never the command echo.
-    // survival server: no /give at all — skip straight to the walk-and-toss path.
-    if (canOp() && bot.modes.isOn('cheat')) {
-        if (silentGive(bot, username, itemType, num)) return true;
-    }
-    if (!canOp()) log(bot, `No /give on this server — walking it over like a player~ ♥`);
+    // ── NO /give. SHE THROWS IT. ─────────────────────────────────────────
+    // The owner: "if she wants to give stuff throw btw no op shit like add to
+    // their inventory"
+    //
+    // This used to try the op cheat-give FIRST (`canOp() && modes.isOn('cheat')` ->
+    // silentGive -> bot.chat('/give ...')`), which spawned the item straight into
+    // the target's inventory. That made the entire walk-and-toss path below DEAD
+    // CODE on this server: no walking, no throw, no item ever on the ground.
+    //
+    // A player cannot /give anyone. Handing something over means putting it on the
+    // ground in front of them and letting them pick it up - slower, failable, and
+    // declinable, all of which is the point. It also cannot be conjured: the item
+    // must exist in her inventory and the other player must actually want it.
+    //
+    // The op path is therefore removed rather than merely demoted. Keeping it
+    // behind a flag was the reason it kept winning.
+    log(bot, `Walking it over — she has to throw it, like a player.`);
     let player = bot.players[username].entity
     if (!player) {
         log(bot, `Could not find ${username}.`);

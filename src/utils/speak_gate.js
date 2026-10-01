@@ -50,7 +50,29 @@ export function gateNormalChat(ctx) {
     // Real players speak to someone or about something; they do not report
     // their own inner state to an empty channel.
     if (ctx.self_prompt && !ctx.human_replied && !ctx.notable_event) {
-        return { ok: false, why: 'unprompted_self_narration' };
+        // ── A BID IS NOT NARRATION ─────────────────────────────────────
+        // The owner: "she can ask ppl to help or ask if they want help or maybe
+        // an item she doesnt need, . a lot of options there too"
+        //
+        // This rule was written before she had bids, and it cannot tell a bid from
+        // narration. Measured cost of that blindness: 47 of 55 outbound messages
+        // killed by this one gate, including "ok then, how about we just go look
+        // for some sheep ourselves? let's get moving!" - a player talking to
+        // someone, not introspection.
+        //
+        // The distinction is not wording (a phrase table here would be exactly the
+        // rejected mistake). It is STRUCTURE: a bid has a recipient, comes from a
+        // state that needs something or has something spare, and is a move in the
+        // world. Narration has no recipient and is about her inner state.
+        //
+        // So the exemption is provenance, not vocabulary. If the caller says this
+        // is a bid raised against a real nearby player, the rule steps aside - and
+        // everything downstream (rate, length, budget, delivery) still applies.
+        if (ctx.is_bid && ctx.bid_has_target) {
+            // allowed through
+        } else {
+            return { ok: false, why: 'unprompted_self_narration' };
+        }
     }
 
     // Structural bans the prompt cannot hold. Each of these was observed live.
@@ -62,7 +84,10 @@ export function gateNormalChat(ctx) {
     if (/^\s*(hey|hi|hello|yo)\s+(everyone|all|guys|folks|anyone)\b/i.test(msg)) {
         return { ok: false, why: 'room_announcement' };
     }
-    if (/\b(anyone (want|got|here)|is anyone (there|online))\b/i.test(msg)) {
+    // A bid may legitimately ask "anyone want any of this?" - that is a player
+    // offering, not a void-check. Same structural exemption as above, and the
+    // hollow-audience ban still stands for every non-bid turn.
+    if (!ctx.is_bid && /\b(anyone (want|got|here)|is anyone (there|online))\b/i.test(msg)) {
         return { ok: false, why: 'hollow_audience_check' };
     }
 
