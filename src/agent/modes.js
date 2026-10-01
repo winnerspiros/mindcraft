@@ -5,7 +5,7 @@ import Vec3 from 'vec3';
 import settings from './settings.js'
 import convoManager from './conversation.js';
 import { canOp, combatConfig, modeOverrides } from '../utils/server_context.js';
-import { personality } from '../utils/server_context.js';
+import { isYandere } from '../utils/server_context.js';
 
 async function say(agent, message) {
     agent.bot.modes.behavior_log += message + '\n';
@@ -794,6 +794,9 @@ const modes_list = [
         cooldown: 180000, // min ms between bed follow-ups
         last_follow: 0,
         update: async function (agent) {
+            // Normal persona: no possessive bed-following. This is a yandere
+            // behaviour, not a skill, so it goes away with the persona.
+            if (!isYandere()) return;
             const bot = agent.bot;
             const now = Date.now();
             if (now - agent._sleeper_time > 30000) return; // nobody recently went to bed

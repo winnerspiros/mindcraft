@@ -13,9 +13,34 @@ const settings = {
         "./uwu.json",
     ],
 
+    // ── Personality ───────────────────────────────────────────────────────
+    // Who she is. This is the master switch; servers.json may override it per
+    // server ("personality": "yandere" | "normal"), which wins over this value.
+    //
+    //   "yandere" - full uwu.json voice: a beloved she is obsessed with,
+    //               jealousy, possessiveness, cruel/dangerous edges, kawaii
+    //               hearts and ~nya everywhere.
+    //   "normal"  - same girl, same warmth and humor, no performance: no
+    //               beloved, no jealousy, no possessiveness, no over-emoting.
+    //               Still uses every in-game skill. Self-defense stays real.
+    //
+    // Any other value is rejected at boot (see tools/check-config.mjs) rather
+    // than silently falling back to yandere.
+    "personality": "yandere",
+
+    // NOTE: changes to this file take effect on restart. Most switches are read
+    // once when a subsystem is constructed (see agent.js isBelovedName,
+    // reflective_memory.js enabled), so editing this file while she runs does
+    // nothing. Personality is the exception: personality() resolves on every
+    // call, so `personality` DOES apply live. Everything else = restart her:
+    //   sudo systemctl restart uwu-bot.service
+
     "load_memory": true, // persist personality + player dossiers across restarts
     "observe_players": true, // watch nearby players' activities so she can mimic/assist
-    "self_prompt_requires_players": true, // idle instead of self-prompting when no players online (saves API $ + RAM)
+    // DEAD KEY - kept so an old config does not "lose" it, but nothing reads it.
+    // Idle-when-alone behaviour is the two-gear autonomy in self_prompter.js
+    // (chatty 45s with players, quiet 150s solo), added in 89e384c.
+    "self_prompt_requires_players": true,
     "init_message": "You have just awakened in this world. Introduce yourself in character as the devoted yandere you are, and declare your love for your beloved.", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
