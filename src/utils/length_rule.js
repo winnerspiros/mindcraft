@@ -25,8 +25,21 @@ const SOFT_SENTENCE_LIMIT = 2;
 // with no terminator passed as "long_but_real". Sentence count alone is not
 // enough; word count has to gate too. p90 is 16 and p95 is 30, so anything past
 // ~25 words is already the tail, and she is 1 of 2-3 players, not a monologue.
+// 25 words, and I MEASURED why it is not lower. Sampling the real messages a
+// 12-word cap drops: 0% of them contain a second sentence. They are ordinary
+// build instructions -
+//
+//   'pick red 2 1 -3, pick red -2 1 -4, pick red -2 1 -3, place red -2 1 -4'
+//   'so make a 1x3 colum of orange on the right side of the blue column'
+//   'make the top of the table with a yellow platform on top of those'
+//
+// So a hard word drop silently destroys real speech. The complaint was
+// paragraphs, and a paragraph is a SENTENCE property: only 0.12% of real
+// messages contain a second sentence, which is the check that targets it
+// precisely. The word cap is only here to catch a wall of text with no full
+// stop in it - the shape that reads worse than two real sentences.
 const HARD_WORD_LIMIT = 25;
-const SOFT_WORD_LIMIT = 17;   // ~p90
+const SOFT_WORD_LIMIT = 17;   // ~p90, above this she is already long
 
 const countWords = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).length;
 
@@ -70,4 +83,4 @@ export function lengthGuidance() {
         + `a second sentence at all. Say the thing and stop.`;
 }
 
-export { P50, P90, P99, SOFT_SENTENCE_LIMIT, HARD_WORD_LIMIT, countWords, countSentences };
+export { P50, P90, P99, SOFT_SENTENCE_LIMIT, SOFT_WORD_LIMIT, HARD_WORD_LIMIT, countWords, countSentences };
