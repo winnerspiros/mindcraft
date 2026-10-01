@@ -656,6 +656,10 @@ export class Agent {
         // self_prompter.js noteHumanMessage/_engagementGear.
         if (!self_prompt && !from_other_bot && this.self_prompter) {
             try { this.self_prompter.noteHumanMessage(message); } catch (_) {}
+            // Track WHO is speaking, not just how much. Two different humans
+            // back-to-back means a human-human exchange is under way and she
+            // should not talk over it. See self_prompter.js noteHumanTurn.
+            try { this.self_prompter.noteHumanTurn(source); } catch (_) {}
         }
 
         // last_sender is only cleared in conversation.js when a CONVERSATION
