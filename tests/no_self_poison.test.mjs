@@ -109,6 +109,18 @@ const triggerGate = /recentlySpokeTo/.test(chattyCtx)
 if (chattyCtx === '' || triggerGate) ok('"you feel chatty" requires a real trigger (recent msg / notable event / named)');
 else bad('"you feel chatty" is emitted without a real trigger gate - it persists as history');
 
+// The gate above is necessary but was not sufficient. A live "(AUTO) You feel
+// chatty" turn still landed in memory.json because the gate correctly fired -
+// the player had said "hey uwu", so she WAS addressed - and then the prompt
+// itself carried yandere wording into a turn that gets persisted as history.
+// Assert the normal branch does not EMIT that phrasing at all.
+const chattyEmit = code.slice(Math.max(0, code.indexOf(chatty) - 400),
+    code.indexOf(chatty) + 200);
+const normalPhrasingOk = !/handleMessage\('system',\s*`\(AUTO\) You feel chatty/.test(chattyEmit)
+    || /isYandere\(\)\s*\?/.test(chattyEmit);
+if (normalPhrasingOk) ok('normal mode does not emit the "you feel chatty" self-prompt verbatim');
+else bad('normal mode still emits "(AUTO) You feel chatty" - the wording itself is yandere residue');
+
 // And normal must not lose the mode entirely.
 if (/if\s*\(!isYandere\(\)\)\s*return;/.test(CODE(modes)))
     bad('bare persona return disables a mode for normal');
