@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "UwU Minecraft bot",
+    "kind": "node",
+    "bootstrap": [
+      "bun install"
+    ],
+    "build": [],
+    "test": [
+      "bun run test"
+    ],
+    "start": "bash tools/boot.sh",
+    "port": null,
+    "readinessPath": "/",
+    "evidence": [
+      "Detected package.json",
+      "Package manager: bun",
+      "start runs tools/boot.sh under Bun: repairs+verifies 26.3 support, then execs standalone.js",
+      "NOT a web service: readiness is RCON (port 25575, 'list'), not HTTP. The verify",
+      "harness only polls HTTP (recipes.py reads readinessPath; there is no command hook),",
+      "so the readiness phase always reports Connection refused on a healthy bot.",
+      "Use: hermes verify --skip-start  (phases are the real signal)",
+      "Then: systemctl is-active uwu-bot + RCON 'list' for liveness."
+    ]
+  },
+  "updatedAt": "2026-10-01T12:28:27.615526+00:00"
+}
