@@ -45,6 +45,9 @@ const GROUP_RATE = 0.12;
  * @param {number}  ctx.visible_humans humans near her, excluding her
  * @param {boolean} [ctx.addressed]    message names her
  * @param {boolean} [ctx.human_exchange] two or more humans are mid-conversation
+ * @param {string}  [ctx.last_speaker]  who spoke immediately before, if anyone
+ * @param {string}  [ctx.last_target]  who that message was aimed at ('other' if
+ *        it named somebody who is not her, '' if it named nobody)
  * @returns {{reply: boolean, why: string}}
  */
 export function shouldReplyTo(ctx) {
@@ -65,6 +68,16 @@ export function shouldReplyTo(ctx) {
     }
     if (ctx?.human_exchange && humans > 1) {
         return { reply: false, why: 'others_mid_conversation' };
+    }
+
+    // DIRECTIONAL ADDRESSING. Not merely "someone spoke" but "these two are
+    // talking to each other": the same speaker continuing straight after a
+    // message that named somebody else is almost certainly still talking to
+    // that person. Without this, a three-person room where two of them are
+    // mid-argument still looked like a general announcement to her.
+    if (humans > 1 && ctx?.last_target === 'other' && ctx?.last_speaker
+        && String(ctx?.speaker ?? '') === ctx.last_speaker) {
+        return { reply: false, why: 'continuing_another_thread' };
     }
 
     // DYAD — the alternative is that he is talking to himself.

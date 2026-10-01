@@ -87,6 +87,41 @@ for (const m of ['lol', 'lmao', 'gg', 'brb', 'ok', 'nice one', 'haha']) {
         `group: ignores noise ${JSON.stringify(m)}`, `group: replied to noise ${JSON.stringify(m)}`);
 }
 
+// ── DIRECTIONAL ADDRESSING: two people talking, not an announcement ──────
+// The multiparty literature treats addressee inference as its own problem,
+// distinct from "did someone speak" - Duplex-MPE (arXiv 2609.31948) exists to
+// test selective participation in 3-4 party chat because getting this wrong is
+// the failure. Same speaker, straight after a message that named somebody else.
+{
+    const grp = { visible_humans: 3, addressed: false, human_exchange: false };
+    check(!shouldReplyTo({ ...grp, message: 'and then i', speaker: 'nikos',
+        last_speaker: 'nikos', last_target: 'other' }).reply,
+        'continuing my own thread with another player: does not break in',
+        'broke into a two-person thread');
+    // Different speaker - the room has moved on, so this is open again.
+    // My first string here was 'anybody want to go mine' - unaddressed AND
+    // low-content, which a group correctly refuses for an unrelated reason. The
+    // point of this assertion is the SPEAKER CHANGE, so the message has to be
+    // one the group rule would otherwise accept.
+    check(shouldReplyTo({ ...grp, message: 'anyone got spare stone?', speaker: 'maria',
+        last_speaker: 'nikos', last_target: 'other' }).reply,
+        'a different speaker after that thread is open again', 'still silent after the thread changed');
+    // Same speaker, but the last message was not aimed at anyone.
+    check(shouldReplyTo({ ...grp, message: 'anyone got spare stone', speaker: 'nikos',
+        last_speaker: 'nikos', last_target: '' }).reply,
+        'same speaker but nothing was addressed: still open', 'went silent for no reason');
+    // In a dyad there is no other player to have been addressed, so the rule
+    // must not be able to mute her.
+    check(shouldReplyTo({ message: 'im coming', visible_humans: 1, addressed: false,
+        human_exchange: false, speaker: 'nikos', last_speaker: 'nikos',
+        last_target: 'other' }).reply,
+        'dyad: the continuation rule cannot mute her', 'dyad: continuation rule silenced her');
+    // Named beats it.
+    check(shouldReplyTo({ ...grp, message: 'uwu help', addressed: true, speaker: 'nikos',
+        last_speaker: 'nikos', last_target: 'other' }).reply,
+        'being named mid-thread still wins', 'ignored a direct call mid-thread');
+}
+
 // ── alone: nothing to reply to ───────────────────────────────────────────
 {
     const v = shouldReplyTo({ visible_humans: 0, addressed: false, human_exchange: false, message: 'im coming' });
