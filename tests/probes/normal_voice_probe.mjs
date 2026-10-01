@@ -24,15 +24,15 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'fs';
-import { setSettings } from '../src/agent/settings.js';
-import root from '../settings.js';
+import { setSettings } from '../../src/agent/settings.js';
+import root from '../../settings.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
-const settings = (await import('../settings.js')).default;
-const { selectAPI, createModel } = await import('../src/models/_model_map.js');
+const settings = (await import('../../settings.js')).default;
+const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
 const raw = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
 const sel = selectAPI(raw);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
@@ -219,7 +219,7 @@ const isChatTurn = (q) => !/^\(AUTO/.test(String(q || '').trim());
 
 async function speak(persona, question) {
     setSettings({ ...root, personality: persona });
-    const sc = await import('../src/utils/server_context.js');
+    const sc = await import('../../src/utils/server_context.js');
     setServerContext(persona);
     const script = sc.personaPrompt();
     const examples = sc.personaExamples();
@@ -260,7 +260,7 @@ function setServerContext(persona) {
     const sc = globalThis.__uwuSc;
     if (sc && sc.setServerContextOverride) sc.setServerContextOverride({ personality: persona });
 }
-globalThis.__uwuSc = await import('../src/utils/server_context.js');
+globalThis.__uwuSc = await import('../../src/utils/server_context.js');
 
 // Mirrors the normal-persona output pipeline in agent.js: emoji scrub, then
 // word cap + burst split. Kept as a local copy of the same operations (not a
@@ -271,14 +271,14 @@ async function postNormalChat(text) {
     let m = String(text || '');
     m = m.replace(EMOJI_RE, '').replace(/\uFE0F/g, '')
         .replace(/\s+([.,!?])/g, '$1').replace(/\s{2,}/g, ' ').trim();
-    const { fragmentForChat } = await import('../src/utils/chat_fragment.js');
+    const { fragmentForChat } = await import('../../src/utils/chat_fragment.js');
     const parts = fragmentForChat(m);
     // Return the burst joined for scoring: the probe checks CONTENT and
     // register, and per-line length is asserted by chat_fragment.test.mjs.
     return parts.join(' ');
 }
-globalThis.__uwuEx = await import('../src/utils/examples.js');
-const { stringifyTurns } = await import('../src/utils/text.js');
+globalThis.__uwuEx = await import('../../src/utils/examples.js');
+const { stringifyTurns } = await import('../../src/utils/text.js');
 
 let npc = 0, padded = 0, intros = 0, noView = 0, verbose = 0, emoji = 0, bridge = 0, qEnd = 0, clean = 0, messy = 0, refusal = 0;
 
