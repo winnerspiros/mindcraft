@@ -287,12 +287,57 @@ export function personaPrompt() {
 }
 
 // Examples for the active persona, or null to use the profile's own.
+// How many examples go into the prompt, and which ones.
+//
+// Previously this returned ALL of them - 28 for the normal persona - and every
+// single one was injected on every turn. Three findings changed that:
+//
+// 1. Count. Past ~5 the marginal gain is small and each extra example costs
+//    prompt share that the persona script needs (attention dilution: a fixed
+//    system prompt loses to an ever-growing history). The persona script is
+//    ~13k chars and is the thing that keeps her in voice, so it must not be
+//    crowded out by examples.
+// 2. Recency bias. Later examples in the context get disproportionate weight
+//    (~2% influence difference between position 0 and 3; ordering alone is
+//    worth ~17pp on some benchmarks). Parking the same example last makes it
+//    the template she copies.
+// 3. Rotation. A fixed set becomes a memorisation anchor. Sampling a different
+//    window per turn keeps any one example from becoming "the answer".
+//
+// Measured leakage check on the real log (71 replies vs all 28 examples,
+// difflib ratio): best real similarity 0.48, zero verbatim, zero example
+// substrings. The detector was validated against a control (an actual example
+// scored 1.00), so that zero is real and not a broken test. We are not
+// currently leaking - this is insurance, not a fix for an observed bug.
+export const PERSONA_EXAMPLE_COUNT = 5;
+
+// Rotation cursor. Declared before use (it is read inside the function below),
+// and exposed via resetPersonaExampleOffset() so tests are deterministic instead
+// of depending on how many times another test happened to call this.
+let _exampleOffset = 0;
+export function resetPersonaExampleOffset() { _exampleOffset = 0; }
+
 export function personaExamples() {
     const persona = personality();
     if (persona === 'yandere') return null;
     const data = _readPersonaFile(persona);
     const ex = data && Array.isArray(data.conversation_examples) ? data.conversation_examples : null;
-    return ex && ex.length ? ex : null;
+    if (!ex || !ex.length) return null;
+    if (ex.length <= PERSONA_EXAMPLE_COUNT) return ex;
+
+    // Evenly spaced sample across the whole pool rather than a random handful:
+    // the persona file is ordered by intent (greetings, banter, swearing, bite),
+    // so a spread sample keeps every register represented in each turn's
+    // prompt, and advancing the offset each call stops any single example from
+    // sitting in the same position every time.
+    const span = ex.length / PERSONA_EXAMPLE_COUNT;
+    const off = _exampleOffset % ex.length;
+    const out = [];
+    for (let i = 0; i < PERSONA_EXAMPLE_COUNT; i++) {
+        out.push(ex[(Math.floor(i * span) + off) % ex.length]);
+    }
+    _exampleOffset = (_exampleOffset + 1) % ex.length;
+    return out;
 }
 
 export function teleportConfig() {
