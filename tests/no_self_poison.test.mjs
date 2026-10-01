@@ -139,7 +139,13 @@ try {
         .map((t) => JSON.stringify(t)).join(' ')
         + ' ' + String(mem.memory || '')
         + ' ' + String(mem.self_prompt || '');
-    const y = (authored.match(/[Yy]andere/g) || []).length;
+    // Count persona WORDING, not the substring "yandere". "YandereDev" is the
+    // owner's username and appears legitimately in system turns reporting who is
+    // nearby, so a bare substring scan flags correct behaviour — it just did,
+    // and it had failed the same way before: excluding only [user] turns is not
+    // enough, because "(AUTO) ... YandereDev is nearby" is a system turn she is
+    // supposed to emit. What must never appear is the yandere VOICE.
+    const y = (authored.match(/you feel (chatty|clingy|lonely|possessive)|clingy|possessive|your beloved|bound to you/gi) || []).length;
     const userTurns = (mem.turns || []).filter((t) => String(t.role || '') === 'user');
     if (userTurns.length) ok(`${userTurns.length} human turn(s) in history (not scanned for persona leakage)`);
     const c = (s.match(/clingy/gi) || []).length;
