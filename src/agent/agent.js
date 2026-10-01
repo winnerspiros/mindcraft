@@ -781,7 +781,7 @@ export class Agent {
         // is real silence; silence decided afterwards is a discarded message.
         // A system/self prompt with nobody on the server is the agent talking to
         // itself. That belongs in the curriculum loop, not chat.
-        if (!isYandere() && self_prompt && !anyHumanOnline()) {
+        if (!isYandere() && self_prompt && !this.anyHumanOnline()) {
             console.log(`${this.name} [gate:solo_self_prompt] nobody online, not speaking`);
             return false;
         }
