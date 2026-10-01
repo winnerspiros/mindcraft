@@ -92,6 +92,98 @@ export function containsCommand(message) {
     return null;
 }
 
+/**
+ * The real command names a hallucinated one probably meant.
+ *
+ * The model reaches for the obvious English word - !gather, !mine, !dig, !punch -
+ * and all of those are absent while the actual names are present in its docs.
+ * Saying "does not exist" teaches nothing, so it repeats the mistake. This ranks
+ * the REAL command list by edit distance and by shared prefix, so the wrong word
+ * becomes a correction instead of a dead end.
+ *
+ * Case-insensitive on both sides, because !collectBlocks and !collectblocks are
+ * the same intent and the model's casing is not always deliberate.
+ *
+ * @param {string} bad   the invented name, with or without a leading '!'
+ * @param {number} [limit]
+ * @returns {string[]} real names, closest first, each with its leading '!'
+ */
+export function nearestCommandNames(bad, limit = 3) {
+    const want = String(bad || '').replace(/^!/, '').toLowerCase();
+    if (!want) return [];
+    const scored = [];
+    for (const name of Object.keys(commandMap)) {
+        const real = name.replace(/^!/, '').toLowerCase();
+        if (real === want) continue;
+        // shared prefix is a strong signal: !dig -> !digDown, !look -> !lookAtPlayer
+        let prefix = 0;
+        while (prefix < real.length && prefix < want.length
+            && real[prefix] === want[prefix]) prefix++;
+        // a prefix covering most of the invented word is worth more than a short
+        // accidental one, so scale it against the length of what was typed
+        const prefixScore = prefix >= 3 ? prefix / want.length : 0;
+        const d = editDistance(want, real);
+        // normalise by length so !look is not unfairly beaten by a 20-char command
+        let score = prefixScore * 2 + (1 - d / Math.max(want.length, real.length));
+        // substring containment: !giveItem -> !givePlayer, !collect -> !collectBlocks
+        if (real.includes(want) || want.includes(real)) score += 0.45;
+        // LENGTH SANITY. Measured noise without it: !gather -> !weather/!placeHere/
+        // !goToBed and !mine -> !ride/!hide/!modes. A five-letter guess has nothing
+        // to do with a seventeen-letter command, and those suggestions are worse
+        // than no suggestion because they send her off inventing again. Anything
+        // more than ~1.6x the length is not what she meant.
+        const ratio = real.length / Math.max(1, want.length);
+        if (ratio > 1.6) score -= 0.5;
+
+        // A suggestion must be STRUCTURALLY related, not just edit-distance-close.
+        // Measured without this: !gather -> !weather/!placeHere/!goToBed and
+        // !mine -> !ride/!hide/!modes. Those are worse than no answer, because she
+        // acts on a suggestion - it would send her to !weather when she wanted
+        // blocks. So a real prefix, a substring, or a tight distance is required;
+        // otherwise the honest reply is "check the command list".
+        // Shared letters in the same POSITIONS, not merely a similar count.
+        // This is what separates giveItem/givePlayer from gather/weather: both of
+        // those are six letters and therefore edit-distance-close by luck, and
+        // suggesting !weather when she meant "get blocks" sends her further off.
+        let sameSpot = 0;
+        for (let k = 0; k < Math.min(want.length, real.length); k++) {
+            if (want[k] === real[k]) sameSpot++;
+        }
+        // The FIRST character must also agree. With short words a couple of
+        // coincidental index matches cleared half the length on their own, which
+        // is how !mine kept matching !ride and !hide. A genuine typo or a
+        // near-miss command almost always starts the same way - and every bad pair
+        // here (mine/ride, mine/hide, gather/weather) differs at index 0.
+        const firstOk = real[0] === want[0];
+        const structural = (prefix >= 3 && firstOk)
+            || real.includes(want) || want.includes(real)
+            || (d <= 2 && firstOk && sameSpot >= Math.ceil(want.length / 2));
+        if (structural && score > 0.34) scored.push({ name, score });
+    }
+    scored.sort((a, b) => b.score - a.score);
+    return scored.slice(0, limit).map((s) => s.name);
+}
+
+/** Levenshtein, single-row. Only ever called on short command names. */
+function editDistance(a, b) {
+    if (a === b) return 0;
+    const prev = new Array(b.length + 1);
+    for (let j = 0; j <= b.length; j++) prev[j] = j;
+    for (let i = 1; i <= a.length; i++) {
+        let last = prev[0];
+        prev[0] = i;
+        for (let j = 1; j <= b.length; j++) {
+            const tmp = prev[j];
+            prev[j] = Math.min(
+                prev[j] + 1,
+                prev[j - 1] + 1,
+                last + (a[i - 1] === b[j - 1] ? 0 : 1));
+            last = tmp;
+        }
+    }
+    return prev[b.length];
+}
+
 export function commandExists(commandName) {
     if (!commandName.startsWith("!"))
         commandName = "!" + commandName;

@@ -5,7 +5,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
+import { containsCommand, commandExists, nearestCommandNames, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
@@ -1172,12 +1172,35 @@ export class Agent {
                 this.history.add(this.name, res);
                 
                 if (!commandExists(command_name)) {
-                    this.history.add('system', `Command ${command_name} does not exist.`);
-                    console.warn('Agent hallucinated command:', command_name)
+                    // ── DO NOT DISCARD THE ATTEMPT ──────────────────────────
+                    // This used to add "Command !gather does not exist." and
+                    // continue. That teaches nothing: it never says what the real
+                    // command IS, so the model burns a turn and reaches for the next
+                    // obvious English word. Measured: 6 hallucinations in one run -
+                    // !gather, !search, !punch, !mine, !look, !dig - not one of
+                    // which exists, while the real names (!collectBlocks,
+                    // !searchForBlock, !build, !quarry) are all in her docs.
+                    //
+                    // The question she is really asking is "what did you mean", so
+                    // answer THAT: nearest real command by edit distance, plus the
+                    // handful that start like it. Turns a dead end into a
+                    // correction.
+                    const _near = nearestCommandNames(command_name, 3);
+                    this.history.add('system', _near.length
+                        ? `${command_name} is not a command. Did you mean: ${_near.join(', ')}? Use one of those.`
+                        : `${command_name} is not a command. Check the command list for the right name.`);
+                    console.warn('Agent hallucinated command:', command_name,
+                        _near.length ? `-> nearest: ${_near.join(', ')}` : '(no near match)');
                     continue;
                 }
 
                 if (checkInterrupt()) break;
+                // A REAL command survived the exists() check above, so something
+                // actually happened. Stamped here rather than at parse time on
+                // purpose: a hallucinated !gather must NOT count as an action, or
+                // it re-opens the speak gate for the very turn that had nothing
+                // behind it.
+                this._lastRealActionAt = Date.now();
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
                 if (settings.show_command_syntax === "full") {
@@ -1289,6 +1312,9 @@ export class Agent {
                     // exemption from the narration gate, which is exactly the
                     // staleness bug the human_replied guard above already had to
                     // be fixed for.
+                    // She just ran a real command, so this turn is a reaction to
+                    // something that actually happened rather than narration.
+                    just_acted: (Date.now() - (this._lastRealActionAt || 0)) < 8000,
                     is_bid: !!this._pendingBid
                         && (Date.now() - (this._pendingBid.at || 0)) < 60000,
                     bid_has_target: !!this._pendingBid && this._visibleHumanCount() > 0,
