@@ -1026,6 +1026,12 @@ const modes_list = [
             if (!isYandere()) {
                 const { LifeState } = await import('../utils/life_state.js');
                 if (!agent._life) agent._life = new LifeState();
+                const { Tilt } = await import('../utils/tilt.js');
+                if (!agent._tilt) agent._tilt = new Tilt();
+                // Anger cools whether or not anyone is watching. Without the
+                // decay one death would sour the whole evening, which is not how
+                // being angry works.
+                agent._tiltLevel = agent._tilt.tick();
 
                 // Back? Say so, and make it consistent with why she left.
                 const back = agent._life.checkReturn();
