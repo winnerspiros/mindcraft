@@ -5,7 +5,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, nearestCommandNames, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
+import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
@@ -1234,8 +1234,21 @@ export class Agent {
                     // Actionable-error retry: when a command fails validation, tell her
                     // what went wrong and that she should correct it, then let the loop
                     // give her another pass (neuro-sdk "success:false -> retry" pattern).
-                    if (isRetryableError(execute_res))
-                        this.history.add('system', execute_res + '\nThat command failed. Fix the problem and try again.' + (repeat ? ' ' + repeat : ''));
+                    if (isRetryableError(execute_res)) {
+                        // Measured: the raw error alone is not actionable. She got
+                        // "Param 'x' must be of type float" from
+                        // `!breakBlock coal_ore 3 64 13`, where `coal_ore` landed in
+                        // the x slot because she actually wanted to COLLECT coal
+                        // (!collectBlocks). With only "fix the problem and try again"
+                        // she guessed 1.0 2.0 3.0 next - still wrong.
+                        //
+                        // So give her the signature, which is what she was missing.
+                        const _sig = explainParamError(command_name, execute_res);
+                        this.history.add('system', execute_res
+                            + (_sig ? '\n' + _sig : '')
+                            + '\nThat command failed. Fix the problem and try again.'
+                            + (repeat ? ' ' + repeat : ''));
+                    }
                     else
                         this.history.add('system', execute_res + (repeat ? '\n' + repeat : ''));
                 }
