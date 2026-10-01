@@ -163,7 +163,15 @@ const modes_list = [
         max_stuck_time: 20,
         prev_dig_block: null,
         update: async function (agent) {
-            if (agent.isIdle()) {
+            // A PLAYER WHO IS TALKING IS NOT STUCK. The original trigger was
+            // "has not moved for ~40 ticks", which means standing still and
+            // chatting - the most normal thing a player does - read as stuck, and
+            // she would dig blocks out from under whoever was talking to her.
+            // Requiring an ACTIVE goal to be stuck means stillness only counts
+            // when she actually intended to go somewhere.
+            const _goalActive = !!(agent.self_prompter?.prompt
+                && agent.self_prompter?.state !== 'STOPPED');
+            if (agent.isIdle() && !_goalActive) {
                 // IDLE-STILL WATCH (2026-09-27): the old code reset here, so an
                 // idle bot in a hole never accrued stuck_time and the rescue
                 // below never fired. Track stillness separately: unmoved for a

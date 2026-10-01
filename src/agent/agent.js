@@ -1704,6 +1704,47 @@ export class Agent {
     }
 
     async update(delta) {
+        // IDLE BUDGET. The owner: "a normal player wont jump around 24/7".
+        // modes.update() runs every 300ms and threshold modes with no cooldown
+        // become constant motion - observed live as unstuck 3x in 5 minutes and
+        // cowardice fleeing 24 blocks with nobody talking to her.
+        //
+        // Measured basis: Gilmartin et al. 2019 (47h) report a median 33.4% of
+        // floor time is silence; Herring ch.10 reports 35% of initiations go
+        // unanswered; Suznjevic et al. 2009 describe player activity as bursty.
+        // Doing nothing is a large, normal share of a session, so bounding
+        // action is not a cosmetic preference.
+        try {
+            const { IdleBudget } = await import('../utils/idle_budget.js');
+            this._idleBudget ||= new IdleBudget();
+            // Checked on EVERY tick. An earlier version latched this behind a
+            // flag that only cleared on success, so one "settling" verdict froze
+            // her until restart. The budget object holds the memory, not a flag.
+            const _threat = (() => {
+                try { return (this.psyche?.mood?.fear ?? 0) >= 0.6; } catch { return false; }
+            })();
+            const _gate = this._idleBudget.canAct({
+                now: Date.now(),
+                has_goal: !!(this.self_prompter?.prompt && this.self_prompter?.state !== 'STOPPED'),
+                threat: _threat,
+                human_present: this._visibleHumanCount() > 0,
+            });
+            if (!_gate.ok) {
+                // Settling: still tick the non-motion systems, but run no modes.
+                this._wasSettling = true;
+                this.self_prompter.update(delta);
+                this.psyche.update(delta);
+                return;
+            }
+            // note() ONLY on the transition into acting. Calling it every
+            // permitted tick (update() runs at 300ms) pushed lastActionAt forward
+            // forever and she never finished settling.
+            if (this._wasSettling) {
+                this._wasSettling = false;
+                this._idleBudget.note();
+            }
+        } catch (e) { console.warn('[idle-budget] failed open:', e.message); }
+
         await this.bot.modes.update();
         this.self_prompter.update(delta);
         this.relationship.decay();
