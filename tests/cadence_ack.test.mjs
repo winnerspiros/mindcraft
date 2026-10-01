@@ -54,11 +54,14 @@ else bad('ack streak guard missing — "ok ok ok" every message is a machine tel
 // ── 4. cadence must be jittered, not constant ─────────────────────────────
 // The bug: cooldown_chatty = 45000 / cooldown_solo = 150000 used directly at
 // both call sites, so every gap was identical.
-const uses = sp.match(/cooldown_chatty|cooldown_solo/g) || [];
 const jittered = sp.match(/_jitteredGear|_engagementGear/g) || [];
-ok(`cadence: ${uses.length} legacy refs, ${jittered.length} jittered call sites`);
 if (jittered.length < 2) bad('cadence is not jittered at the loop call sites');
-else ok('both cadence call sites use a jittered gear');
+else ok(`both cadence call sites use a jittered gear (${jittered.length} refs)`);
+
+// The fixed constants are gone, not merely unused: leaving them behind invites
+// the next reader to wire one back up.
+if (/cooldown_chatty|cooldown_solo/.test(sp)) bad('a fixed cooldown constant survives');
+else ok('no fixed cooldown constant left to be re-wired');
 if (/const gear = solo \? this\._jitteredGear\(true\) : this\._engagementGear\(\)/.test(sp))
     ok('loop picks a fresh gear every turn');
 else bad('loop still uses a constant gear');
