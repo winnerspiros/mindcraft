@@ -15,6 +15,7 @@
 // glance needs a CEILING as well as a shape.
 
 import { readFileSync } from 'node:fs';
+import { scrubOutput } from '../src/utils/scrub.js';
 
 let pass = 0, failed = 0;
 const check = (c, good, bad) => {
@@ -36,33 +37,31 @@ const personaFlat = JSON.parse(readFileSync('personas/normal.json', 'utf8')).con
     .replace(/\s+/g, ' ');
 
 // ── asterisks ──────────────────────────────────────────────────────────
+// The strip chain moved into src/utils/scrub.js (shared with production), so
+// these assert BEHAVIOUR against that module instead of grepping agent.js for the
+// regex text. Grepping reported "no bracketed-asterisk strip" while the strip was
+// working perfectly - it was looking in the wrong file.
 {
-    const i = agent.indexOf("replace(/\\*[^*\\n]{1,24}\\*/g, ' ')");
-    check(i > 0, 'bracketed asterisks (*facepalm*) are stripped', 'no bracketed-asterisk strip');
+    // *facepalm* and any bracketed action: 0 in 21,822 real lines. All 59 corpus
+    // asterisks are stray SINGLE characters, which is why single runs go too.
+    check(scrubOutput('ugh *facepalm* ok').includes('*') === false,
+        'bracketed asterisks (*facepalm*) are stripped', 'a bracketed asterisk survived');
+    check(scrubOutput('ugh * ok').includes('*') === false,
+        'stray asterisks are stripped too', 'a stray asterisk survived');
+    check(scrubOutput('hey ** how are you') === 'hey how are you',
+        'a double-star run is stripped', `double star survived: "${scrubOutput('hey ** how are you')}"`);
 
-    // A single star run cannot survive either - the 59 real cases are all stray
-    // single characters, so leaving them would keep the actual tic.
-    const after = agent.slice(i, i + 400);
-    check(/replace\(\/\\\*\+\/g, ' '\)/.test(after), 'stray asterisks are stripped too',
-        'stray asterisks survive');
-
-    // It must be beside the tilde strip, which is already proven, and BEFORE the
-    // length gate - otherwise a message padded with *emoticon* would pass the
-    // emptiness check as content.
-    const stripAt = agent.indexOf("replace(/~+/g, '')");
+    // It must run BEFORE the length/empty gates, or a message padded with
+    // *emoticon* would pass the emptiness check as real content.
+    const scrubAt = agent.indexOf('scrubOutput(message)');
     const lenAt = agent.indexOf('let len = checkLength(message)');
-    check(i > 0 && stripAt > i && i < lenAt,
-        'stripped before the length/empty-ack gates, beside the tilde strip',
-        'the strip runs after the gates that judge emptiness');
+    check(scrubAt > 0 && scrubAt < lenAt,
+        'scrubbed before the length/empty-ack gates',
+        'the scrub runs after the gates that judge emptiness');
 
     // the corpus justification is recorded, so nobody "fixes" it back
-    // Search back to the start of the enclosing comment block rather than a fixed
-    // 700 chars - the justification comment is longer than that, and a guessed
-    // distance reported a missing measurement that is present.
-    const before = agent.slice(0, i);
-    const commentStart = before.lastIndexOf('//', before.lastIndexOf('\n\n', i) - 1);
-    const ctx = agent.slice(Math.max(0, commentStart), i);
-    check(ctx.includes('0.270%') && ctx.includes('21,822'),
+    const scrubSrc = readFileSync('src/utils/scrub.js', 'utf8');
+    check(scrubSrc.includes('0.00%') && scrubSrc.includes('21,822'),
         'the corpus measurement is recorded next to the strip', 'no measurement recorded');
 }
 

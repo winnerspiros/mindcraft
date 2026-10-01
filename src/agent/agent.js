@@ -7,6 +7,7 @@ import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
+import { scrubOutput } from '../utils/scrub.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -1468,59 +1469,7 @@ export class Agent {
                 // The `message = String(message)` assignment that starts this chain
                 // was lost to an earlier edit, leaving `.replace(...)` with no
                 // left-hand side - a hard syntax error, so the file did not load.
-                message = String(message)
-                    .replace(/(?:^|[.!?]\s+)[^.!?\n]*\b(?:ok(?:ay)?,?\s+|well,?\s+|right,?\s+|so,?\s+)?time to (?:deal with|figure out|handle|get|gather|find|check|look at|try)\b[^.!?\n]*/gim, ' ')
-                .replace(/[^.!?\n]*\blet me (?:try|just|go|get|see|check|find|handle|deal)\b[^.!?\n]*[.!?]?/gi, ' ')
-                .replace(/[^.!?\n]*\bbetter get on (?:that|it|this)\b[^.!?\n]*[.!?]?/gi, ' ')
-                // The terminator is CONSUMED with the sentence. Leaving it behind
-                // is what produced "a phantom now? ." - the words gone, the "?"
-                // kept, an orphaned "." stranded mid-string which the NEXT strip
-                // then reduced to a bare "." on its own.
-                .replace(/[^.!?\n]*\bthis is (?:just )?(?:great|fantastic|perfect|amazing|brilliant)\b[^.!?\n]*[.!?]?/gi, ' ')
-                    .replace(/\b(?:of course),?\s+/gi, '')
-                    // Collapse punctuation left stranded by a removed sentence.
-                    // Re-added after an edit dropped it: without it
-                    // "a phantom now? this is just fantastic. time to deal with
-                    // that." left "a phantom now?." - a full stop after a question
-                    // mark, which is worse than the line it replaced.
-                    // Collapse only a DUPLICATED pair left by a deleted sentence
-                    // ("?." -> "?"). A genuine question keeps its "?": verified that
-                    // a blanket trailing-mark strip turned "wait what?" into
-                    // "wait what", which is wrong - and "seriously??" into
-                    // "seriously", which is right.
-                    .replace(/([.!?])\1+/g, '$1')
-                    // "?.", "?!." - a mark followed by a FULL STOP is a sentence
-                    // boundary whose second sentence was deleted, so the stop goes
-                    // and the surviving mark stays. Previously I had this backwards
-                    // and it left "a phantom now?." in production output.
-                    .replace(/([?!])\.+(?=\s|$)/g, '$1')
-                    .replace(/\.{2,}(?=\s|$)/g, '.')
-                    // A message that was ONLY an announcement is now just "." or "",
-                    // which the empty/whitespace gate below drops anyway - so no
-                    // aggressive trailing-mark removal is needed here.
-                    .replace(/^\s*\.+\s*$/, '')
-                    .replace(/\*[^*\n]{1,24}\*/g, ' ')   // *facepalm* -> gone
-                    .replace(/\*+/g, ' ')                    // stray * -> gone
-                    .replace(/[ \t]{2,}/g, ' ')
-                    .replace(/~+/g, '')
-                    .replace(/\s{2,}/g, ' ')
-                    .trim()
-                    // Tidy what the strips leave behind, verified as debris:
-                    // "a phantom now? ." (orphaned full stop) and "seriously?? fine,"
-                    // (a dangling connective with nothing after it). Both read
-                    // worse than the line they replaced.
-                    .replace(/\s+([.!?,;:])/g, '$1')        // "now? ."  -> "now?"
-                    .replace(/([?!.])\1+/g, '$1')            // "fine??"  -> "fine?"
-                    .replace(/[,;:]\s*$/, '')                // trailing comma
-                    .replace(/\b(?:fine|ok|okay|so|well|and|but|then)\s*$/i, '')
-                    .replace(/^\s*(?:fine|ok|okay|so|well|and|but|then)[,\s]*/i, '')
-                    // Re-tidy LAST. The chain above collapses whitespace and
-                    // trims, but a later replace can reintroduce a space, and the
-                    // leftover was visible: "a phantom now?. " with a space before
-                    // the full stop.
-                    .replace(/\s+([.!?,;:])/g, '$1')
-                    .replace(/\s{2,}/g, ' ')
-                    .trim();
+                message = scrubOutput(message);
 
                 let len = checkLength(message);
                 if (!len.ok && len.why === 'paragraph') {

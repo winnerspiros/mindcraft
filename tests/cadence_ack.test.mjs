@@ -62,8 +62,16 @@ else ok(`both cadence call sites use a jittered gear (${jittered.length} refs)`)
 // the next reader to wire one back up.
 if (/cooldown_chatty|cooldown_solo/.test(sp)) bad('a fixed cooldown constant survives');
 else ok('no fixed cooldown constant left to be re-wired');
-if (/const gear = solo \? this\._jitteredGear\(true\) : this\._engagementGear\(\)/.test(sp))
-    ok('loop picks a fresh gear every turn');
+// The solo arm is now _actionGear(), not _jitteredGear(true). Measured solo gaps
+// were 326s, 198s, 581s, 40s, 47s, 118s - three to ten minutes of standing still
+// per turn - because TURN_TAKING_ALPHA (the measured gap between human CHAT
+// turns) was pacing game ACTIONS. Chat pacing and action pacing are separate now,
+// so the assertion is that the loop draws a fresh gear from whichever arm applies
+// rather than any constant.
+if (/const gear = solo \? this\._actionGear\(\) : this\._engagementGear\(\)/.test(sp))
+    ok('loop picks a fresh gear every turn (solo uses the action gear)');
+else if (/const gear = solo \? this\._jitteredGear\(true\) : this\._engagementGear\(\)/.test(sp))
+    bad('loop still paces solo actions with the chat-pacing gear');
 else bad('loop still uses a constant gear');
 
 // ── 5. engagement tracking is fed and decayed ─────────────────────────────
