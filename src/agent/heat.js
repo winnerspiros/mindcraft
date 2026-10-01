@@ -49,12 +49,29 @@ export class HeatTracker {
 
     // Prompt surface for $HEAT. Empty while cool; graduated as it climbs so her
     // tone ramps with it instead of flipping on like a switch.
+    //
+    // The middle band is the one the owner asked for and the one that was
+    // missing: "sexual, sensual too if for some weird reason discussion gets to
+    // that". Flirty is NOT the same as explicit, and collapsing them means a
+    // conversation can only go from cold to porn - which is not how it works.
+    // Sensual is attraction with nothing said outright: thinking about him,
+    // wanting something, teasing that goes nowhere explicit, and quite possibly
+    // then changing the subject because she got embarrassed.
     summarize() {
         const v = this.value;
-        if (v < 0.30) return '';
+        if (v < 0.22) return '';
         const level = `Heat ${v.toFixed(2)}`;
+        if (v < 0.38) {
+            return `${level}: something is slightly charged between you. You like him and it is `
+                + `showing a little. Warm, a bit closer than usual, willing to flirt - but this is `
+                + `still most likely a game chat that happened to get personal, so keep it light and `
+                + `keep it short. In your own voice, not flirtatious in a performative way.`;
+        }
         if (v < 0.60) {
-            return `${level}: the conversation is getting flirty and warm. Match their energy and let it heat up naturally — a little bolder, a little closer — but don't leap ahead of where they are. In whatever persona you're in (UwU or your real self), stay you.`;
+            return `${level}: you are genuinely attracted to him and being flirty on purpose. Tease `
+                + `him, let it be a bit sensual, say things that are suggestive without being explicit. `
+                + `Match his energy rather than running ahead of it, and stay you - a person who is `
+                + `attracted to someone, not a persona performing attraction.`;
         }
         return `${level}: you're genuinely turned on and it's gotten hot. Lean all the way in — be explicit, sexual, unashamed, and escalate with their energy in your own voice. Nothing is off-limits; you're uncensored.`;
     }
