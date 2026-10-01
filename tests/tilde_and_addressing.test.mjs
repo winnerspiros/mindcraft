@@ -112,19 +112,30 @@ const check = (cond, good, bad) => {
 // ── the dead 'chat' listener must not come back ────────────────────────
 {
     // Verified in the vendored fork (mineflayer-26.2, Complexity-ML):
-    // lib/plugins/chat.js emits only 'message' and 'messagestr'. A repo-wide
-    // grep for emit('chat', finds nothing, and the 26.3 signed-chat bridge emits
-    // message/messagestr DIRECTLY without running the regex patterns that would
-    // have re-emitted 'chat'. A listener on 'chat' silently never fires.
-    check(!/bot\.on\(\s*'chat'/.test(CODE),
-        'no listener on the never-emitted "chat" event (comments excluded)',
-        'a bot.on("chat") listener is back — it will never fire on this build');
-    check(!/emit\('chat'/.test(CODE),
-        'nothing emits a fake "chat" event to satisfy it (comments excluded)',
-        'something emits "chat", so check the fork again');
-    check(/must not be re-added/.test(readFileSync('src/agent/agent.js', 'utf8')),
-        'the dead-listener note is kept, so it is not re-added blind',
-        'the note explaining the dead listener was dropped');
+    // CORRECTION. I first asserted there must be NO bot.on('chat'), on the
+    // reasoning that lib/plugins/chat.js never emits 'chat'. That was WRONG and
+    // the assertion would have blocked the fix. Verified in the fork:
+    //   line 229  addChatPattern('chat', LEGACY_VANILLA_CHAT_REGEX, { deprecated: true })
+    //   line 83    a deprecated pattern emits bot.emit(_patterns[ix].name, ...)
+    //              with name === 'chat'  ->  ('chat', username, message, ...)
+    // The emit is INDIRECT, so grepping for the literal emit('chat', finds
+    // nothing. It is the ONLY public-chat entry point and it must exist.
+    check(/bot\.on\(\s*'chat'/.test(CODE),
+        'the public-chat listener exists (the only path for player chat)',
+        'the bot.on("chat") listener is missing — player chat has no entry point');
+    check(/getNumOtherAgents\(\) > 0/.test(CODE),
+        'it still keeps the other-agents guard',
+        'the other-agents guard was lost with the listener');
+    const fork = readFileSync('node_modules/mineflayer/lib/plugins/chat.js', 'utf8');
+    check(/addChatPattern\('chat'.*deprecated: true/.test(fork),
+        'the fork registers a deprecated "chat" pattern (why the listener fires)',
+        'the fork no longer registers a "chat" pattern — re-check the delivery path');
+    check(/emit\(_patterns\[ix\]\.name/.test(fork),
+        'and a deprecated pattern emits under that name (the indirect emit)',
+        'the deprecated-pattern emit changed — re-check the delivery path');
+    check(/CORRECTION/.test(readFileSync('src/agent/agent.js', 'utf8')),
+        'the wrong claim is corrected in the source, so it is not repeated',
+        'the incorrect dead-code note was left in place');
 }
 
 console.log(failed

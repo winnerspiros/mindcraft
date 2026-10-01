@@ -474,14 +474,26 @@ export class Agent {
             } catch (e) { console.warn('[sysmsg] handle failed:', e.message); }
         });
 
-        // NOTE: `bot.on('chat', ...)` used to live here. It is DEAD CODE on this
-        // build and must not be re-added. Verified in the vendored fork
-        // (mineflayer-26.2, Complexity-ML): lib/plugins/chat.js emits only
-        // 'message' and 'messagestr', and a repo-wide grep for emit('chat', finds
-        // nothing. The 26.3 signed-chat bridge emits message/messagestr DIRECTLY
-        // and, unlike the old signed path, never runs the regex patterns that
-        // would have re-emitted 'chat'. Player chat reaches handleMessage via
-        // the messagestr path, which is the one that has been working.
+        // CORRECTION - I removed this listener after wrongly concluding it was
+        // dead code, and it is NOT dead. It is the ONLY public-chat entry point.
+        //
+        // In the fork (mineflayer-26.2, Complexity-ML) lib/plugins/chat.js:
+        //   line 229  bot.addChatPattern('chat', LEGACY_VANILLA_CHAT_REGEX, { deprecated: true })
+        //   line 83-85 a deprecated pattern emits bot.emit(_patterns[ix].name, ...)
+        //              with name === 'chat', i.e. ('chat', username, message, ...)
+        //
+        // I was misled by grepping for the literal emit('chat', — the emit is
+        // INDIRECT, via _patterns[ix].name. The 26.3 signed-chat bridge comment
+        // about skipping pattern matching applies to the signed path only; the
+        // legacy/unsigned path still runs it.
+        //
+        // Lesson: a grep that finds nothing is not proof an event cannot fire.
+        // Verify by reading the emit site, not by string-matching the call.
+        this.bot.on('chat', (username, message) => {
+            if (serverProxy.getNumOtherAgents() > 0) return;
+            // only respond to open chat messages when there are no other agents
+            respondFunc(username, message, false);
+        });
 
         // uwu: guest-server join flow — AuthMe-style /register-/login prompts
         // + one /kit probe. Prompt-gated only (never sends blind), max 2 tries
