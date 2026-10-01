@@ -1105,6 +1105,20 @@ const modes_list = [
                     `${name} is nearby. If you have something genuinely worth saying to them right now, say it in one short line, and make it about what is actually going on. Otherwise stay quiet - real players do not talk just to talk, and if all you have is "hi, how are you" then say nothing.`,
                 ];
                 const p = prompts[Math.floor(Math.random() * prompts.length)];
+                // Reaching here in normal mode means the gate above already
+                // found a REAL trigger - someone spoke recently, or something
+                // worth reporting happened. So the self-prompt is earned, not
+                // ambient, and persisting it as history is correct.
+                //
+                // (An earlier version gated this with a bare persona early
+                // return. That was redundant — the gate above already handles
+                // it — and persona_parity.test.mjs correctly rejected it: a
+                // bare return disables the mode for normal, and both personas
+                // must keep every capability. The stale "(AUTO) You feel
+                // chatty" turn found in memory.json predates that gate, not
+                // because of it. Note the wording: an earlier revision of this
+                // comment spelled that guard out literally, and the parity test
+                // then matched its own documentation and failed.)
                 agent.handleMessage('system', `(AUTO) You feel chatty. ${p}`);
             });
         }
