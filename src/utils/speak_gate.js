@@ -49,7 +49,7 @@ export function gateNormalChat(ctx) {
     // particular, is narration — the single loudest "I am a bot" tell there is.
     // Real players speak to someone or about something; they do not report
     // their own inner state to an empty channel.
-    if (ctx.self_prompt && !ctx.human_replied) {
+    if (ctx.self_prompt && !ctx.human_replied && !ctx.notable_event) {
         return { ok: false, why: 'unprompted_self_narration' };
     }
 
