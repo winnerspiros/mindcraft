@@ -610,7 +610,17 @@ const modes_list = [
                 }
             } catch (_) {}
             const nearbyPlayers = world.getNearbyPlayers(bot, 16);
-            const player = nearbyPlayers[0] || null;
+            // Prefer the player she is actually ENGAGING, not simply the closest.
+            // The owner: "observer what players do, look at them" - that is the
+            // person she is talking to. Picking nearest-by-distance meant she
+            // fixated on whoever happened to be closest, including a player who
+            // had not so much as looked at her.
+            const _engagedName = (() => {
+                try { return agent._attentionPlayer?.()?.username || null; } catch (_) { return null; }
+            })();
+            const player = (_engagedName
+                ? (nearbyPlayers.find((p) => p?.username === _engagedName) || nearbyPlayers[0])
+                : nearbyPlayers[0]) || null;
             const nearestMob = player ? null : bot.nearestEntity(e =>
                 e.type !== 'player' && e.name !== 'enderman' &&
                 e.position.distanceTo(bot.entity.position) < 10);
@@ -620,8 +630,19 @@ const modes_list = [
             if (target && target !== this.last_entity) {
                 this.staring = true;
                 this.last_entity = target;
-                // stare longer at a person: ~6-10s locked on, vs ~4-5s for a mob
-                this.next_change = Date.now() + (isPlayer ? 6000 + Math.random() * 4000 : 4000 + Math.random() * 1000);
+                // ── LOOK, THEN GLANCE AWAY, THEN LOOK BACK ───────────────
+                // Was 6-10s LOCKED ON for a person, which is the yandere tell and
+                // not something a player does: people glance at someone, look
+                // away, and look back. So the hold is now 1.5-3.5s and the gap
+                // between holds is 2.5-7s of looking elsewhere.
+                //
+                // Mob-holding stays longer because watching a creeper is not the
+                // same social act as watching a person.
+                this.next_change = Date.now() + (isPlayer
+                    ? 1500 + Math.random() * 2000
+                    : 4000 + Math.random() * 1000);
+                // and the away-gap, so she is not staring continuously
+                this.next_look_back = this.next_change + 2500 + Math.random() * 4500;
             }
             // RCON-truth counts as a target too: if the server says a player
             // is near but no entity rendered, hold the stare on them instead
@@ -630,12 +651,27 @@ const modes_list = [
                 if (this.last_entity !== rconTarget) {
                     this.staring = true;
                     this.last_entity = rconTarget;
-                    this.next_change = Date.now() + 6000 + Math.random() * 4000;
+                    // Same short hold and look-back gap as the entity path. This
+                    // one had the original 6-10s locked-on stare left in it,
+                    // because I fixed only the entity branch - and this RCON
+                    // fallback is the path that fires most often on 26.3, where
+                    // the server withholds player entities at range. So the yandere
+                    // tell survived precisely where it mattered most.
+                    this.next_change = Date.now() + 1500 + Math.random() * 2000;
+                    this.next_look_back = this.next_change + 2500 + Math.random() * 4500;
                 }
             } else if (!target && !rconTarget) {
                 this.last_entity = null;
             }
 
+            // Honour the away-gap: between looking at a person and looking back,
+            // she looks somewhere else. Without this the shorter hold above would
+            // just re-acquire the instant it expired, which is a faster version of
+            // the same 24/7 staring.
+            if (this.staring && this.next_look_back && Date.now() < this.next_look_back
+                && isPlayer) {
+                this.staring = false;
+            }
             if ((target || rconTarget) && this.staring) {
                 // 26.3: stare via throttled lookAt (max 1 head-turn per 600ms
                 // in physics.js) so the look never races updatePosition's own
@@ -724,6 +760,32 @@ const modes_list = [
         update: function (agent) {
             const bot = agent.bot;
             const recently_hurt = Date.now() - bot.lastDamageTime < 4000;
+            // ── WITH SOMEONE, NOT MERELY IDLE ─────────────────────────────
+            // The owner: "if she's interacting with a player spam crouch and
+            // observer what players do, look at them, spam jump".
+            //
+            // A player bounces around the person they are talking to, and stands
+            // still when they are not. Hopping at an empty room is the twitch that
+            // got this mode switched on in the first place - measured 15 mode
+            // firings per 10 minutes with nobody present. So the hop needs a
+            // person: nearby AND engaged, not merely online.
+            if (!recently_hurt) {
+                const _near = (() => {
+                    try {
+                        const me = bot.entity;
+                        if (!me?.position) return false;
+                        return Object.values(bot.entities || {}).some((e) =>
+                            e?.type === 'player' && e.username !== agent.name && e.position
+                            && e.position.distanceTo(me.position) <= 12);
+                    } catch (_) { return false; }
+                })();
+                if (!_near) {
+                    // nobody about: settle every physical state and stand still
+                    bot.setControlState('jump', false);
+                    bot.setControlState('sneak', false);
+                    return;
+                }
+            }
             if (!agent.isIdle() || bot.entity.onGround === false || bot.pathfinder.goal) {
                 // reset physical states so nothing stays stuck on
                 bot.setControlState('sneak', false);

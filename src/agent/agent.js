@@ -38,6 +38,13 @@ import Vec3 from 'vec3';
 
 // ── AUTONOMOUS WORK ─────────────────────────────────────────────────────
 //
+// How long before she may re-arm the SAME kind of work after finishing it. Time
+// based, and short relative to a play session: she finishes getting ore, and a
+// minute later she is doing something else rather than standing there. Long
+// enough that re-arming cannot become a loop, short enough that she is never
+// idle for a visible stretch.
+const ACTIVITY_REARM_MS = 45000;
+//
 // Goal DESCRIPTIONS, not action scripts. These say what she is doing; the bot,
 // its skills and the model decide how to carry it out, through the ordinary
 // self-prompt path. That is the same contract a goal arriving in conversation
@@ -2048,7 +2055,15 @@ export class Agent {
                     });
                     if (_pick.activity) {
                         const _goal = ACTIVITY_PROMPT[_pick.activity];
-                        if (_goal && !this._lastAutoGoalAt?.[_pick.activity]) {
+                        // Re-arm whenever she is idle, throttled BY TIME rather
+                        // than once per activity per process. The original guard
+                        // (`!_lastAutoGoalAt[activity]`) meant she picked work
+                        // exactly ONCE and then never again - measured: one
+                        // [activity:] line, then "self prompt loop stopped" 43s
+                        // later. One action is not work. Throttling by time stops
+                        // thrashing without making her single-shot.
+                        const _last = this._lastAutoGoalAt?.[_pick.activity] || 0;
+                        if (_goal && Date.now() - _last > ACTIVITY_REARM_MS) {
                             this.self_prompter.start(_goal);
                             this._lastAutoGoalAt = this._lastAutoGoalAt || {};
                             this._lastAutoGoalAt[_pick.activity] = Date.now();
