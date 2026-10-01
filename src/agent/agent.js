@@ -670,6 +670,12 @@ export class Agent {
         // afterwards: her narration would have been reclassified as a reply.
         // Stamp freshness here instead.
         this._last_human_msg_at = (!self_prompt && !from_other_bot) ? Date.now() : this._last_human_msg_at;
+        // The TEXT of the last human message, not just when it arrived. The
+        // empty-ack gate needs to know whether the player actually made a
+        // PROPOSITION - "no" is a contentless ack to a bare greeting and a
+        // complete argument in reply to a claim, and only the text can tell them
+        // apart. See the gate below.
+        if (!self_prompt && !from_other_bot) this._last_human_msg_text = String(message || '');
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
@@ -903,7 +909,12 @@ export class Agent {
         if (!isYandere()) {
             try {
                 const { isEmptyAck } = await import('../utils/empty_ack.js');
-                if (isEmptyAck(message)) {
+                // The player's own words decide whether an ack is empty. "yeah"
+                // to "hi" agrees with nothing; "yeah" to a claim is consent, and
+                // "no" to a claim is disagreement. Without the context argument
+                // this gate suppressed her arguments, which is the opposite of
+                // what it was built to do.
+                if (isEmptyAck(message, this._last_human_msg_text)) {
                     console.log(`${this.name} [empty-ack] suppressed: ${String(message).slice(0, 60)}`);
                     return;
                 }
