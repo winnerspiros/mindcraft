@@ -48,6 +48,8 @@ const GROUP_RATE = 0.12;
  * @param {string}  [ctx.last_speaker]  who spoke immediately before, if anyone
  * @param {string}  [ctx.last_target]  who that message was aimed at ('other' if
  *        it named somebody who is not her, '' if it named nobody)
+ * @param {boolean} [ctx.addressed_physically] a nearby player is close AND
+ *        looking towards her - the physical form of addressing someone
  * @returns {{reply: boolean, why: string}}
  */
 export function shouldReplyTo(ctx) {
@@ -73,6 +75,20 @@ export function shouldReplyTo(ctx) {
     }
     if (ctx?.human_exchange && humans > 1) {
         return { reply: false, why: 'others_mid_conversation' };
+    }
+
+    // PHYSICAL ADDRESS, which the owner asked for alongside text address:
+    // "unless addresses i mean physically or by text". Being stood right in
+    // front of her and looking at her is a person addressing her, and it is the
+    // physical version of somebody typing her name.
+    //
+    // The window is deliberately small. Minecraft players collide constantly and
+    // most of it means nothing - walking past someone on a corridor is not being
+    // spoken to. So this only counts when they are genuinely close AND oriented
+    // towards her, which is the pair of cues a real person uses to decide
+    // whether someone is trying to talk to them.
+    if (humans > 1 && !ctx?.addressed && ctx?.addressed_physically) {
+        return { reply: true, why: 'addressed_in_person' };
     }
 
     // DIRECTIONAL ADDRESSING. Not merely "someone spoke" but "these two are
