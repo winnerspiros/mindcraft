@@ -1,141 +1,106 @@
-// REPLY TRIGGER — who is this message for?
+// REPLY TRIGGER — is this message even for her?
 //
-// The gap this fills, from the owner: "right now im just me and her so most
-// probably if i send anything in chat it probably is for her. same for her, she
-// can start a conversation, no forced. if many ppl are on server they might
-// talk to themselves so no need to interfere."
+// The gap, from the owner: alone with her, almost anything he says is for her.
+// With several people on, they are probably talking to each other and an
+// unnamed line is not for her. The existing gates ask different questions —
+// "is this turn invented?" (speak_gate), "is there a proposition to agree
+// with?" (empty_ack) — and none of them ask whether anyone is talking to each
+// other at all.
 //
-// That is a statement about GROUP SIZE, and it is the right variable. The
-// existing gates all ask a different question - "is this turn invented?" (speak
-// gate), "is it addressed to nobody?" (empty ack) - and none of them ask "is
-// anyone even talking TO each other".
+// GROUP SIZE is the governing variable, because it follows from what a channel
+// IS rather than from any persona:
 //
-// The logic, which follows from what a channel IS rather than from a persona:
+//   DYAD   she + one human. Nobody else to be talking to, so the sensible
+//          reading of an unnamed line is that it is for her. Silence is rarer.
+//   GROUP  3+ humans. The default flips: people are talking to EACH OTHER, an
+//          unnamed line is most likely not for her, and answering is intrusion.
+//   MID-EXCHANGE  two humans trading — never intrude. Being named still wins,
+//          because people answer a direct call even mid-argument.
 //
-//   DYAD (she + exactly one human): almost everything is for her. There is
-//   nobody else to be talking to. A message in a two-person channel that does
-//   not name her is still very likely for her, because the alternative is that
-//   her only conversational partner is talking to himself. So the bar to
-//   answer drops to near zero, and staying silent becomes the rarer choice.
+// Not a persona instruction, and not a model call. A model handed a turn in its
+// context treats every turn as a turn owed an answer; the Koala study
+// (arXiv 2501.17258) needed external control logic for exactly this, reporting
+// the base model "unreliable in identifying intended target for a chat
+// utterance". We do not need a model to count players.
 //
-//   GROUP (3+ humans): the default assumption flips. People are talking to each
-//   other, and a message that does not name her is most likely NOT for her.
-//   Answering it is intrusion. So she answers when named, and otherwise only
-//   when the message clearly needs her - a direct request for the thing she is
-//   the only one doing, or a question nobody else can answer.
-//
-// This is deliberately NOT a persona instruction. A prompt cannot count players
-// or decide that a message was meant for someone else; and a model asked
-// "should you reply to this?" will say yes, because the turn is in its context
-// and every turn in context looks like a turn owed an answer. The same reason
-// the Koala study (arXiv 2501.17258) needed external control logic to restrict
-// replies to mentions: the base model was "unreliable in identifying intended
-// target for a chat utterance".
-//
-// Silence is a real outcome here, not a failure. Measured on this server's own
-// chat, 3 of 33 bare greetings got no reply at all, and that is normal
-// behaviour, not rudeness.
+// Silence is a real outcome. Measured here: 3 of 33 bare greetings got no reply,
+// which is normal, not rude.
 
-/**
- * Count the humans currently visible to her, excluding herself.
- * Callers pass this in because they already have the entity list; recomputing
- * it here would duplicate the 26.3 tablist/stale-entry handling that
- * _otherPlayersOnline() already gets right (the tablist carries stale entries,
- * so "any player online" is not the same as "someone is actually here").
- */
-function visibleHumans(humans) {
-    return Math.max(0, Number(humans) || 0);
-}
-
-// A message that plainly needs a specific person even without naming them.
-// Deliberately narrow: these are the cases where staying silent is worse than
-// possibly intruding.
+// 19% of real player lines end in "?" — an ordinary question is aimed at whoever
+// is relevant, which in a channel where she did the thing is her.
 const DIRECT_NEED = [
-    // A direct question. "where did you put the wood" is addressed to whoever
-    // put the wood there, and in a channel where she is the one who put it,
-    // that is her. My first DIRECT_NEED only matched when a wh-word sat within
-    // 60 characters of the "?", which missed the common shape of an ordinary
-    // question entirely.
     /\?\s*$/,
-    // an explicit request for help/attention
     /\b(can you|could you|help|need (help|a hand)|stuck|anyone (got|have|know)|who (has|got))\b/i,
-    // naming an object only she is dealing with
     /\b(uwu'?s?|your) (roof|base|farm|house|build|chest|portal|bed)\b/i,
 ];
-// Small talk that is clearly social, and in a group is usually aimed at whoever
-// is nearby rather than at a bot.
+// Social filler, aimed at whoever is nearby rather than at her.
 const CASUAL_NOISE = /^\s*(lol|lmao|haha|xd|kk|ok(ay)?|nice|cool|wow|ah|oh|hm+|mhm+|nice one|gg|ty|thanks?|np|brb|afk)\b[\s!.]*$/i;
 
+const DYAD_RATE = 0.28;   // eligible turns she opens a conversation
+const GROUP_RATE = 0.12;
+
 /**
- * Decide whether a player message is plausibly for her.
- *
  * @param {object} ctx
  * @param {string}  ctx.message        the player's text
  * @param {number}  ctx.visible_humans humans near her, excluding her
- * @param {boolean} ctx.addressed      message names her
- * @param {boolean} ctx.human_exchange two or more humans are mid-conversation
- * @param {boolean} ctx.same_speaker_recently the last message was from this same player
+ * @param {boolean} [ctx.addressed]    message names her
+ * @param {boolean} [ctx.human_exchange] two or more humans are mid-conversation
  * @returns {{reply: boolean, why: string}}
  */
 export function shouldReplyTo(ctx) {
     const msg = String(ctx?.message ?? '').trim();
     if (!msg) return { reply: false, why: 'empty' };
 
-    const humans = visibleHumans(ctx.visible_humans);
-    const addressed = !!ctx.addressed;
+    // Callers pass the count because they already have the entity list;
+    // recomputing it here would duplicate the 26.3 stale-tablist handling.
+    const humans = Math.max(0, Number(ctx?.visible_humans) || 0);
 
-    // Nobody here at all. A message cannot be for her when there is nobody to
-    // have sent it - visible_humans 0 means an empty server, and it fell through
-    // to the dyad branch (humans <= 1) which answered anyway. That is the
-    // void-talking failure this whole file exists to prevent.
+    // A message cannot be for her when nobody is here to have sent it. Without
+    // this, 0 fell through to the dyad branch below and she replied into an
+    // empty server.
     if (humans === 0) return { reply: false, why: 'nobody_here' };
 
-    // Named directly. This overrides everything except an active exchange
-    // between two other people - being called by name mid-argument still gets
-    // answered by real people, so it outranks the group rule.
-    if (addressed) {
-        return { reply: true, why: humans <= 1 ? 'addressed_in_dyad' : 'addressed_by_name' };
+    if (ctx?.addressed) {
+        return { reply: true, why: humans === 1 ? 'addressed_in_dyad' : 'addressed_by_name' };
     }
-
-    // Two humans are talking to each other. Not hers, whatever she feels like
-    // saying. This is the intrusion the owner described.
-    if (ctx.human_exchange && humans > 1) {
+    if (ctx?.human_exchange && humans > 1) {
         return { reply: false, why: 'others_mid_conversation' };
     }
 
-    // ── DYAD: her only conversational partner ────────────────────────────
-    // Nobody else is here. A message that does not name her is still most
-    // likely for her, because the alternative is that he is talking to himself.
-    if (humans <= 1) {
-        if (CASUAL_NOISE.test(msg)) return { reply: true, why: 'dyad_short_reply' };
-        return { reply: true, why: 'dyad_default_open' };
+    // DYAD — the alternative is that he is talking to himself.
+    if (humans === 1) {
+        return {
+            reply: true,
+            why: CASUAL_NOISE.test(msg) ? 'dyad_short_reply' : 'dyad_default_open',
+        };
     }
 
-    // ── GROUP: 3+ humans, not addressed ──────────────────────────────────
+    // GROUP — answer only what plainly needs her.
     if (CASUAL_NOISE.test(msg)) return { reply: false, why: 'group_low_content' };
-    for (const rx of DIRECT_NEED) {
-        if (rx.test(msg)) return { reply: true, why: 'group_explicit_need' };
-    }
-    return { reply: false, why: 'group_not_addressed' };
+    return DIRECT_NEED.some((rx) => rx.test(msg))
+        ? { reply: true, why: 'group_explicit_need' }
+        : { reply: false, why: 'group_not_addressed' };
 }
 
-// ── Should SHE start something, unprompted? ───────────────────────────────
-// The owner: "she can start a conversation, no forced". So this is allowed, and
-// it is deliberately rare. Two conditions, both required:
-//   1. she is not interrupting anyone (no active human exchange)
-//   2. there is someone to talk to
-// Rate is a probability per eligible turn, not a timer - a timer is what
-// produced the old 45s "(AUTO) You feel clingy" loop.
-const UNPROMPTED_BASE_RATE = 0.12;   // ~1 in 8 eligible turns
-const UNPROMPTED_DYAD_RATE = 0.28;   // alone with one person, she chattier
-
+/**
+ * May she open a conversation? The owner: "she can start a conversation, no
+ * forced". A probability per eligible turn, never a timer — the old 45s gear
+ * produced the "(AUTO) You feel chatty" loop, the same failure in new clothes.
+ *
+ * @param {object} ctx
+ * @param {number}  ctx.visible_humans
+ * @param {boolean} [ctx.human_exchange]
+ * @param {boolean} [ctx.spoke_recently]
+ * @param {() => number} [rand]
+ * @returns {{start: boolean, why: string}}
+ */
 export function shouldStartConversation(ctx, rand = Math.random) {
-    const humans = visibleHumans(ctx.visible_humans);
-    if (humans < 1) return { start: false, why: 'nobody_here' };
-    if (ctx.human_exchange && humans > 1) return { start: false, why: 'others_mid_conversation' };
-    // She just spoke, or just went quiet after being answered - do not pile on.
-    if (ctx.spoke_recently) return { start: false, why: 'spoke_recently' };
-    const rate = humans <= 1 ? UNPROMPTED_DYAD_RATE : UNPROMPTED_BASE_RATE;
-    if (rand() < rate) return { start: true, why: humans <= 1 ? 'dyad_initiative' : 'group_initiative' };
-    return { start: false, why: 'not_this_turn' };
+    const humans = Math.max(0, Number(ctx?.visible_humans) || 0);
+    if (humans === 0) return { start: false, why: 'nobody_here' };
+    if (ctx?.human_exchange && humans > 1) return { start: false, why: 'others_mid_conversation' };
+    if (ctx?.spoke_recently) return { start: false, why: 'spoke_recently' };
+    const dyad = humans === 1;
+    return rand() < (dyad ? DYAD_RATE : GROUP_RATE)
+        ? { start: true, why: dyad ? 'dyad_initiative' : 'group_initiative' }
+        : { start: false, why: 'not_this_turn' };
 }
