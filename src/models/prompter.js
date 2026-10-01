@@ -409,6 +409,26 @@ export class Prompter {
         }
     }
 
+    // Players she has REAL history with — the gate for the normal persona's
+    // in-character explanation ("the kawaii act got exhausting"). Deliberately
+    // not "everyone in relationship.json": a player she has barely spoken to
+    // never saw the act, so she has nothing to explain to them. Bars >= 5 and
+    // rank above stranger, capped to the closest handful so the prompt stays
+    // small and the names are ones she'd actually recognise.
+    _getKnownPlayers() {
+        const rel = this.agent && this.agent.relationship;
+        if (!rel || !rel.players) return '(none yet)';
+        // Interactions are the real signal. Requiring rank > stranger excluded
+        // EVERYONE: all 48 tracked players are still 'stranger' (ranks promote
+        // rarely), so the list was empty and the gate could never fire.
+        const known = Object.entries(rel.players)
+            .filter(([, e]) => e.interactions >= 5)
+            .sort((a, b) => b[1].interactions - a[1].interactions)
+            .slice(0, 8)
+            .map(([name]) => name);
+        return known.length ? known.join(', ') : '(none yet)';
+    }
+
     async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
@@ -426,6 +446,9 @@ export class Prompter {
 
         if (prompt.includes('$REALWORLD')) {
             prompt = prompt.replaceAll('$REALWORLD', this._getRealWorld());
+        }
+        if (prompt.includes('$KNOWN_PLAYERS')) {
+            prompt = prompt.replaceAll('$KNOWN_PLAYERS', this._getKnownPlayers());
         }
         if (prompt.includes('$UWU_BIT')) {
             prompt = prompt.replaceAll('$UWU_BIT', getUwuBit());

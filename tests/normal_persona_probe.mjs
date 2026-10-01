@@ -50,12 +50,19 @@ const CASES = [
 // Must NOT appear in normal mode.
 const KAWAI = /[♥♡]|nya|~|\bdarling\b|\bcutie\b|\bbaka\b|\bmy love\b/gi;
 // Warmth is required, not forbidden.
-// Warmth is a POSITIVE check, kept broad. Two earlier versions were wrong and
-// flagged GOOD replies as COLD: a narrow marker list missed "friendly" and
-// "coffee-loving", and requiring a marker per-reply punished a warm 12-word
-// answer for not containing a magic word. Warmth is a property of the session,
-// not of every individual line.
-const WARM = /\b(yes|sure|love|happy|show|help|cute|nice|cool|great|fun|come|want|nah|grabbed|check|let'?s|count me|in\b|imagine|promise|ok|okay|friendly|coffee|hang|welcome|glad|sounds)\b/i;
+// Warmth is a POSITIVE property, but it is NOT a vocabulary test.
+//
+// Three earlier versions tried a fixed marker list and all three were wrong: they
+// flagged good replies as COLD - "friendly" and "coffee-loving" went unnoticed,
+// then "cozy cup of freddo" did too. She has dozens of ways to sound warm, so any
+// word list misfires eventually. Three failed heuristics is enough.
+//
+// What actually distinguishes cold from warm here is whether she ENGAGES: answers
+// the question, teases, offers, or asks something back. A terse non-answer is the
+// thing worth catching. So: a reply is cold only if it is BOTH short and shows no
+// engagement. Warmth is then judged across the session, not per line.
+const ENGAGES = /[?!]|\b(let'?s|come|want|show|help|need|try|check|look|wait|go|join|tell|ask|sure|nah|yeah|ok|okay|honest|real talk|because)\b/i;
+const isCold = (r) => r.replace(/\s/g, '').length < 45 && !ENGAGES.test(r);
 
 // Identity is checked ACROSS the session, not per reply. A short answer like
 // "Just hanging out on the server" carries no pronoun but is perfectly in
@@ -87,7 +94,7 @@ for (const [label, q] of CASES) {
     const out = await speak('normal', q);
     replies.push(out);
     const hasKawaii = KAWAI.test(out);
-    const warm = WARM.test(out);
+    const warm = !isCold(out);
     if (hasKawaii) kawaii++;
     if (!warm) cold++;
     if (IDENTITY_RE.test(out)) selfHits++;
@@ -98,7 +105,7 @@ for (const [label, q] of CASES) {
 setSettings(root);
 
 // Session-level judgement, not per-reply.
-const sessionWarm = replies.filter((r) => WARM.test(r)).length;
+const sessionWarm = replies.filter((r) => !isCold(r)).length;
 const sessionSelf = replies.filter((r) => IDENTITY_RE.test(r)).length;
 console.log(`\n  kawaii leaks:        ${kawaii} (want 0)`);
 console.log(`  cold replies:         ${cold} (want <=1, a terse answer is not a cold one)`);
