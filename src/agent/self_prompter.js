@@ -17,6 +17,28 @@ export class SelfPrompter {
         // still gated per-turn below (see loop guard) so she acts, never spams.
         this.cooldown_chatty = 45000;
         this.cooldown_solo = 150000;
+        // ── HUMAN TIMING, NOT A METRONOME ─────────────────────────────────
+        // The owner: "people dont talk in fixed intervals, i might be off
+        // screen, thinking what to type, bored to type, depending on how much i
+        // type take longer etc."
+        //
+        // A fixed 45s cadence is a machine tell you can hear: the gaps are
+        // identical, so the rhythm itself becomes the giveaway, and she fires
+        // on a schedule that has nothing to do with the conversation. Real
+        // reply latency is a heavy-tailed distribution - a burst of instant
+        // replies, then a long pause while someone walks away or gets
+        // distracted - not a constant.
+        //
+        // So both gears are drawn from a log-uniform-ish range each turn
+        // rather than reused, and the chatty gear scales with how much has
+        // actually been said lately: someone typing paragraphs gets quick
+        // replies, a quiet channel drifts toward the slow end. Jitter is
+        // applied per turn, not per session, so consecutive gaps never repeat.
+        this.gear_chatty_min = 20000;
+        this.gear_chatty_max = 95000;
+        this.gear_solo_min = 90000;
+        this.gear_solo_max = 240000;
+        this._recent_human_chars = 0;
 
         // Autonomous goal lifecycle (Voyager-style critic + curriculum): counts
         // self-prompt turns since the current goal was set, and how many times
@@ -24,6 +46,50 @@ export class SelfPrompter {
         this.goal_cycles = 0;
         this.stuck_cycles = 0;
         this.advancing = false; // reentry guard for the critic+curriculum calls
+    }
+
+    // Human reply latency: log-uniform between min and max. Log-uniform
+    // reproduces the real shape (many short gaps, occasional very long ones)
+    // instead of a flat spread, which would still look metronomic.
+    _jitteredGear(solo) {
+        const min = solo ? this.gear_solo_min : this.gear_chatty_min;
+        const max = solo ? this.gear_solo_max : this.gear_chatty_max;
+        const u = Math.random();
+        return Math.round(min * Math.pow(max / min, u));
+    }
+
+    // How much a human has actually typed lately. Someone writing paragraphs
+    // is engaged and expects quick replies; a channel where people are mostly
+    // silent drifts to the slow end of the range. Without this the "chatty"
+    // gear treats a dead channel the same as a busy one.
+    _engagementGear() {
+        const chars = this._recent_human_chars;
+        let scale;
+        if (chars <= 20) scale = 1.6;        // barely talking
+        else if (chars < 120) scale = 1.0;
+        else if (chars < 400) scale = 0.7;
+        else scale = 0.5;                    // writing a lot, wants replies
+        const base = this._jitteredGear(false);
+        return Math.max(8000, Math.round(base * scale));
+    }
+
+    // Called from the message handler path with each real human message length,
+    // decayed over time so a burst an hour ago does not keep her fast.
+    noteHumanMessage(text) {
+        const n = String(text || '').length;
+        this._recent_human_chars = Math.min(600, this._recent_human_chars + n);
+    }
+
+    _decayEngagement() {
+        this._recent_human_chars = Math.max(0, this._recent_human_chars - 40);
+    }
+
+    // Called from the game-tick path so engagement fades in real time. A burst
+    // of typing ten minutes ago should not keep her at the fast end of the
+    // range forever - that is how a bot ends up responding fast to a channel
+    // that went silent an hour ago.
+    tickCadence() {
+        this._decayEngagement();
     }
 
     _otherPlayersOnline() {
@@ -149,7 +215,11 @@ export class SelfPrompter {
             // players gate). Solo turns still MUST use a command (below), so
             // alone she digs/builds/explores instead of yapping.
             const solo = !this._otherPlayersOnline();
-            const gear = solo ? this.cooldown_solo : this.cooldown_chatty;
+            // Per-turn jitter, not a constant (see gear_* comments in the
+            // constructor). Engagement-aware when players are around.
+            const gear = solo ? this._jitteredGear(true) : this._engagementGear();
+            this._last_gear = gear;
+            console.log(`[cadence] ${solo ? 'solo' : 'social'} next turn in ${Math.round(gear / 1000)}s (engagement=${this._recent_human_chars} chars)`);
             // Discovery's MissionPlanner, ported cheap: every self-prompt turn
             // restates the goal as ONE verifiable task + its success condition
             // (what "done" looks like in inventory/position terms), so the
@@ -331,7 +401,7 @@ export class SelfPrompter {
             else
                 this.idle_time = 0;
 
-            const gear = this._otherPlayersOnline() ? this.cooldown_chatty : this.cooldown_solo;
+            const gear = this._otherPlayersOnline() ? this._engagementGear() : this._jitteredGear(true);
             if (this.idle_time >= gear) {
                 console.log('Restarting self-prompting...');
                 this.startLoop();

@@ -98,7 +98,18 @@ else bad('"you feel chatty" self-prompt is ungated');
 try {
     const mem = JSON.parse(readFileSync('bots/UwU/memory.json', 'utf8'));
     const s = JSON.stringify(mem);
-    const y = (s.match(/[Yy]andere/g) || []).length;
+    // "YandereDev" is the OWNER's username and appears legitimately in
+    // anything he types to her. Only count it in text SHE authored or in
+    // her own reflective summary — i.e. a [system]/[assistant] turn, or the
+    // memory blob. Counting a [user] turn flagged the owner as the bug.
+    const authored = (mem.turns || [])
+        .filter((t) => String(t.role || '') !== 'user')
+        .map((t) => JSON.stringify(t)).join(' ')
+        + ' ' + String(mem.memory || '')
+        + ' ' + String(mem.self_prompt || '');
+    const y = (authored.match(/[Yy]andere/g) || []).length;
+    const userTurns = (mem.turns || []).filter((t) => String(t.role || '') === 'user');
+    if (userTurns.length) ok(`${userTurns.length} human turn(s) in history (not scanned for persona leakage)`);
     const c = (s.match(/clingy/gi) || []).length;
     if (y === 0 && c === 0) ok('memory.json carries no yandere/clingy residue');
     else bad(`memory.json re-poisoned: ${y} "yandere", ${c} "clingy"`);
