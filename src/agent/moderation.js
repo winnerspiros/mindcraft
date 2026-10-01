@@ -1,5 +1,6 @@
 import { readFileSync, existsSync } from 'fs';
 import path from 'path';
+import settings from './settings.js';
 
 // uwu's moderation + personal-memory watcher.
 // Deliberately passive: it only *flags* suspicious movement as data for the AI to
@@ -10,8 +11,11 @@ export class ModerationWatcher {
         this.agent = agent;
         this.lastPos = {};   // username -> {x,y,z,t}
         this.lastFlag = {};  // username -> timestamp
-        this.cooldown = 30000; // ms between flags per player
-        this.speedLimit = 25; // blocks/sec — above any legit movement
+        // Both are moderation thresholds, not safety limits: the watcher only
+        // FLAGS movement as data and she decides what to do, so tuning these
+        // changes how much she notices, never what she is allowed to do.
+        this.cooldown = settings.moderation_cooldown_ms ?? 30000; // ms between flags per player
+        this.speedLimit = settings.moderation_speed_limit ?? 25; // blocks/sec — above any legit movement
         this.timer = null;
     }
 
