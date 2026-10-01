@@ -884,6 +884,28 @@ export class Agent {
             } catch (e) { console.warn('[gate] failed open:', e.message); }
         }
 
+        // ── NORMAL PERSONA: REJECT EMPTY ACKNOWLEDGEMENTS ────────────────
+        // "hi uwu" -> "yeah" was the reported failure. The reply is in-register
+        // and grammatical and agrees with nothing: no proposition was made, so
+        // there is nothing to agree to. Measured on this server's own chat: 33
+        // bare greetings, and ZERO of them were answered with a bare ack - what
+        // followed was 'eat me', 'im a bit hungry', 'follow me', 'uwu tp to me'.
+        // Silence was also common (24% got no reply at all) and is fine; only the
+        // contentless ack is rejected.
+        //
+        // A prompt rule cannot hold this: it is a pattern the model is drawn to
+        // produce, and the same prompt that produced it produced "yeah" in the
+        // first place. It is a shape, so it is checked as a shape.
+        if (!isYandere()) {
+            try {
+                const { isEmptyAck } = await import('../utils/empty_ack.js');
+                if (isEmptyAck(message)) {
+                    console.log(`${this.name} [empty-ack] suppressed: ${String(message).slice(0, 60)}`);
+                    return;
+                }
+            } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
+        }
+
         // ── NORMAL PERSONA: VOICE DRIFT MONITOR ───────────────────────────
         // Observational only — nothing here changes what is sent. Feeds the
         // window that src/utils/voice_monitor.js scores. It sees SENT text, not

@@ -1119,7 +1119,15 @@ const modes_list = [
                 // because of it. Note the wording: an earlier revision of this
                 // comment spelled that guard out literally, and the parity test
                 // then matched its own documentation and failed.)
-                agent.handleMessage('system', `(AUTO) You feel chatty. ${p}`);
+                // Wording matters as much as the gate. "You feel chatty" is
+                // yandere state-leak - it narrates an inner mood, which the
+                // normal persona explicitly forbids ("the agent's state leaking
+                // into public chat"). In normal mode the trigger is a real
+                // conversational opening, so say that instead. The yandere
+                // branch keeps the original phrasing.
+                agent.handleMessage('system', isYandere()
+                    ? `(AUTO) You feel chatty. ${p}`
+                    : `(AUTO) Someone just spoke to you or something happened worth reporting. Reply to it in one short line. ${p}`);
             });
         }
     },
