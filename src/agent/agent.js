@@ -742,6 +742,34 @@ export class Agent {
             catch (_) { return false; }
         })();
 
+        // REPLY TRIGGER: is this message even for her? Decided BEFORE any model
+        // call, and it is the first question because a model handed a turn in its
+        // context will always treat it as a turn owed an answer. See
+        // utils/reply_trigger.js for why group size is the governing variable.
+        if (!self_prompt && !from_other_bot) {
+            try {
+                const { shouldReplyTo } = await import('../utils/reply_trigger.js');
+                const _n = this._visibleHumanCount();
+                const _verdict = shouldReplyTo({
+                    message,
+                    visible_humans: _n,
+                    addressed: addressedByName,
+                    human_exchange: !!(this.self_prompter
+                        && this.self_prompter.humanExchangeInProgress()),
+                });
+                if (!_verdict.reply) {
+                    console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
+                    // She still HEARD it and can bring it up later - the line goes
+                    // into history as something she noticed, not as an omission.
+                    await this.history.add('system',
+                        `${source} said: ${message} (not addressed to you; you heard it)`);
+                    this.history.save();
+                    return true;
+                }
+                console.log(`${this.name} [trigger:${_verdict.why}] replying (${_n} human(s) here)`);
+            } catch (e) { console.warn('[trigger] failed open, replying:', e.message); }
+        }
+
         if (!self_prompt && !from_other_bot && !addressedByName
             && this.turn_taker && this.turn_taker.enabled) {
             try {
@@ -872,6 +900,25 @@ export class Agent {
         }
 
         return used_command;
+    }
+
+    // How many humans are actually near her, excluding herself. Same 16-block
+    // window and same stale-tablist handling as self_prompter._otherPlayersOnline
+    // - the 26.3 tablist carries dead entries (Rcon, past visitors), so counting
+    // "players online" would report a crowded room when she is alone with one
+    // person, and the reply trigger would then wrongly go quiet.
+    _visibleHumanCount() {
+        try {
+            const bot = this.bot;
+            if (!bot || !bot.entities || !bot.entity?.position) return 0;
+            let n = 0;
+            for (const ent of Object.values(bot.entities)) {
+                if (ent?.type === 'player' && ent.username && ent.username !== this.name
+                    && ent.position
+                    && ent.position.distanceTo(bot.entity.position) < 16) n++;
+            }
+            return n;
+        } catch (e) { return 0; }
     }
 
     async routeResponse(to_player, message) {
