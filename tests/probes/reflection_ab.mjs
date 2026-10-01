@@ -4,10 +4,10 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'fs';
-import settings from '../settings.js';
-import { selectAPI, createModel } from '../src/models/_model_map.js';
+import settings from '../../settings.js';
+import { selectAPI, createModel } from '../../src/models/_model_map.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 const read = (p) => readFileSync(p, 'utf8');
 

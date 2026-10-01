@@ -1,15 +1,15 @@
 // Live check: runs the REAL scoring prompt against her actual chat model
 // (openrouter/openai/gpt-4o-mini, via her keys.json) to confirm the prompt
 // shape yields a parseable 3-class distribution. Read-only — never sends chat.
-import { selectAPI, createModel } from '../src/models/_model_map.js';
-import { TurnTaker } from '../src/agent/turn_taker.js';
-import settings from '../settings.js';
+import { selectAPI, createModel } from '../../src/models/_model_map.js';
+import { TurnTaker } from '../../src/agent/turn_taker.js';
+import settings from '../../settings.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
 // resolve from this file, so the probe works from any cwd
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync(path.join(ROOT, 'uwu.json'), 'utf8'));

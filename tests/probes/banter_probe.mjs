@@ -21,15 +21,15 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'node:fs';
-import { setSettings } from '../src/agent/settings.js';
-import root from '../settings.js';
+import { setSettings } from '../../src/agent/settings.js';
+import root from '../../settings.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
-const settings = (await import('../settings.js')).default;
-const { selectAPI, createModel } = await import('../src/models/_model_map.js');
+const settings = (await import('../../settings.js')).default;
+const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
 const rawModel = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
 const sel = selectAPI(rawModel);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
@@ -37,7 +37,7 @@ const model = createModel(sel);
 
 // Same pipeline the agent uses, so the score reflects what a player sees.
 const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/u;
-const { fragmentForChat } = await import('../src/utils/chat_fragment.js');
+const { fragmentForChat } = await import('../../src/utils/chat_fragment.js');
 const post = (t) => fragmentForChat(String(t || '').replace(EMOJI, 'gu')
     .replace(/\uFE0F/g, '').replace(/\s+([.,!?])/g, '$1').replace(/\s{2,}/g, ' ').trim()).join(' ');
 
@@ -74,10 +74,10 @@ const ENGAGES = /\b(you|ur|your|that|thats|it|this|me|my|same|didnt|dont|wasnt|w
 const ASKS_FOR_BIT = /\b(what|which|why|how come|the)\b.{0,24}\b(funny|bit|joke|fun|mean|part)\b/i
     || /^(what|which|why|how come)\b[^.!?]*\??$/i;
 
-globalThis.__uwuSc = await import('../src/utils/server_context.js');
+globalThis.__uwuSc = await import('../../src/utils/server_context.js');
 globalThis.__uwuSc.setServerContextOverride?.({ personality: 'normal' });
-globalThis.__uwuEx = await import('../src/utils/examples.js');
-const { stringifyTurns } = await import('../src/utils/text.js');
+globalThis.__uwuEx = await import('../../src/utils/examples.js');
+const { stringifyTurns } = await import('../../src/utils/text.js');
 const renderExamples = (examples) => {
     let out = 'Examples of how to respond:\n';
     for (let i = 0; i < examples.length; i++) out += `Example ${i + 1}:\n${stringifyTurns(examples[i])}\n\n`;

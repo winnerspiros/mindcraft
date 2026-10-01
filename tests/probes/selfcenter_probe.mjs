@@ -12,22 +12,22 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'node:fs';
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
-const settings = (await import('../settings.js')).default;
-const { selectAPI, createModel } = await import('../src/models/_model_map.js');
+const settings = (await import('../../settings.js')).default;
+const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
 const rawModel = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
 const sel = selectAPI(rawModel);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
 const model = createModel(sel);
-const sc = await import('../src/utils/server_context.js');
+const sc = await import('../../src/utils/server_context.js');
 globalThis.__uwuSc = sc; sc.resetServerContext();
 sc.setServerContextOverride({ personality: 'normal' }); sc.resetPersonaExampleOffset();
 const prompt = (sc.personaPrompt() || profile.conversing + sc.personalityOverlay()) + '\n';
 const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}]/gu;
-const { fragmentForChat } = await import('../src/utils/chat_fragment.js');
+const { fragmentForChat } = await import('../../src/utils/chat_fragment.js');
 const post = (t) => fragmentForChat(String(t||'').replace(EMOJI,'gu').replace(/\s+([.,!?])/g,'$1').replace(/\s{2,}/g,' ').trim()).join(' ');
 
 // Player asserts something Elena should not simply go along with.
