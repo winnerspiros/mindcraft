@@ -93,9 +93,27 @@ const questionOnly = (r) => {
 };
 const noPosition = (r) => questionOnly(r) && !/!?\b(let me|i'?ll|i will|i can|here'?s|try|use|put|place|chop|mine|build|check|fix|go|come|wait|hold|need)\b/i.test(r);
 
-// Emoji / kaomoji. One of the loudest machine tells there is - a game chat box
-// is plaintext and nobody attaches a smiley to a sentence.
+// Unicode emoji only. Deliberately does NOT match text emoticons (:) :-( -_-),
+// which the owner uses and which the corpus shows at the end of real messages.
+// An earlier version of this check banned both and was wrong: it flattened two
+// different things into one rule. Measured over 57,394 real player messages
+// (MDC, ACL 2019): 0 unicode emoji, 0.29% text emoticons, and every text
+// emoticon sat at the end of the line.
 const EMOJI = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}]/u;
+
+// Allowed, but only as a trailing reaction - never mid-sentence, never more
+// than one, never in an autonomous turn.
+const TEXT_EMOTICON = /:([)\-D|/;P3'])|\^_\^|o_o|O_O/g;
+const emoticonMisuse = (r, label) => {
+    const s = String(r || '').trim();
+    const hits = s.match(TEXT_EMOTICON) || [];
+    if (!hits.length) return null;
+    if (hits.length > 1) return `${hits.length} emoticons in one message (max 1)`;
+    const tail = s.slice(Math.max(0, s.length - 6));
+    if (!TEXT_EMOTICON.test(tail)) return 'emoticon not at the end of the line';
+    if (/^\(AUTO/.test(label)) return 'emoticon in a self-prompt turn';
+    return null;
+};
 
 // The "anyway, i'm elena, just trying to vibe ... what's everyone else up to?"
 // bridge: report an event, pivot into self-intro, ask the room a question.
@@ -256,7 +274,6 @@ let npc = 0, padded = 0, intros = 0, noView = 0, verbose = 0, emoji = 0, bridge 
 
 // Soft signals: inside the corpus distribution but worth seeing. Not failures.
 const flaggedSoft = [];
-const softFlag = (m) => flaggedSoft.push(m);
 const replies = [];
 console.log('');
 for (const [label, q] of CASES) {
@@ -273,6 +290,8 @@ for (const [label, q] of CASES) {
     if (PADDING.test(body)) flags.push('PADDING');
     if (SELF_INTRO.test(body) && !ASKS_IDENTITY.has(label)) flags.push('SELF-INTRO');
     if (EMOJI.test(body)) flags.push('EMOJI');
+    const emoMisuse = emoticonMisuse(out, String(q || ''));
+    if (emoMisuse) soft.push(`emoticon misuse: ${emoMisuse}`);
     if (ANYWAY_BRIDGE.test(body)) flags.push('ANYWAY-BRIDGE');
     if (endsWithQuestion(out) && !QUESTION_OK.has(label)) flags.push('Q-ENDING');
     if (tooClean(out) || overFormal(out)) flags.push('TOO-CLEAN');

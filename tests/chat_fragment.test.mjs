@@ -33,7 +33,6 @@ function assertSound(parts, input, label) {
         assert.ok(!/^[,;:]/.test(p), `${label}: leading punctuation in "${p}"`);
     }
     // Nothing invented: every output word must come from the input, in order.
-    const norm = (s) => s.replace(/\s+/g, ' ').trim();
     const strip = (s) => s.replace(/[.,;:!?]/g, '').toLowerCase().split(/\s+/).filter(Boolean);
     const inWords = strip(input);
     const outWords = strip(parts.join(' '));
