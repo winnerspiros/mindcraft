@@ -675,7 +675,25 @@ export class Agent {
         // PROPOSITION - "no" is a contentless ack to a bare greeting and a
         // complete argument in reply to a claim, and only the text can tell them
         // apart. See the gate below.
-        if (!self_prompt && !from_other_bot) this._last_human_msg_text = String(message || '');
+        if (!self_prompt && !from_other_bot) {
+            this._last_human_msg_text = String(message || '');
+            this._last_speaker = source;
+            // Did the message just arriving name somebody other than her? This
+            // is what makes the NEXT turn from the same person a continuation
+            // of their own thread rather than an announcement.
+            this._last_target = (() => {
+                try {
+                    if (new RegExp(`\\b${this.name}\\b`, 'i').test(String(message || ''))) return 'her';
+                    const hit = [...(this.bot?.entities?.values() ?? [])]
+                        .filter((e) => e?.type === 'player' && e.username && e.username !== this.name)
+                        .some((e) => {
+                            try { return new RegExp(`\\b${e.username}\\b`, 'i').test(String(message || '')); }
+                            catch (_) { return false; }
+                        });
+                    return hit ? 'other' : '';
+                } catch (_) { return ''; }
+            })();
+        }
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
@@ -750,12 +768,28 @@ export class Agent {
             try {
                 const { shouldReplyTo } = await import('../utils/reply_trigger.js');
                 const _n = this._visibleHumanCount();
+                // Directional addressing: a message that named somebody OTHER
+                // than her is not an announcement, and if the same person speaks
+                // again immediately they are still talking to that person. The
+                // multiparty literature is explicit that addressee inference is
+                // a distinct problem from "did someone speak" (Duplex-MPE,
+                // arXiv 2609.31948, tests selective participation in 3-4 party
+                // chat precisely because getting this wrong is the failure).
+                // The TARGET of the PREVIOUS message, not this one. My first
+                // version recomputed it from `message`, which made the check
+                // "is this message addressed to someone else" rather than "was
+                // the last one" - so the continuation rule could never fire.
+                // Computed once, when the previous human turn arrived.
+                const _lastTarget = this._last_target || '';
                 const _verdict = shouldReplyTo({
                     message,
                     visible_humans: _n,
                     addressed: addressedByName,
                     human_exchange: !!(this.self_prompter
                         && this.self_prompter.humanExchangeInProgress()),
+                    speaker: source,
+                    last_speaker: this._last_speaker ?? '',
+                    last_target: _lastTarget,
                 });
                 if (!_verdict.reply) {
                     console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
