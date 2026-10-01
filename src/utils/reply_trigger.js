@@ -58,6 +58,11 @@ export function shouldReplyTo(ctx) {
     // recomputing it here would duplicate the 26.3 stale-tablist handling.
     const humans = Math.max(0, Number(ctx?.visible_humans) || 0);
 
+    // She is at the toilet / dinner / watching youtube. A person who has left
+    // the computer does not answer, and that is the single most human thing a
+    // bot can do - see utils/life_state.js.
+    if (ctx?.present === false) return { reply: false, why: 'not_at_computer' };
+
     // A message cannot be for her when nobody is here to have sent it. Without
     // this, 0 fell through to the dyad branch below and she replied into an
     // empty server.

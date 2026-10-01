@@ -1017,6 +1017,47 @@ const modes_list = [
         update: async function (agent) {
             const bot = agent.bot;
             const now = Date.now();
+
+            // ── IS SHE ACTUALLY AT THE COMPUTER? ──────────────────────────
+            // Runs before the next_start check, so it keeps ticking while she
+            // is away - that is the only way she can come back on time. A
+            // person is not continuously available; a bot is, and that absence
+            // of absence is one of the loudest tells there is.
+            if (!isYandere()) {
+                const { LifeState } = await import('../utils/life_state.js');
+                if (!agent._life) agent._life = new LifeState();
+
+                // Back? Say so, and make it consistent with why she left.
+                const back = agent._life.checkReturn();
+                if (back) {
+                    console.log(`${agent.name} [life] back from ${back.id}` +
+                        `${back.said ? ` (had said "${back.said}")` : ' (said nothing)'}`);
+                    if (back.back) {
+                        agent.history.add('system',
+                            `You just came back from ${back.id}. You ${back.said ? `said "${back.said}" ` : 'left without saying anything, '}and now you are back. If the conversation continues, do not ignore that gap - you were away.`);
+                    }
+                }
+                // Gone? Announce it if the absence is the kind people announce.
+                if (!agent._life.isAway) {
+                    const go = agent._life.shouldLeave();
+                    if (go.leave) {
+                        const a = agent._life.leave();
+                        if (a?.said) {
+                            agent.history.add('system',
+                                `You said "${a.said}" and stepped away from the computer (${a.id}). You are not at the keyboard now.`);
+                            console.log(`${agent.name} [life] left: ${a.id} - "${a.said}" for ~${Math.round((a.until - now) / 60000)}min`);
+                        } else {
+                            console.log(`${agent.name} [life] slipped away: ${a?.id} (silent)`);
+                        }
+                    }
+                }
+                // While away she has nothing to say. Checked on every tick.
+                if (agent._life.isAway) {
+                    this.next_start = now + 20000 + Math.random() * 25000;
+                    return;
+                }
+            }
+
             if (now < this.next_start) return; // schedule-based: only fire after a random wait
 
             // ── NORMAL PERSONA GATE ──────────────────────────────────────
