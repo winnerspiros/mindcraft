@@ -36,6 +36,26 @@ import { Curriculum } from './curriculum.js';
 import { LearnedSkillLibrary } from './learned_skill_library.js';
 import Vec3 from 'vec3';
 
+// ── AUTONOMOUS WORK ─────────────────────────────────────────────────────
+//
+// Goal DESCRIPTIONS, not action scripts. These say what she is doing; the bot,
+// its skills and the model decide how to carry it out, through the ordinary
+// self-prompt path. That is the same contract a goal arriving in conversation
+// gets, so an idle bot and a spoken-to bot behave identically once working.
+//
+// Kept deliberately plain and unpunctuated so they read as intent rather than as
+// a canned instruction. See utils/activity.js for how the choice is made - it is
+// driven by her situation (hunger, inventory, attention, nearby build) and never
+// by a timer, so this map is a vocabulary rather than a routine.
+const ACTIVITY_PROMPT = {
+    get_resource: 'go and get what im actually short of, its been a while',
+    build: 'finish the thing i started, its right here half done',
+    explore: 'go look at whats out there, ive been stood here too long',
+    look_around: 'have a proper look around, whats going on with everyone',
+    eat: 'im starving, get food sorted',
+    answer_attention: 'someone is looking at me, see what they want',
+};
+
 // A player opens the chat box at a pause, not mid-swing. She waits this long
 // after a movement action before starting to type, so she never does the visible
 // stop-then-go (finish a dig -> freeze -> walk off). Well under a second, so it
@@ -1475,6 +1495,24 @@ export class Agent {
 
     // True when at least one real human (not herself, not another bot) is online.
     // Used to gate PUBLIC chat so she never broadcasts/TTS to an empty server.
+    /** Is she already pursuing work? One predicate, used by both gates. */
+    _hasActiveGoal() {
+        try {
+            return !!(this.self_prompter?.prompt && this.self_prompter?.state !== 'STOPPED');
+        } catch (_) { return false; }
+    }
+
+    /** Who is looking at her right now, if anyone. Used by the activity chooser. */
+    _attentionPlayer() {
+        try {
+            const me = this.bot.entity;
+            if (!me?.position) return null;
+            return Object.values(this.bot.entities || {}).find((e) =>
+                e?.type === 'player' && e.username !== this.name && e.position
+                && e.position.distanceTo(me.position) <= 8) || null;
+        } catch (_) { return null; }
+    }
+
     anyHumanOnline() {
         const bot = this.bot;
         if (!bot || !bot.players) return false;
@@ -1936,9 +1974,32 @@ export class Agent {
             const _threat = (() => {
                 try { return (this.psyche?.mood?.fear ?? 0) >= 0.6; } catch { return false; }
             })();
+            // ── NO GOAL IS NOT GROUNDS FOR STANDING STILL ────────────────
+            // I made has_goal mandatory here to stop threshold modes fidgeting,
+            // and it froze her solid: measured ZERO actions in 30 minutes. Goals
+            // only ever arrive from CONVERSATION - nobody assigns her one - so
+            // with no one talking, has_goal was false forever and every action
+            // was refused.
+            //
+            // That conflated two different things. An idle tick with no task means
+            // she should pick up work of her own accord; a threshold mode with no
+            // goal means that mode should not twitch. A real player is never idle
+            // without purpose - they mine, build, explore, eat, craft, wander.
+            // Doing nothing indefinitely is what reads as a bot.
+            //
+            // So absence of a goal is grounds for CHOOSING something, not for
+            // standing still. `has_goal` now means "she has work she is pursuing
+            // or about to pick up", and the self-prompter supplies the choosing.
+            const _hasGoal = this._hasActiveGoal();
             const _gate = this._idleBudget.canAct({
                 now: Date.now(),
-                has_goal: !!(this.self_prompter?.prompt && this.self_prompter?.state !== 'STOPPED'),
+                // NOT a precondition. Having a goal makes her more likely to act,
+                // never less - she is never frozen for want of an assignment, so
+                // this is `true` and the field is kept only so the budget can
+                // weight a goal higher than idle picking. Written as `true` rather
+                // than `_hasGoal || true`, which discarded its left side.
+                has_goal: true,
+                goal_from_conversation: _hasGoal,
                 threat: _threat,
                 human_present: this._visibleHumanCount() > 0,
             });
@@ -1948,6 +2009,53 @@ export class Agent {
                 this.self_prompter.update(delta);
                 this.psyche.update(delta);
                 return;
+            }
+
+            // ── SHE PICKS HER OWN WORK ────────────────────────────────────
+            // The owner: "game wise she is too idle. a player normally does stuf,
+            // build, get resouce, explore, if she notices someone look at them if
+            // nothing intresting continue etc."
+            //
+            // Measured before this: ZERO actions in 30 minutes. Goals only ever
+            // arrived from CONVERSATION, so with nobody talking she had none and
+            // the idle budget (correctly, as written) refused to act without one.
+            //
+            // So she chooses. Driven by her SITATION - hunger, inventory, whether
+            // someone is looking at her, whether she is next to her own
+            // half-built thing - not by a timer, and never standing still while
+            // the server has anyone on it.
+            //
+            // Throttled by the idle budget like any other action, so choosing work
+            // cannot reintroduce the 24/7 fidgeting.
+            if (!this._hasActiveGoal() && !this._typing) {
+                try {
+                    const { chooseActivity } = await import('../utils/activity.js');
+                    const _inv = {};
+                    for (const it of (this.bot.inventory?.items?.() || [])) {
+                        const k = String(it?.name || '').replace(/^minecraft:/, '');
+                        if (k) _inv[k] = (_inv[k] || 0) + (it?.count || 1);
+                    }
+                    const _pick = chooseActivity({
+                        hunger: this.bot.food,
+                        hp: this.bot.health,
+                        inventory: _inv,
+                        has_torch: !!_inv.torch,
+                        attention: !!(this._attentionPlayer?.() || false),
+                        attention_interesting: false,   // nobody interesting yet
+                        humans_present: this._visibleHumanCount(),
+                        at_computer: !this._life?.isAway,
+                        recent_failures: this._recentFailures || 0,
+                    });
+                    if (_pick.activity) {
+                        const _goal = ACTIVITY_PROMPT[_pick.activity];
+                        if (_goal && !this._lastAutoGoalAt?.[_pick.activity]) {
+                            this.self_prompter.start(_goal);
+                            this._lastAutoGoalAt = this._lastAutoGoalAt || {};
+                            this._lastAutoGoalAt[_pick.activity] = Date.now();
+                            console.log(`${this.name} [activity:${_pick.activity}] ${_pick.why} -> picking up work`);
+                        }
+                    }
+                } catch (e) { console.warn('[activity] failed open:', e.message); }
             }
             // TYPING WINS OVER MOVING. She must not START an action mid-sentence.
             // A START-gate and not a freeze: an action already in flight finishes,
