@@ -17,12 +17,11 @@
       "Detected package.json",
       "Package manager: bun",
       "start runs tools/boot.sh under Bun: repairs+verifies 26.3 support, then execs standalone.js",
-      "NOT a web service: readiness is RCON (port 25575, 'list'), not HTTP. The verify",
-      "harness only polls HTTP (recipes.py reads readinessPath; there is no command hook),",
-      "so the readiness phase always reports Connection refused on a healthy bot.",
-      "Use: hermes verify --skip-start  (phases are the real signal)",
-      "Then: systemctl is-active uwu-bot + RCON 'list' for liveness."
-    ]
+      "NOT a web service - no HTTP port. Readiness is command-based: RCON 'list' must",
+      "show UwU in the player list (not just the port being open), so this verifies she",
+      "actually joined the world rather than that the server is up."
+    ],
+    "readinessCommand": "~/.bun/bin/bun -e \"import {rconCommand} from './src/utils/rcon.js';const out=String(await rconCommand('list'));process.exit(/\\bUwU\\b/.test(out)?0:1);\""
   },
   "updatedAt": "2026-10-01T12:28:27.615526+00:00"
 }
