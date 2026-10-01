@@ -852,6 +852,38 @@ export class Agent {
                 else message = message.replace(masskill[0], '(mass kill)');
             }
         }
+        // ── NORMAL PERSONA: SPLIT PARAGRAPHS INTO CHAT BURSTS ─────────────
+        // Real chat is not paragraphs. People send "hey" then "whats up" then
+        // the actual point - three short lines, each a separate message. One
+        // 30-word block reads as a bot or a wiki entry no matter how good the
+        // wording is.
+        //
+        // So in normal mode a long reply goes out as a short burst of 1-3
+        // lines instead of one paragraph. The cap matters: he is right that
+        // nobody SPAMS either - three is a burst, six is spam, so anything
+        // past three stays in one line rather than being chopped up.
+        //
+        // Done here, at the single outgoing choke point, so it covers every
+        // path (chat replies, mode turns, self-prompts).
+        try {
+            if (!isYandere() && message.length > 55) {
+                const { fragmentForChat } = await import('../utils/chat_fragment.js');
+                const parts = fragmentForChat(message);
+                if (parts && parts.length > 1) {
+                    message = parts[0];
+                    const rest = parts.slice(1);
+                    console.log(`${this.name} [fragment] ${parts.length} lines: ${JSON.stringify(parts)}`);
+                    for (let i = 0; i < rest.length; i++) {
+                        // Small gap so it reads as successive typing rather than
+                        // a paste. Sequential, awaited: the order must hold.
+                        await new Promise((r) => setTimeout(r, 350 + i * 250));
+                        if (settings.chat_ingame) this.bot.chat(rest[i]);
+                        sendOutputToServer(this.name, rest[i]);
+                    }
+                }
+            }
+        } catch (e) { console.warn('[fragment] split failed:', e.message); }
+
         // ── NORMAL PERSONA OUTPUT SCRUB ────────────────────────────────────
         // A prompt rule cannot hold "no emoji" - she produced 😅 on a turn
         // that had NO examples and a script section explicitly banning it.
