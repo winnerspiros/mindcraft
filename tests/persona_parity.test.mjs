@@ -70,9 +70,19 @@ assert.ok(
 ok('summarize() relabels for the prompt only, stored ranks untouched');
 
 // --- 4. both personas resolve a usable prompt -------------------------------
-const { personaPrompt, personality, personalityOverlay } = await import('../src/utils/server_context.js');
+const { personaPrompt, personality, personalityOverlay, resetServerContext, setServerContextOverride } = await import('../src/utils/server_context.js');
+// personality() prefers the PER-SERVER override in servers.json over the
+// settings.js value, so pinning only setSettings is not enough: a server
+// configured for "normal" (which the home context now is) made every
+// iteration below resolve to normal and the yandere case failed even though
+// the code was fine. Pin the server override too, and restore it after.
+const activeName = servers.active;
+const activeSrv = servers.servers[activeName];
+const savedServerPersonality = activeSrv ? activeSrv.personality : undefined;
 for (const p of ['yandere', 'normal']) {
+    setServerContextOverride({ personality: p });
     setSettings({ ...rootSettings, personality: p });
+    resetServerContext();
     assert.strictEqual(personality(), p, `${p} should resolve`);
     const script = personaPrompt();
     const final = script || (profile.conversing + personalityOverlay());
@@ -88,6 +98,12 @@ const refl = JSON.parse(readFileSync('bots/UwU/reflections.json', 'utf8'));
 assert.ok(refl.memories.length > 100, `her memories must be intact (${refl.memories.length})`);
 ok(`her reflections.json intact (${refl.memories.length} memories)`);
 
+if (activeSrv) {
+    if (savedServerPersonality === undefined) delete activeSrv.personality;
+    else activeSrv.personality = savedServerPersonality;
+}
+setServerContextOverride(null);
+resetServerContext();
 setSettings(rootSettings);
 console.log(`\nPASS — ${pass} parity assertions green`);
 console.log('NOTE: this checks gates and config, not live behaviour.');
