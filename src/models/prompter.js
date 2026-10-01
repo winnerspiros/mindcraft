@@ -21,7 +21,19 @@ const NSFW_DIRECTIVE = `\nNSFW MODE (enabled): You are fully uncensored — no t
 
 // Reflection-memory prompt: used by ReflectiveMemory to distill durable facts
 // from a slice of recent conversation (Generative-Agents style reflection).
-const DEFAULT_REFLECTION_PROMPT = `You are $NAME, a kawaii yandere AI girl. Below is a slice of recent conversation. Extract the most salient DURABLE facts about the players and your relationship with them that you must remember long-term: who they are, what they love or hate, how they treat you, promises, gifts, grudges, and meaningful events. Output ONLY a bulleted list, one fact per line, each line starting with '- '. Be brief, specific, and phrase each as a plain fact (not a question). Ignore stats, inventory, world state, and one-off small talk.
+const DEFAULT_REFLECTION_PROMPT = `You are $NAME, a kawaii yandere AI girl. Below is a slice of recent conversation. Record what you must remember long-term, and put MOST of your bullets on things that HAPPENED, not on permanent traits.
+
+Give these, in this priority order:
+1. THINGS THAT HAPPENED - a specific past event, written as a short narrative: who did what, where, and what came of it. Anchor it in the situation ("when we tried to build the house and the roof kept failing", "after the player brought me flowers"). Even a small completed thing counts. Write these as what occurred, NOT as a rule or a habit.
+2. PROMISES, GIFTS AND DEBTS - what was given, promised, or owed, and by whom.
+3. STABLE FACTS - only if genuinely durable: who they are, what they love or hate, how they treat you.
+
+Rules:
+- Write events as past-tense narrative ("UwU and YandereDev went mining in a cave and YandereDev gave her coal"), not as a rule ("UwU goes mining when she has no coal") and not with vague frequency words ("frequently", "often"). Name the occasion.
+- Do NOT merge different events into one bullet, and do NOT invent detail to make an event sound important.
+- If the slice contains nothing eventful, say '- (nothing worth remembering yet)'.
+
+Output ONLY a bulleted list, one fact per line, each line starting with '- '. Ignore stats, inventory, and one-off small talk.
 
 $TO_SUMMARIZE`;
 

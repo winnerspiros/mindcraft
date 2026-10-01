@@ -24,9 +24,17 @@ const fail = (msg, detail) => {
 };
 
 // --- 1. protocol data must resolve 26.3 -----------------------------------
+// Resolve minecraft-data the way minecraft-protocol itself would, so a nested
+// (older) copy correctly shadows the top-level one and we detect that.
+//
+// NOTE: must use createRequire from 'node:module' explicitly. A bare
+// `require(...)` is undefined in an ESM module under node (only bun tolerates
+// it), and npm test runs this with node - so the bare form silently threw
+// "cannot resolve" on a perfectly healthy tree.
+const { createRequire } = await import('node:module');
 const resolved = (() => {
     try {
-        return require('node:module').createRequire(path.join(ROOT, 'node_modules/minecraft-protocol/index.js')).resolve('minecraft-data');
+        return createRequire(path.join(ROOT, 'node_modules/minecraft-protocol/index.js')).resolve('minecraft-data');
     } catch (e) { return null; }
 })();
 
@@ -35,7 +43,6 @@ if (!existsSync(resolved)) fail('minecraft-data path does not exist', resolved);
 
 let knows263 = false;
 try {
-    const { createRequire } = await import('node:module');
     const req = createRequire(resolved);
     const md = req('minecraft-data');
     knows263 = !!md('26.3');
@@ -65,7 +72,29 @@ if (!knows263) {
         'into BOTH trees on purpose - do not just delete the nested one.');
 }
 
-// --- 2. prismarine-chunk must know the 26.3 section header ---------------
+// --- 2. if a nested copy exists it MUST also carry 26.3 --------------------
+// The nested minecraft-data is written with 26.3 by the generator on purpose
+// (it is what minecraft-protocol resolves when present). If it exists but
+// lacks the 26.3 data directory, that is a half-installed tree: the nested
+// copy shadows the healthy top-level one, so mcData('26.3') throws.
+//
+// Note: a nested copy that is entirely ABSENT is not itself a fault - verified
+// by removing it and booting: resolution falls back to the top-level copy and
+// she spawns with zero world-data errors. (My earlier claim that deleting it
+// "broke resolution for good" was wrong; what actually broke the bot then was
+// registering 26.3 -> pc/1.18/chunk WITHOUT extending hasFluidCount, which
+// decodes every chunk at the wrong palette offset.)
+const nestedDir = path.join(ROOT, 'node_modules/minecraft-protocol/node_modules/minecraft-data');
+if (existsSync(nestedDir)) {
+    const nestedData = path.join(nestedDir, 'minecraft-data/data/pc/26.3');
+    if (!existsSync(nestedData)) {
+        fail('the NESTED minecraft-data exists but has no 26.3 data directory',
+            `   nested: ${path.relative(ROOT, nestedDir)}\n` +
+            `   missing: ${path.relative(ROOT, nestedData)}`);
+    }
+}
+
+// --- 3. prismarine-chunk must know the 26.3 section header ---------------
 // Without hasFluidCount extended to '26.3', chunks are decoded at the wrong
 // palette offset: she connects fine and every block comes back garbage.
 const chunkFile = path.join(ROOT, 'node_modules/prismarine-chunk/src/pc/1.18/ChunkColumn.js');
