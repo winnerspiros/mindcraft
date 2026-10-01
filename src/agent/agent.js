@@ -840,6 +840,18 @@ export class Agent {
                     // test loads agent.js.
                     addressed_physically: _physicallyAddressed,
                 });
+                // 'ignore' is the common case in a dyad and it is CORRECT: he
+                // is talking to the server or to himself, she reads it and says
+                // nothing. Before this, every non-addressed line in a dyad got a
+                // reply, which is exactly the "she cares about everything" look
+                // the owner is describing.
+                if (_verdict.mode === 'ignore') {
+                    console.log(`${this.name} [trigger:ignore] heard it, not answering (${_n} human(s) here): ${String(message).slice(0, 70)}`);
+                    await this.history.add('system',
+                        `${source} said: ${message} (said to the room, not to you; you heard it)`);
+                    this.history.save();
+                    return true;
+                }
                 if (!_verdict.reply) {
                     console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
                     // She still HEARD it and can bring it up later - the line goes
@@ -849,7 +861,24 @@ export class Agent {
                     this.history.save();
                     return true;
                 }
-                console.log(`${this.name} [trigger:${_verdict.why}] replying (${_n} human(s) here)`);
+                console.log(`${this.name} [trigger:${_verdict.why}/${_verdict.mode || 'speak'}] engaging (${_n} human(s) here)`);
+                // 'react' reaches the model as INTENT, never as a word list. He
+                // said something funny or stupid; a reaction is the whole reply.
+                // The words are hers - the same words she would use anywhere.
+                //
+                // Measured: 0.4% of real messages carry an explicit reaction token
+                // (lol 51, haha 26, lmao 4 of 21,822), and 21.1% are a single word.
+                // A one-word reaction is therefore an ordinary SHORT message, not a
+                // special category - which is exactly why it needs no phrase list.
+                // What it must not become is the default answer: a reaction to
+                // everything is as fake as answering everything.
+                if (_verdict.mode === 'react') {
+                    this.history.add('system',
+                        `${source} said: ${message}\n`
+                        + `(He said something and you are not answering it - a reaction is the whole reply. `
+                        + `A reaction can also be one word, or nothing at all. Whatever it is, it is `
+                        + `yours to choose and it is short.)`);
+                }
             } catch (e) { console.warn('[trigger] failed open, replying:', e.message); }
         }
 
