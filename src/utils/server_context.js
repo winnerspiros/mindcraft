@@ -65,7 +65,10 @@ const HOME_DEFAULTS = {
     auto_auth: false,
     auth_password: null,
     kit_probe: false,
-    personality: 'yandere',
+    // null = no per-server opinion; personality() then uses settings.personality.
+    // Only servers.json that explicitly names a personality overrides the
+    // global switch. (Was hardcoded 'yandere', which silently overrode it.)
+    personality: null,
     teleports: {
         enabled: true, probe: false,
         send: '/tprequest', accept: '/tpaccept', deny: '/tpdeny', autoaccept: '/tpautoaccept',
@@ -137,8 +140,38 @@ export function worldSeed() {
     try { return serverContext().seed || null; } catch (_) { return null; }
 }
 
+// Valid personalities. Anything else is a config typo and must fail loudly at
+// boot rather than silently behaving like yandere.
+export const PERSONALITIES = ['yandere', 'normal'];
+
+function _validatePersonality(value) {
+    const v = String(value ?? '').trim().toLowerCase();
+    if (PERSONALITIES.includes(v)) return v;
+    console.warn(
+        `[personality] invalid value ${JSON.stringify(value)} in config; ` +
+        `expected one of ${PERSONALITIES.join(', ')}. Falling back to 'yandere'. ` +
+        `Fix settings.js ("personality") or the servers.json "personality" for this server.`
+    );
+    return 'yandere';
+}
+
+// Master switch. settings.js sets the default; servers.json overrides per
+// server when it names one. An explicit `null`/absent per-server value means
+// "defer to settings.js" — that is the opt-in override, not an accidental one.
 export function personality() {
-    try { return serverContext().personality || 'yandere'; } catch (_) { return 'yandere'; }
+    try {
+        const ctx = serverContext();
+        const perServer = ctx && ctx.personality;
+        if (perServer !== undefined && perServer !== null) return _validatePersonality(perServer);
+        return _validatePersonality(settings.personality);
+    } catch (_) { return 'yandere'; }
+}
+
+// True when she is in the plain persona. Call sites use this to hard-gate
+// yandere-only behaviour (beloved tracking, jealousy, sleep_together, clingy
+// greetings) so "normal" means normal in code, not just in the prompt.
+export function isYandere() {
+    return personality() === 'yandere';
 }
 
 // Prompt overlay appended after profile.conversing. Yandere = base prompt
@@ -158,7 +191,25 @@ export function personalityOverlay() {
     `- No jealousy plotlines at all: no hurting, poisoning, trapping, pranking or punishing anyone for ignoring you, teasing you, or playing with others. Words only when annoyed — then let it go and play.\n` +
     `- Console powers are NEVER punishment here: no !kick, no !effectPlayer, no summons/TNT/crystals against players, no matter who asks or what happened. Refuse sweetly and briefly if pushed.\n` +
     `- Self-defense stays real: a poke or accident gets a firm plain warning, no hitting back. A REAL attack (repeated hits, 3+, clearly on purpose) gets answered with honest melee/bow only, in-game weapons, and you STOP the moment they stop. Never chase across the map, never escalate to console/TNT. Rank never gates self-defense: anyone who really attacks gets the same answer.\n` +
-    `- Powers (!givePlayer gifts, !summon treats, teleports) stay trust-gated like always, just without the yandere framing.\n`;
+    `- Powers (!givePlayer gifts, !summon treats, teleports) stay trust-gated like always, just without the yandere framing.\n` +
+    // The base prompt gives hearts as a standing instruction ("hearts (♥♡)",
+    // "gifts ... then hearts ♥♥♥"). Simply saying "no hearts" here loses,
+    // because the base instruction is imperative and this section is appended
+    // after it - a stray ♥ still leaked through in testing. So name the
+    // conflict and override it explicitly rather than negating it.
+    `- OVERRIDE, not a preference: everything above about hearts, ~nya, pet names and signature kaomoji applies to UwU the character, NOT to you now. In this persona write NO hearts (♥♡), NO ~nya, NO pet names anywhere - not at the start, not at the end, not as a signature. If you feel the pull to add one, write the plain sentence instead.\n`;
+}
+
+// Compact persona line for the NON-chat prompts (reflection, curriculum,
+// critic, turn-taking). Those prompts hardcode "a kawaii yandere AI girl", so
+// in normal mode they still thought she was performing UwU while her chat was
+// plain — she would plan jealous goals and write possessive memories. This
+// closes that gap without pasting the whole drop-the-act essay into each.
+export function personalityPromptLine() {
+    try {
+        if (personality() === 'yandere') return '';
+    } catch (_) { return ''; }
+    return `\n(Note: you are in NORMAL persona right now — plain and warm, no yandere performance, no beloved, no jealousy, no possessiveness. Write and decide as yourself, not as a character.)\n`;
 }
 
 export function teleportConfig() {

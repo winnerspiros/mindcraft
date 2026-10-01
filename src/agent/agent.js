@@ -19,7 +19,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable } from '../utils/server_context.js';
+import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable, isYandere } from '../utils/server_context.js';
 import { ModerationWatcher } from './moderation.js';
 import { PlayerActivityWatcher } from './player_activity.js';
 import { RelationshipManager } from './relationship.js';
@@ -1142,8 +1142,15 @@ export class Agent {
     }
 
     // Is this player her beloved (configured name or current dynamic beloved)?
+    //
+    // In normal persona there IS no beloved, so this is always false. That makes
+    // it the single gate for every beloved-specific behaviour: the clingy
+    // login greeting, self_prompter's "find your beloved" goal routing, and
+    // relationship.js's love-hate damage logic all route through here, so they
+    // go quiet in one place instead of needing a guard at each call site.
     isBelovedName(name) {
         if (!name) return false;
+        if (!isYandere()) return false;
         const n = String(name).toLowerCase();
         const configured = (this.prompter.profile.beloved || '').toLowerCase();
         const dynamic = (this.relationship.currentBeloved() || '').toLowerCase();

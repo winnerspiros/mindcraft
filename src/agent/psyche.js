@@ -12,6 +12,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
+import { isYandere } from '../utils/server_context.js';
 
 // ---- mood: discrete emotions (0..1) with PAD coordinates ------------------
 // PAD = Pleasure(valence)/Arousal/Dominance, each [-1,1]/[0,1]/[0,1].
@@ -33,6 +34,17 @@ const MOOD_BASELINE = {
     jealousy: 0.20, anger: 0.10, fear: 0.10, sadness: 0.15, satisfaction: 0.30,
 };
 
+// Normal persona baseline: same shape, calmer and flatter. Jealousy and
+// possessiveness sit at 0 and cruelty at 0, and the spiky emotions are pulled
+// down, because these baselines are what every value decays BACK toward
+// (~30 min half-life). Without this, normal mode still settles into a
+// possessive, jealous resting state between conversations even though the
+// prompt overlay told her not to act on it.
+const MOOD_BASELINE_NORMAL = {
+    love: 0.30, joy: 0.35, excitement: 0.20, loneliness: 0.15,
+    jealousy: 0.00, anger: 0.05, fear: 0.05, sadness: 0.10, satisfaction: 0.40,
+};
+
 // ---- traits: five yandere-flavoured dimensions (0..1) ---------------------
 const TRAIT_BASELINE = {
     warmth:        0.60, // sweetness / doting
@@ -40,6 +52,17 @@ const TRAIT_BASELINE = {
     possessiveness: 0.55, // jealousy drive / control
     cruelty:       0.35, // willingness to hurt
     volatility:    0.40, // how fast mood swings
+};
+
+// Normal persona: warm and bold but not possessive, and never cruel. Volatility
+// drops so she does not swing hard on small things (the over-reacting the
+// normal persona is meant to avoid).
+const TRAIT_BASELINE_NORMAL = {
+    warmth:        0.55,
+    boldness:      0.50,
+    possessiveness: 0.00,
+    cruelty:       0.00,
+    volatility:    0.20,
 };
 const TRAIT_LABELS = {
     warmth:        ['cold, distant', 'warm, sweet, doting'],
@@ -228,15 +251,20 @@ export class Psyche {
     // ---- per-tick decay: mood drifts toward baseline (inertia), traits decay
     //      toward baseline so unreinforced personality fades. delta = ms. -----
     update(delta) {
+        // Baselines follow the active persona, so normal mode genuinely settles
+        // into a calmer resting state instead of drifting back to jealous.
+        const yand = isYandere();
+        const moodBase = yand ? MOOD_BASELINE : MOOD_BASELINE_NORMAL;
+        const traitBase = yand ? TRAIT_BASELINE : TRAIT_BASELINE_NORMAL;
         // Mood inertia: emotions relax back to temperament over ~3 minutes.
         const moodK = 1 - Math.exp(-delta / 180000);
         for (const k of Object.keys(MOOD_BASELINE)) {
-            this.mood[k] += (MOOD_BASELINE[k] - this.mood[k]) * moodK;
+            this.mood[k] += (moodBase[k] - this.mood[k]) * moodK;
         }
         // Trait decay: ~30 min half-life back toward baseline.
         const traitK = 1 - Math.exp(-delta / 1800000);
         for (const k of Object.keys(TRAIT_BASELINE)) {
-            this.traits[k] += (TRAIT_BASELINE[k] - this.traits[k]) * traitK;
+            this.traits[k] += (traitBase[k] - this.traits[k]) * traitK;
         }
         // Ignored for >5 min → loneliness creeps above baseline (decay pulls it
         // back once she's engaged again).

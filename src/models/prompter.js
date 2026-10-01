@@ -11,6 +11,16 @@ import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
 import { rconCommand } from '../utils/rcon.js';
 
+// Persona line for the non-chat prompts. Imported lazily by helper below so a
+// failure here can never break prompt building (server_context reads
+// servers.json and would throw in a bare/offline context).
+async function personalityPromptLine() {
+    try {
+        const { personalityPromptLine: line } = await import('../utils/server_context.js');
+        return typeof line === 'function' ? line() : '';
+    } catch (_) { return ''; }
+}
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -703,6 +713,7 @@ export class Prompter {
     async promptReflection(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.reflection_memory || DEFAULT_REFLECTION_PROMPT;
+        prompt += await personalityPromptLine();
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
         let resp = await this.chat_model.sendRequest([], prompt);
         if (resp && resp.includes('</think>')) {
@@ -715,6 +726,7 @@ export class Prompter {
     async promptCurriculum(goalHistoryText) {
         await this.checkCooldown();
         let prompt = this.profile.curriculum || DEFAULT_CURRICULUM_PROMPT;
+        prompt += await personalityPromptLine();
         // resolve $GOAL_HISTORY BEFORE replaceStrings so it isn't flagged unknown
         prompt = prompt.replaceAll('$GOAL_HISTORY', goalHistoryText || '(nothing yet)');
         prompt = await this.replaceStrings(prompt, []);
@@ -740,6 +752,7 @@ export class Prompter {
             } catch (e) { stateText = ''; }
         }
         let prompt = this.profile.critic || DEFAULT_CRITIC_PROMPT;
+        prompt += await personalityPromptLine();
         prompt = prompt.replaceAll('$NAME', this.agent.name);
         prompt = prompt.replaceAll('$GOAL', goal || '');
         prompt = prompt.replaceAll('$STATE', stateText || '');
