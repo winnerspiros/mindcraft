@@ -49,7 +49,18 @@ export function gateNormalChat(ctx) {
     // particular, is narration — the single loudest "I am a bot" tell there is.
     // Real players speak to someone or about something; they do not report
     // their own inner state to an empty channel.
-    if (ctx.self_prompt && !ctx.human_replied && !ctx.notable_event) {
+    // ── SHE DID SOMETHING, SO THIS IS A REACTION TO A REAL EVENT ──────
+    // The owner: "no reaction, no answer.."
+    //
+    // Measured: 50 turns killed by this gate in one run, including "i swear this
+    // game is out to get me. fine, looking for coal manually, here we go. wish me
+    // luck!" - a player narrating what she just started doing, not introspection.
+    //
+    // The gate could not tell them apart because it only saw self_prompt versus
+    // human_replied. What actually separates them is whether she just DID
+    // something: a turn following a real command is a reaction to a real event,
+    // the same category as notable_event. That is state, not a phrase table.
+    if (ctx.self_prompt && !ctx.human_replied && !ctx.notable_event && !ctx.just_acted) {
         // ── A BID IS NOT NARRATION ─────────────────────────────────────
         // The owner: "she can ask ppl to help or ask if they want help or maybe
         // an item she doesnt need, . a lot of options there too"
