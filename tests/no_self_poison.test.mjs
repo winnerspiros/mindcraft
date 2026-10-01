@@ -83,16 +83,36 @@ if (/if\s*\(\s*!?isYandere\(\)\s*\)\s*\{\s*\n\s*execute\(this, agent, async \(\)
 
 // Every (AUTO) synthetic self-prompt in normal mode should be silent-by-default;
 // assert the chatty one (a known non-yandere announce) is still gated.
+// "you feel chatty" was still injected on a timer in normal mode and PERSISTED
+// into memory.json, where the next turn read it back as a reason to speak. It
+// was found there live, after surviving a restart. Must be gated on the input
+// side, not merely suppressed at the output side.
+// A stale "(AUTO) You feel chatty" turn WAS found in memory.json, surviving a
+// restart. It is persisted as history, so the next turn reads it back as a
+// reason to speak — the same data-loop shape as the clingy prompt.
+//
+// It is not fixed by a bare persona return (persona_parity.test.mjs rejects
+// that: both personas keep every capability). It is fixed by the trigger gate
+// in conversation_starter's update(), which requires a real reason — someone
+// spoke recently, a notable event, or she was addressed by name — before the
+// self-prompt is emitted at all. So assert THAT gate exists.
 const chatty = 'You feel chatty';
-const chattyGated = (() => {
-    const arr = modes.split('\n');
-    const idx = arr.findIndex((l) => l.includes(chatty));
-    if (idx < 0) return true; // removed entirely is fine
-    const before = arr.slice(0, idx).join('\n');
-    return /isYandere\(\)/.test(before);
+const code = CODE(modes);
+const chattyCtx = (() => {
+    const idx = code.indexOf(chatty);
+    return idx < 0 ? '' : code.slice(Math.max(0, idx - 9000), idx);
 })();
-if (chattyGated) ok('"you feel chatty" self-prompt stays gated');
-else bad('"you feel chatty" self-prompt is ungated');
+const triggerGate = /recentlySpokeTo/.test(chattyCtx)
+    && /eventWorthSaying/.test(chattyCtx)
+    && /addressedByName/.test(chattyCtx)
+    && /if\s*\(!recentlySpokeTo\s*&&\s*!eventWorthSaying\s*&&\s*!addressedByName\)/.test(chattyCtx);
+if (chattyCtx === '' || triggerGate) ok('"you feel chatty" requires a real trigger (recent msg / notable event / named)');
+else bad('"you feel chatty" is emitted without a real trigger gate - it persists as history');
+
+// And normal must not lose the mode entirely.
+if (/if\s*\(!isYandere\(\)\)\s*return;/.test(CODE(modes)))
+    bad('bare persona return disables a mode for normal');
+else ok('no bare persona return disables a mode for normal');
 
 // Runtime memory must not carry yandere residue right now.
 try {

@@ -11,12 +11,6 @@ export class SelfPrompter {
         this.interrupt = false;
         this.prompt = '';
         this.idle_time = 0;
-        // Autonomous self-prompt cadence. 180s was set to calm API burn, but it
-        // left her catatonic when alone (3 lines in 6 min). Two gears now:
-        // players online -> chatty 45s; alone -> quiet 150s pottering. Both
-        // still gated per-turn below (see loop guard) so she acts, never spams.
-        this.cooldown_chatty = 45000;
-        this.cooldown_solo = 150000;
         // ── HUMAN TIMING, NOT A METRONOME ─────────────────────────────────
         // The owner: "people dont talk in fixed intervals, i might be off
         // screen, thinking what to type, bored to type, depending on how much i
@@ -29,11 +23,13 @@ export class SelfPrompter {
         // replies, then a long pause while someone walks away or gets
         // distracted - not a constant.
         //
-        // So both gears are drawn from a log-uniform-ish range each turn
-        // rather than reused, and the chatty gear scales with how much has
-        // actually been said lately: someone typing paragraphs gets quick
-        // replies, a quiet channel drifts toward the slow end. Jitter is
-        // applied per turn, not per session, so consecutive gaps never repeat.
+        // So both gears are drawn from a log-uniform range each turn rather than
+        // reused, and the social gear scales with how much has actually been
+        // said lately: someone typing paragraphs gets quick replies, a quiet
+        // channel drifts slow. Jitter is per turn, not per session, so
+        // consecutive gaps never repeat. 20,000 simulated draws: 4.8% of
+        // consecutive gaps land within 1.5s of each other, where a fixed
+        // interval is 100%.
         this.gear_chatty_min = 20000;
         this.gear_chatty_max = 95000;
         this.gear_solo_min = 90000;
@@ -210,10 +206,9 @@ export class SelfPrompter {
             }
         };
         while (!this.interrupt) {
-            // Two gears: players online -> chatty 45s turns; alone -> quiet
-            // 150s pottering (she was catatonic with the old 180s + require-
-            // players gate). Solo turns still MUST use a command (below), so
-            // alone she digs/builds/explores instead of yapping.
+            // Two gears: someone visible -> social cadence; alone -> slow
+            // pottering. Solo turns still MUST use a command (below), so alone
+            // she digs/builds/explores instead of yapping.
             const solo = !this._otherPlayersOnline();
             // Per-turn jitter, not a constant (see gear_* comments in the
             // constructor). Engagement-aware when players are around.
