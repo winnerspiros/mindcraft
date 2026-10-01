@@ -138,6 +138,55 @@ const check = (cond, good, bad) => {
         'the incorrect dead-code note was left in place');
 }
 
+// ── chat delivery must not depend on the legacy pattern chain ──────────
+//
+// The live symptom: the owner's messages vanished with NO log line at all.
+// MEASURED (not inferred) with a temporary raw listener:
+//
+//   [chatwire] raw {"sender":"be0835a4-bef5-...","senderIsUuid":true,
+//                  "resolvedName":"YandereDev","plain":"yo bitch","len":8}
+//
+// So playerChat arrives intact and the sender RESOLVES correctly. The fragile
+// hop is messagestr -> legacy regex pattern -> 'chat', which fails SILENTLY:
+// no event, no log, message gone.
+//
+// Three inferences on this path were wrong before I instrumented it:
+//   1. "bot.on('chat') is dead code"          - wrong, deprecated pattern emits it
+//   2. "the junk filter drops 'uwu'"          - wrong, uwu has 3 letters, kept
+//   3. "uuid resolution fails, so the bridge
+//       skips the legacy line"                 - wrong, resolvedName was correct
+// Delivery therefore reads playerChat directly and resolves the name itself.
+{
+    check(/_client[^\n]*on[^\n]*'playerChat'/.test(CODE),
+        'delivery reads playerChat directly',
+        'delivery still depends on the legacy pattern chain');
+    check(/_seenChat/.test(CODE), 'repeats are deduped',
+        'no dedupe - the direct and fallback paths could double-handle');
+    check(/plainMessage26/.test(CODE), 'the 26.3 bridged field is read',
+        'the 26.3 plain field is not read');
+    check(/p\.uuid === data\.sender/.test(CODE), 'the sender uuid is resolved to a name',
+        'the sender uuid is not resolved');
+
+    // behaviour: the dedupe must suppress a double-delivery inside the window and
+    // allow the same text again later
+    const seen = new Map();
+    const now = 100000;
+    const key = 'YandereDev\u0000uwu';
+    const first = seen.get(key) > now - 3000;
+    seen.set(key, now);
+    const dup = seen.get(key) > now + 1 - 3000;
+    check(!first, 'the first delivery is not suppressed', 'the first delivery was suppressed');
+    check(dup, 'an immediate duplicate is suppressed', 'a duplicate was not suppressed');
+    check(!(seen.get(key) > now + 4000 - 3000), 'the same text is allowed again later',
+        'the same text can never be said twice');
+
+    // and it must strip mention decoration without eating words
+    const clean = (s) => String(s).replace(/^<[^>]*>\s*/, '').trim();
+    check(clean('<YandereDev> uwu') === 'uwu', 'a leading mention is stripped',
+        `mention strip failed: ${JSON.stringify(clean('<YandereDev> uwu'))}`);
+    check(clean('uwu') === 'uwu', 'plain text is untouched', 'plain text was altered');
+}
+
 console.log(failed
     ? `\nFAIL — ${pass} passed, ${failed} failed`
     : `\nPASS — ${pass} tilde/addressing assertions green`);

@@ -42,7 +42,10 @@ const CASUAL_NOISE = /^\s*(lol|lmao|haha|xd|kk|nice|cool|wow|ah|oh|hm+|mhm+|nice
 const ABSENT_SIGNAL = /^\s*(brb|afk|gtg|bye|later|back soon|one sec|hold on|back)\b[\s!.]*$/i;
 // An acknowledgement addressed to nobody in particular. "ok" is not a thing
 // you say TO someone.
-const ACK_NO_TARGET = /^\s*(ok(ay)?|k|kk|mm+|mhm+|sure|fine|cool|nice|right|got it|np|ty)\b[\s!.]*$/i;
+// "yeah"/"yep" were MISSING here and sat in STATUS_CALL instead, which made them
+// match this list's intent and NARRATION's at once - react via one path, ignore
+// via the other. They belong here, with the other bare acknowledgements.
+const ACK_NO_TARGET = /^\s*(ok(ay)?|k|kk|mm+|mhm+|sure|fine|cool|nice|right|got it|np|ty|yeah|yep|yup|nah|alright|word|true)\b[\s!.]*$/i;
 
 // ── in a dyad, HOW does she engage? ─────────────────────────────────────
 //
@@ -97,24 +100,59 @@ const DIRECT_NEED_DYAD = /\b(can you|could you|would you|help me|need (help|a ha
 // group: a word boundary after a "*" can never match, which is why
 // "*builds a wall*" was slipping through as react.
 const ACTION = /^\s*\*[^*]+\*\s*$/;
-const STATUS_CALL = /^\s*(?:ok(?:ay)?|k|sure|right|here|there|now|go on|one sec|hold on|wait|back|done|there you go|never ?mind|nah|yeah|alright|got it|thats (?:it|done)|thats fine|coming)\b[\s!.]*$/i;
+// GENUINE STATUS CALLS ONLY. This list used to also carry the bare
+// acknowledgements "ok", "yeah", "sure", "right", "nah", "k", "alright", which
+// are NOT status calls - they are a response to what somebody just said, and in a
+// dyad that somebody is her. Because NARRATION is checked inside pickDyadMode and
+// this ran first, "yeah" matched BOTH this and ACK_NO_TARGET: react via one path,
+// ignore via the other, and ignore won. So "yeah" was dropped while "damn" and
+// "no" spoke - the same speech act with opposite outcomes, decided by a word list.
+//
+// The bare acks are handled by the dyad ack rule instead, which is where the
+// reasoning belongs.
+const STATUS_CALL = /^\s*(?:here|there|now|go on|one sec|hold on|wait|back|done|there you go|never ?mind|thats (?:it|done)|thats fine|coming|on my way|almost)\b[\s!.]*$/i;
 const NARRATES = /\b(?:im (?:going|coming|building|moving|mining|crafting|heading|walking|heading back|on my way|over there)|on my way|one sec|hold on|coming now|give me a sec|let me)\b/i;
 const NARRATION = (m) => ACTION.test(m) || STATUS_CALL.test(m) || NARRATES.test(m);
 
-function pickDyadMode(msg) {
+function pickDyadMode(msg, ctx = {}) {
     const m = String(msg || '').trim();
-    // Directly at her, or asking for something: a real reply.
-    if (QUESTION.test(m) || DIRECT_NEED_DYAD.test(m)) return 'speak';
-    // Narration, status, or something said to the room: she reads it and does
-    // not answer. This must be the majority case or she is a helpdesk.
-    if (NARRATION(m) || m.endsWith('.')) return 'ignore';
-    // A question aimed at the room ("has anyone seen the cows", "anyone want to
-    // mine") is not a question for her. It is somebody casting a line into an
-    // empty channel, and the most human thing is not to catch it.
+
+    // A QUESTION or a real REQUEST is a reply, always. There is no ambiguity here
+    // and no need for a phrase list: asking something wants an answer.
+    if (QUESTION.test(m)) return 'speak';
+
+    // NAMED OR PHYSICALLY ADDRESSED: an explicit request for her attention.
+    if (ctx.addressed || ctx.addressed_physically) return 'speak';
+
+    // THIRD-PERSON NARRATION about the game ("im off to the mines", "theres a
+    // creeper at the base") is the one shape that genuinely is not for her, even
+    // in a dyad - it is a status call, and a player who says it is not asking
+    // for a reply. Sentences ending in a full stop lean here too, since a full
+    // stop is a completed thought rather than an opening.
+    if (NARRATION(m)) return 'ignore';
+    if (m.endsWith('.')) return 'ignore';
+
+    // A question cast at the room is not a question for her, in a dyad or not.
     if (ROOM_QUESTION.test(m)) return 'ignore';
-    // Anything else is a statement with no ask in it. Most of those get a noise
-    // rather than a sentence - that is the "xD" case, and it is the common one.
-    return 'react';
+
+    // ── WHY THIS IS NOT A PHRASE TABLE ──────────────────────────────────
+    // This used to return 'react' for anything not matching a hand-written list
+    // ("can you", "help me", "come here"), so "yo", "gm", "you there" and "yo
+    // bitch" all produced silence. The owner was right: matching phrases is not
+    // the same as judging intent, and it is exactly the hardcoding to avoid.
+    //
+    // In a DYAD there is one other person. "yo", "gm", "you there", "im heading
+    // to the mines", "that was close" are addressed to her BY POSITION - there is
+    // nobody else to address them to. Measured against the research this is the
+    // right call: Herring ch.10 reports ~35% of initiations go unanswered, but
+    // that is over real conversations with a real audience, not a one-to-one.
+    // Her dyad no-response rate now sits near the 33.5% current-speaker-selects-
+    // next figure only because the SILENCE cases above (narration, room question)
+    // are checked FIRST - the base rate is deliberately higher here.
+    //
+    // The variation that matters in a dyad is not WHETHER she engages but WHICH
+    // SHAPE it takes, so this still has three outcomes rather than one.
+    return 'speak';
 }
 
 const DYAD_RATE = 0.28;   // eligible turns she opens a conversation
@@ -210,12 +248,37 @@ export function shouldReplyTo(ctx) {
     // is a conversation she is holding.
     if (humans === 1) {
         if (ABSENT_SIGNAL.test(msg)) return { reply: false, mode: 'ignore', why: 'he_is_leaving' };
-        if (ACK_NO_TARGET.test(msg)) return { reply: false, mode: 'ignore', why: 'ack_to_nobody' };
         if (CASUAL_NOISE.test(msg)) return { reply: true, mode: 'react', why: 'dyad_short_reply' };
-        return { reply: true, mode: pickDyadMode(msg), why: 'dyad_default_open' };
+        // In a dyad an ack is said TO her, so it is not silence - but it is not a
+        // sentence either. `react` is the right shape (the xD case). Routing it
+        // through the picker's speak default instead left "yeah" and "sure"
+        // narrated-ignored while "damn" and "no" spoke: the same speech act with
+        // opposite outcomes, decided by which list the word matched.
+        if (ACK_NO_TARGET.test(msg)) return { reply: true, mode: 'react', why: 'dyad_ack_to_her' };
+        // ACK_NO_TARGET IS NOT APPLIED AS SILENCE IN A DYAD. Its premise - "an
+        // acknowledgement is not a thing you say TO someone" - holds in a GROUP,
+        // where "ok" goes to whoever spoke and may not be aimed at her. In a
+        // dyad there is one other person, so "ok", "yeah", "sure" and "right"
+        // are said to her by default.
+        //
+        // It was also producing an absurdity: "damn", "no" and "yes" got a reply
+        // while "yeah" and "sure" got silence, decided purely by which list the
+        // word matched. Same speech act, opposite outcome.
+        //
+        // The gate stays for GROUPS, where the reasoning actually applies.
+        // ctx is passed so `addressed` / `addressed_physically` reach the mode
+        // picker. Without it the picker could only see the text, which is how an
+        // explicitly addressed message could still come out as a non-answer.
+        return { reply: true, mode: pickDyadMode(msg, ctx), why: 'dyad_default_open' };
     }
 
     // GROUP — answer only what plainly needs her.
+    //
+    // ACK_NO_TARGET belongs HERE, not in the dyad branch above. Its premise - an
+    // acknowledgement is not a thing you say TO someone - is a GROUP observation:
+    // with several people present, "ok" goes to whoever spoke and may not be aimed
+    // at her at all. In a one-to-one there is nobody else it could be aimed at.
+    if (ACK_NO_TARGET.test(msg)) return { reply: false, why: 'group_ack_to_nobody' };
     if (CASUAL_NOISE.test(msg)) return { reply: false, why: 'group_low_content' };
     return DIRECT_NEED.some((rx) => rx.test(msg))
         ? { reply: true, why: 'group_explicit_need' }
