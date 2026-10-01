@@ -654,7 +654,24 @@ export class Prompter {
                     if (overlay) prompt += overlay;
                 }
             } catch (_) {}
-            prompt = await this.replaceStrings(prompt, messages, personaExamples || this.convo_examples);
+            // personaExamples() hands back a RAW example ARRAY (read straight
+            // from personas/<persona>.json), but replaceStrings expects an
+            // Examples instance and calls createExampleMessage() on it. Passing
+            // the array straight through crashed every normal-mode turn with
+            // "examples.createExampleMessage is not a function" and killed the
+            // process. Wrap it in an Examples object, cached per raw array so
+            // embeddings are only computed once.
+            let examplesSource = this.convo_examples;
+            if (personaExamples) {
+                if (this._personaExamplesRaw !== personaExamples) {
+                    const pe = new Examples(this.embedding_model, settings.num_examples);
+                    await pe.load(personaExamples);
+                    this._personaExamplesObj = pe;
+                    this._personaExamplesRaw = personaExamples;
+                }
+                examplesSource = this._personaExamplesObj;
+            }
+            prompt = await this.replaceStrings(prompt, messages, examplesSource);
             let generation;
 
             try {

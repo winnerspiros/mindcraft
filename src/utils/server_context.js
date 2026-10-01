@@ -81,6 +81,11 @@ const HOME_DEFAULTS = {
 };
 
 let _ctx = null;
+// Test-only: fields merged over the freshly-read servers.json entry when the
+// context is rebuilt. Without it a test that mutates its own parsed copy of
+// servers.json cannot affect personality(), which re-reads the file itself.
+let _ctxOverride = null;
+export function setServerContextOverride(patchObj) { _ctxOverride = patchObj; }
 
 export function serverContext() {
     if (_ctx) return _ctx;
@@ -89,6 +94,7 @@ export function serverContext() {
     catch (_) { file = null; }
     const want = process.env.UWU_SERVER || (file && file.active) || 'home';
     const entry = (file && file.servers && file.servers[want]) || {};
+    if (_ctxOverride) Object.assign(entry, _ctxOverride);
     const ctx = {
         ...HOME_DEFAULTS,
         ...entry,
@@ -114,6 +120,12 @@ export function serverContext() {
 }
 
 export function applyServerContext() { return serverContext(); }
+
+// Tests that swap the active server's "personality" between yandere and
+// normal need the cached context rebuilt, otherwise personality() keeps
+// answering from the context cached on first call no matter what the test
+// writes into the parsed servers.json object.
+export function resetServerContext() { _ctx = null; }
 
 export function canOp() {
     try { return serverContext().op !== false; } catch (_) { return true; }

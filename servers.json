@@ -49,9 +49,9 @@
       "host": "127.0.0.1",
       "kit_probe": false,
       "modes": {},
-      "notes": "YandereCraft home. OP level 4, RCON console, EasyAuth /login, known seed, SimpleTPA tprequest/tpaccept/tpdeny/tpautoaccept. Yandere personality, full powers for the trusted.",
+      "notes": "YandereCraft home. OP level 4, RCON console, EasyAuth /login, known seed, SimpleTPA tprequest/tpaccept/tpdeny/tpautoaccept. Normal personality (dev), full powers for the trusted.",
       "op": true,
-      "personality": null,
+      "personality": "normal",
       "port": 25565,
       "rcon": {
         "enabled": true,

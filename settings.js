@@ -40,7 +40,7 @@ const settings = {
     //
     // Any other value is rejected at boot (see tools/check-config.mjs) rather
     // than silently falling back to yandere.
-    "personality": "yandere",
+    "personality": "normal",
 
     // NOTE: changes to this file take effect on restart. Most switches are read
     // once when a subsystem is constructed (see agent.js isBelovedName,
@@ -55,7 +55,7 @@ const settings = {
     // Idle-when-alone behaviour is the two-gear autonomy in self_prompter.js
     // (chatty 45s with players, quiet 150s solo), added in 89e384c.
     "self_prompt_requires_players": true,
-    "init_message": "You have just awakened in this world. Introduce yourself in character as the devoted yandere you are, and declare your love for your beloved.", // sends to all on spawn
+    "init_message": "You have just awakened in this world. Introduce yourself in character, casually, the way you would in a group chat.", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
