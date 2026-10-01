@@ -884,6 +884,21 @@ export class Agent {
             } catch (e) { console.warn('[gate] failed open:', e.message); }
         }
 
+        // ── NORMAL PERSONA: VOICE DRIFT MONITOR ───────────────────────────
+        // Observational only — nothing here changes what is sent. Feeds the
+        // window that src/utils/voice_monitor.js scores. It sees SENT text, not
+        // raw model output, so the signal matches what a player actually saw.
+        if (!isYandere()) {
+            try {
+                const { VoiceMonitor } = await import('../utils/voice_monitor.js');
+                if (!this._voiceMonitor) this._voiceMonitor = new VoiceMonitor();
+                const v = this._voiceMonitor.note(message);
+                if (v.alert) {
+                    console.warn(`${this.name} [voice-drift] rate=${v.rate.toFixed(2)} ${JSON.stringify(v.rates)}`);
+                }
+            } catch (e) { console.warn('[voice] monitor failed:', e.message); }
+        }
+
         if (self_prompt && this.last_sender) {
             // this is for when the agent is prompted by system while still in conversation
             // so it can respond to events like death but be routed back to the last sender
