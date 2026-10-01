@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { cosineSimilarity } from '../utils/math.js';
 import { wordOverlapScore } from '../utils/text.js';
+import settings from './settings.js';
 
 // Growing skill library (Voyager's compounding core): every piece of code she
 // successfully writes and runs via !newAction is committed here, keyed by its
@@ -13,7 +14,7 @@ export class LearnedSkillLibrary {
     constructor(agent) {
         this.agent = agent;
         this.fp = `./bots/${agent.name}/learned_skills.json`;
-        this.max_skills = 100;
+        this.max_skills = settings.learned_skills_max || 100;
         this.skills = []; // [{ id, goal, code, embedding?, created, uses }]
         this._load();
     }

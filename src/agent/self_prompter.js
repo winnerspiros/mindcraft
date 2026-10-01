@@ -108,7 +108,7 @@ export class SelfPrompter {
         console.log('starting self-prompt loop')
         this.loop_active = true;
         let no_command_count = 0;
-        const MAX_NO_COMMAND = 3;
+        const MAX_NO_COMMAND = settings.self_prompt_no_command_strikes || 3;
         // WALL-CLOCK critic (added 20:0x): the old per-turn counter never
         // reached goal_check_cycles because mode fires / chats / seeks stop +
         // restart the loop constantly (zero [curriculum] lines in 2h). Time

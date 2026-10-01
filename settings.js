@@ -57,15 +57,35 @@ const settings = {
     "relevant_docs_count": 5,
 
     "max_messages": 15,
-    "reflection_memory": true,    // RAG long-term memory (reflection -> embed -> recall)
-    "reflection_interval": 15,    // conversational turns between reflections
-    "reflection_recall_count": 5, // top-k memories injected per prompt
+
+    // ── Memory & learning ────────────────────────────────────────────��────
+    "reflection_memory": true,       // RAG long-term memory (reflection -> embed -> recall)
+    "reflection_interval": 15,       // conversational turns between reflections
+    "reflection_recall_count": 5,    // top-k memories injected per prompt
+    "reflection_max_memories": 200,  // cap on stored memories; oldest are dropped first.
+                                      // Lower = fresher but forgets more. Her real store
+                                      // currently holds 192, so raising this above ~200
+                                      // does nothing until the cap is lifted.
+    "learned_skills_enabled": true,  // growing skill library: reuse proven !newAction code via embedding recall
+    "learned_skills_max": 100,       // cap on learned skills; oldest dropped first
+
+    // ── Autonomy: how she decides what to do ───────────────────────────────
     "curriculum_enabled": true,   // automatic-curriculum: she proposes her own next goal (Voyager-style)
     "critic_enabled": true,       // self-verification critic: judges whether a goal is actually done
     "goal_check_cycles": 3,       // self-prompt turns between critic+curriculum checks (was 5: with chatty 45s + solo 150s gears a check landed every ~10min, so one stuck goal ate the whole session; 3 rotates faster)
     "goal_stuck_limit": 3,        // consecutive "incomplete" verdicts before she abandons + picks a new goal
-    "learned_skills_enabled": true, // growing skill library: reuse proven !newAction code via embedding recall
-    "turn_taking_enabled": true, // DuplexGen-style: she may pick silence/backchannel over replying to every line
+    "self_prompt_no_command_strikes": 3, // self-prompt turns with no command before she gives up on
+                                      // the current goal and re-plans. Lower = she rethinks
+                                      // sooner; higher = she pushes a goal longer before moving on.
+    "turn_taking_enabled": true,  // DuplexGen-style: she may pick silence/backchannel over replying to every line
+
+    // ── Mode cooldowns (ms) ────────────────────────────────────────────────
+    // How often she may repeat a social/ambient behaviour. Lower = more often.
+    "mode_cooldowns": {
+        "seek_company":  120000,  // 2 min between going to find someone
+        "sleep_together": 180000, // 3 min between following someone to bed
+        "sleep_alone":     60000, // 1 min between settling down to sleep
+    },
     "num_examples": 2,
     "max_commands": -1,
     "show_command_syntax": false,
