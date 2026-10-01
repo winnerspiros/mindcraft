@@ -107,10 +107,38 @@ const check = (cond, good, bad) => {
     check(b2.canSpeak({ now: t + 5000, human_msgs_since_her_last: 0 }).ok === false,
         'still blocked while the burst is fresh', 'the burst expired too early');
 
-    const after = b2.canSpeak({ now: t + RUN_EXPIRES_MS + 10_000, human_msgs_since_her_last: 0 });
+    // The live bug: she kept ATTEMPTING, so if the run is keyed to the last
+    // attempt the quiet period never happens and she stays muted forever. Only the
+    // room hearing nothing for long enough ends a run.
+    //
+    // These reservations are all BLOCKED attempts, inside the 90s window, so
+    // blocking here is correct - and they must not push the expiry out.
+    for (let k = 0; k < 3; k++) b2.reserve(t + 5000 + k * 1000);
+    check(b2.canSpeak({ now: t + 20_000, human_msgs_since_her_last: 0 }).ok === false,
+        'still blocked 20s in, and blocked attempts have not refreshed the run',
+        'a blocked attempt refreshed the run - she can never go quiet');
+
+    // Now ask PAST the window measured from the last delivery (t+1000).
+    const after = b2.canSpeak({
+        now: t + 1000 + RUN_EXPIRES_MS + 5000, human_msgs_since_her_last: 0,
+    });
     check(after.ok === true,
         `she can speak again after ${Math.round(RUN_EXPIRES_MS / 1000)}s of quiet (got ${after.why})`,
         'she is still muted after a long silence - the counter is one-way');
+
+    // ── DISCARDED DRAFTS DO NOT CONSUME HER VISIBLE BUDGET ──────────
+    // Twelve attempts whose text was thrown away must not silence her for ten
+    // minutes while the room saw nothing. Reserving still costs her - otherwise
+    // she would compose forever - but the ceiling is measured on deliveries.
+    {
+        const b4 = new ChatBudget();
+        const s = 9_000_000;
+        for (let k = 0; k < 20; k++) b4.reserve(s + k * 1000);   // none delivered
+        const v = b4.canSpeak({ now: s + 30_000, human_msgs_since_her_last: 3 });
+        check(v.ok === true,
+            `20 discarded drafts do not exhaust her window (got ${v.why})`,
+            'discarded drafts exhaust the visible budget');
+    }
 
     // and the monologue ceiling is a window, not a lifetime ban
     // 3 messages, then look PAST the 10-minute window: inside the window blocking
