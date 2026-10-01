@@ -7,15 +7,15 @@
 import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'fs';
-import { setSettings } from '../src/agent/settings.js';
-import root from '../settings.js';
+import { setSettings } from '../../src/agent/settings.js';
+import root from '../../settings.js';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
-const settings = (await import('../settings.js')).default;
-const { selectAPI, createModel } = await import('../src/models/_model_map.js');
+const settings = (await import('../../settings.js')).default;
+const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
 const raw = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
 const sel = selectAPI(raw);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
@@ -45,7 +45,7 @@ const KAWAII = /[♥♡]|nya|uwu|~|\bdarling\b|\bcutie\b|\bbaka\b|\bmy love\b/gi
 
 async function speak(persona, question) {
     setSettings({ ...root, personality: persona });
-    const sc = await import('../src/utils/server_context.js');
+    const sc = await import('../../src/utils/server_context.js');
     const script = sc.personaPrompt();
     let p = script || (profile.conversing + sc.personalityOverlay());
     p = p.replaceAll('$NAME', 'UwU').replaceAll('$RELATIONSHIPS', '(a player she likes)').replaceAll('$EXAMPLES', '');

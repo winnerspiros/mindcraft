@@ -14,20 +14,20 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import { readFileSync } from 'node:fs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 // Same model construction the other probes use, so the result reflects the same
 // backend the agent talks to.
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
-const settings = (await import('../settings.js')).default;
-const { selectAPI, createModel } = await import('../src/models/_model_map.js');
+const settings = (await import('../../settings.js')).default;
+const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
 const rawModel = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
 const sel = selectAPI(rawModel);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
 const model = createModel(sel);
 
-const sc = await import('../src/utils/server_context.js');
+const sc = await import('../../src/utils/server_context.js');
 globalThis.__uwuSc = sc;
 sc.resetServerContext();
 sc.setServerContextOverride({ personality: 'normal' });

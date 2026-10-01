@@ -1,13 +1,13 @@
 // Does UwU actually violate talk-normal's rules in real output?
 // Feeds her REAL prompt the questions talk-normal targets and reports only
 // observed violations. Read-only: no chat sent, no world change.
-import { selectAPI, createModel } from '../src/models/_model_map.js';
-import settings from '../settings.js';
+import { selectAPI, createModel } from '../../src/models/_model_map.js';
+import settings from '../../settings.js';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 process.chdir(ROOT);
 
 const profile = JSON.parse(readFileSync(path.join(ROOT, 'uwu.json'), 'utf8'));
