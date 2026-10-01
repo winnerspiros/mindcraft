@@ -34,7 +34,88 @@ const DIRECT_NEED = [
     /\b(uwu'?s?|your) (roof|base|farm|house|build|chest|portal|bed)\b/i,
 ];
 // Social filler, aimed at whoever is nearby rather than at her.
-const CASUAL_NOISE = /^\s*(lol|lmao|haha|xd|kk|ok(ay)?|nice|cool|wow|ah|oh|hm+|mhm+|nice one|gg|ty|thanks?|np|brb|afk)\b[\s!.]*$/i;
+// A REACTION-TO-something. He is reacting, so a reaction back is legitimate.
+// Note this list is about the SPEAKER's utterance, not about what she says - it
+// never decides her words.
+const CASUAL_NOISE = /^\s*(lol|lmao|haha|xd|kk|nice|cool|wow|ah|oh|hm+|mhm+|nice one|gg|ty|thanks?|np|wtf|yikes|lmao)\b[\s!.]*$/i;
+// He is LEAVING or going quiet. Not a reaction, and nothing to answer.
+const ABSENT_SIGNAL = /^\s*(brb|afk|gtg|bye|later|back soon|one sec|hold on|back)\b[\s!.]*$/i;
+// An acknowledgement addressed to nobody in particular. "ok" is not a thing
+// you say TO someone.
+const ACK_NO_TARGET = /^\s*(ok(ay)?|k|kk|mm+|mhm+|sure|fine|cool|nice|right|got it|np|ty)\b[\s!.]*$/i;
+
+// ── in a dyad, HOW does she engage? ─────────────────────────────────────
+//
+// Three outcomes, and none of them is "answer the question":
+//
+//   ignore  he is talking to the room / to himself / narrating what he is
+//           doing. She reads it and says nothing. This is the COMMON case and it
+//           has to stay common, or she is a helpdesk.
+//   react   something was funny, stupid, or worth a noise. A reaction IS the
+//           whole reply - no sentence, no content, just a laugh or a "wtf".
+//   speak   he actually said something to her or about her, or asked something.
+//           A real reply.
+//
+// The signal is STRUCTURE, not vocabulary. Asking for a laugh is not the way to
+// build this: it would mean a list of joke words, and it would fire on a message
+// that is not a joke at all. What actually predicts the outcome is whether the
+// message is addressed, whether it proposes something, whether it is a reaction
+// to the game, and whether it is a statement or a question.
+//
+// Drawn from the corpus: 0.4% of real messages carry a reaction token, 21.1% are
+// a single word, and 0.12% contain a second sentence. So a reaction is rare as
+// an explicit choice but a one-word reply is completely ordinary - the two are
+// the same shape.
+const QUESTION = /\?\s*$/;
+// Cast at the room rather than at her. Note that "does anyone know" and "can
+// you help" are different speech acts: one is a line in the water, the other is
+// addressed. Only the unaddressed plural goes here.
+// The question mark is OPTIONAL: 24.7% of real messages end in punctuation at
+// all, and "has anyone seen the cows" with no mark is the normal way to say it.
+const ROOM_QUESTION = /\b(anyone|any1|anybody|somebody|someone|everybody|people|guys)\b.*|^(?:has|is|are|who|what|can|do) (?:any|every|some)\w*/i;
+// A DIRECT ASK. Every one of these has to be a real request with a referent -
+// "wait" on its own is a status call to the room, "wait for me" is asking her.
+const DIRECT_NEED_DYAD = /\b(can you|could you|would you|help me|need (help|a hand|stone|iron|food)|im stuck|stuck|come here|wait for me|wait here|look at (this|that|here)|listen|do you|did you|have you|where are you|what are you doing)\b/i;
+// Talking about the game / narrating. This is what the server hears most of the
+// time and it is not addressed to anyone.
+//
+// The first version anchored the whole message with \b\s*$, so it only matched
+// when the message WAS the status call. "there you go" and "im going to the
+// mines" are the same speech act and both fell through to react. Anchoring at
+// the end is right; the START anchor is what was missing.
+// NARRATION, built from parts rather than one big alternation: I got the
+// precedence wrong twice in one sitting (writing ^(?:A|B)|\bC\b binds ^ to A
+// only, so every branch after the top-level | was unanchored and "brb" and
+// "ok" still fell through). Three independent tests, each obviously correct:
+//
+//   1. a pure status call - the whole message IS the status
+//   2. first-person narration about where she/he is going or what he is doing
+//   3. an action in asterisks
+//
+// Anything matching is said to the room, not to her.
+// The action branch (*does a thing*) has to sit OUTSIDE the \b-terminated
+// group: a word boundary after a "*" can never match, which is why
+// "*builds a wall*" was slipping through as react.
+const ACTION = /^\s*\*[^*]+\*\s*$/;
+const STATUS_CALL = /^\s*(?:ok(?:ay)?|k|sure|right|here|there|now|go on|one sec|hold on|wait|back|done|there you go|never ?mind|nah|yeah|alright|got it|thats (?:it|done)|thats fine|coming)\b[\s!.]*$/i;
+const NARRATES = /\b(?:im (?:going|coming|building|moving|mining|crafting|heading|walking|heading back|on my way|over there)|on my way|one sec|hold on|coming now|give me a sec|let me)\b/i;
+const NARRATION = (m) => ACTION.test(m) || STATUS_CALL.test(m) || NARRATES.test(m);
+
+function pickDyadMode(msg) {
+    const m = String(msg || '').trim();
+    // Directly at her, or asking for something: a real reply.
+    if (QUESTION.test(m) || DIRECT_NEED_DYAD.test(m)) return 'speak';
+    // Narration, status, or something said to the room: she reads it and does
+    // not answer. This must be the majority case or she is a helpdesk.
+    if (NARRATION(m) || m.endsWith('.')) return 'ignore';
+    // A question aimed at the room ("has anyone seen the cows", "anyone want to
+    // mine") is not a question for her. It is somebody casting a line into an
+    // empty channel, and the most human thing is not to catch it.
+    if (ROOM_QUESTION.test(m)) return 'ignore';
+    // Anything else is a statement with no ask in it. Most of those get a noise
+    // rather than a sentence - that is the "xD" case, and it is the common one.
+    return 'react';
+}
 
 const DYAD_RATE = 0.28;   // eligible turns she opens a conversation
 const GROUP_RATE = 0.12;
@@ -102,11 +183,21 @@ export function shouldReplyTo(ctx) {
     }
 
     // DYAD — the alternative is that he is talking to himself.
+    //
+    // "reply: true" does NOT mean "write a sentence back". It means she engages
+    // with the channel at all, and HOW is a separate decision: most of what he
+    // says deserves a noise, not an answer. The owner: "ppl talk to the server,
+    // she doesnt care, no response whatsoever from her, but smn says something
+    // funny so she just reacts with lets say xD".
+    //
+    // So a dyad reply carries a MODE. Silently ignoring most of what he says is
+    // correct, and reacting to the funny parts is correct, and neither of those
+    // is a conversation she is holding.
     if (humans === 1) {
-        return {
-            reply: true,
-            why: CASUAL_NOISE.test(msg) ? 'dyad_short_reply' : 'dyad_default_open',
-        };
+        if (ABSENT_SIGNAL.test(msg)) return { reply: false, mode: 'ignore', why: 'he_is_leaving' };
+        if (ACK_NO_TARGET.test(msg)) return { reply: false, mode: 'ignore', why: 'ack_to_nobody' };
+        if (CASUAL_NOISE.test(msg)) return { reply: true, mode: 'react', why: 'dyad_short_reply' };
+        return { reply: true, mode: pickDyadMode(msg), why: 'dyad_default_open' };
     }
 
     // GROUP — answer only what plainly needs her.
