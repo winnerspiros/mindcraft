@@ -18,7 +18,7 @@
 // grading its own failure reaches for a stock opener. A persona line alone does
 // not stop it, so it is also stripped in code.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync as fsExists } from 'node:fs';
 import { scrubOutput } from '../src/utils/scrub.js';
 
 let pass = 0, failed = 0;
@@ -45,32 +45,51 @@ const flat = persona.conversing.replace(/\s+/g, ' ');
         'no complaint wording is hardcoded in agent.js (comments excluded)',
         'a complaint is hardcoded');
 
-    // The reflex must be in the health/damage handler, not the message path -
-    // a model round-trip is far too slow to answer a phantom, and letting the
-    // model decide is what produced "this is just fantastic" in the first place.
-    const h = agent.indexOf("this.bot.on('health'");
+    // The reflex must be on entityHurt, NOT on health. This is the bug, not a
+    // detail: bot.on('health') is emitted with no argument, so the reflex I first
+    // wrote there read `source` from a callback that never receives one - the
+    // attacker was always null and the fight branch was unreachable, which is
+    // exactly why a phantom produced a complaint and no command. entityHurt is
+    // the only event that carries the attacker.
+    const hurtEvt = agent.indexOf("this.bot.on('entityHurt'");
     const hurt = agent.indexOf('REACT, DO NOT NARRATE');
-    check(h > 0 && hurt > h,
-        'the reflex lives in the damage handler, not the chat path',
-        'the reflex is not in the damage handler');
+    check(hurtEvt > 0 && hurt > hurtEvt,
+        'the reflex lives on entityHurt, the only event carrying an attacker',
+        'the reflex is not on entityHurt');
+    // and it must NOT be in the health handler any more
+    const healthEvt = agent.indexOf("this.bot.on('health'");
+    const healthBlk = agent.slice(healthEvt, agent.indexOf("this.bot.on('error'", healthEvt));
+    check(!/self_prompter\.start\(/.test(healthBlk),
+        'no dead reflex left in the health handler, which cannot see an attacker',
+        'a reflex that cannot see the attacker is still in the health handler');
 
     // Size to the end of the handler, not a guessed character count - the guard
     // and the tidy strip lines both sit further on than a fixed window reached.
-    const blk = agent.slice(hurt, agent.indexOf("this.bot.on('entityHurt", hurt) > 0
-        ? agent.indexOf("this.bot.on('entityHurt", hurt) : hurt + 4000);
+    // The block runs from the marker to the end of the entityHurt handler.
+    const end = agent.indexOf("this.bot.on('entityHurt", hurt + 10);
+    const blk = agent.slice(hurt, end > 0 ? end : hurt + 2500);
     check(/self_prompter\.start\(/.test(blk),
         'being hit starts an ACTION goal', 'being hit starts no action');
-    check(/sword|axe/i.test(blk),
-        'and it chooses fight-or-flee from whether she is armed',
-        'the reaction does not depend on being armed');
-    check(/try \{/.test(blk) && /catch \(_\)/.test(blk),
-        'and it is wrapped so a reflex can never take the bot down',
-        'the reflex is unguarded');
+    // Whether she fights or flees, and whether the layer can fail silently, are
+    // asserted by EXECUTION in tests/threat.test.mjs - a pickaxe counting as a
+    // weapon and a nearby zombie outranking a creeper were both real bugs that
+    // only a behavioural test could find.
 
     // It must not route through the model - a round trip cannot answer a hit.
     check(!/bot\.chat\(|Generated response/.test(blk),
         'the reflex does not go through the model (too slow for a hit)',
         'the reflex asks the model what to do about being hit');
+
+    // The fight logic is asserted for real in tests/threat.test.mjs, which imports
+    // src/utils/threat.js and EXECUTES it. It is not asserted here, because this
+    // file cannot: the logic used to be inline in agent.js, and four separate
+    // attempts to recover it by slicing the handler out of the source and eval'ing
+    // it failed on the window bounds, the arrow's closing paren, a `message =`
+    // inside a comment, and an intermediate `.trim()`. Every one of those read as
+    // a code failure. The logic now lives in a module both can import.
+    check(fsExists('src/utils/threat.js'),
+        'the threat logic lives in a testable module', 'no threat module');
+
 }
 
 // ── no announcing the action ──────────────────────────────────────────
