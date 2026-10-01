@@ -54,15 +54,31 @@ assertSound(fragmentForChat('im coming, hold on'), 'im coming, hold on', 'one cl
 ok('short lines are left alone');
 
 // --- the paragraph case ------------------------------------------------------
-// The word cap now runs FIRST and keeps sentence 1, so a paragraph is
-// truncated before it is ever fragmented. That is the intended behaviour -
-// the extra sentences are exactly the elaboration she should not send - but it
-// means the burst path is only reachable when the opening sentence is itself
-// over the cap or the text has no sentence break at all.
+// A paragraph becomes a BURST of short lines, and the word cap applies to each
+// LINE rather than to the whole reply. It used to run first and keep sentence 1
+// only, which meant "ok so. first thing. i fixed the door. then i found
+// diamonds..." shipped as "ok so." - 24 words silently reduced to 2. That
+// discarded real content; a burst is already several messages, so each line gets
+// its own budget and nothing is thrown away for being in a later sentence.
 const para = 'oh no, YandereDev got taken out by a phantom! I\'m coming to find you, bro. let\'s stick together this time!';
 const p1 = fragmentForChat(para);
 assertSound(p1, para, 'paragraph');
-assert.ok(p1.join(' ').split(/\s+/).length <= 11, `paragraph not capped: ${JSON.stringify(p1)}`);
+assert.ok(p1.length <= 3, `paragraph must be at most 3 lines: ${JSON.stringify(p1)}`);
+assert.ok(p1.every((l) => l.split(/\s+/).length <= 11),
+    `every line capped: ${JSON.stringify(p1)}`);
+// Nothing invented, and the first sentence still leads.
+assert.ok(/phantom/i.test(p1[0]), 'paragraph keeps its opening sentence first');
+// A single line with NO sentence or clause boundary is deliberately NOT cut.
+// That is the standing rule in chat_fragment.js: only safe boundaries, because
+// a raw word-count cut produces "you need to make" - word salad that is far more
+// suspicious than a slightly long line. My first version of this assertion
+// demanded an 11-word cap here and contradicted the file's own policy; the code
+// was right and the test was wrong.
+const stubborn = 'im coming hold on i am really not joking about this one at all okay';
+const sb = fragmentForChat(stubborn);
+assert.equal(sb.join(' '), stubborn,
+    'an unbreakable line ships whole rather than being cut mid-phrase');
+assertSound(sb, stubborn, 'unbreakable');
 ok(`paragraph truncated to the point: ${JSON.stringify(p1)}`);
 
 // Burst path: no sentence boundary early enough to cap, so it must split into
@@ -109,19 +125,33 @@ assert.deepStrictEqual(fragmentForChat('   '), [], 'whitespace input');
 assertSound(fragmentForChat('ok'), 'ok', 'minimal');
 ok('degenerate inputs handled');
 
-// --- the word cap is LOSSY BY DESIGN ---------------------------------------
-// Earlier versions of this file asserted full content preservation, which was
-// correct then and is wrong now: the cap exists to DROP the elaboration she
-// adds past the point. What must hold is that it drops whole sentences only,
-// and never invents or orphans anything.
+// --- the word cap applies PER LINE, and is lossy only past the cap ----------
+// The cap used to run on the WHOLE reply and keep sentence 1, discarding every
+// later sentence. That silently deleted real content ("ok so. first thing. i
+// fixed the door. then i found diamonds..." -> "ok so."), which is worse than
+// saying too much: she was deleting what she had actually been told to say. A
+// burst is already several messages, so each line gets its own budget and the
+// cap only bites on a single line that runs long.
+//
+// What must hold: whole lines only, never a mid-phrase cut, command never
+// orphaned, and the opening sentence always leads.
 const lecture = 'you need to make sure its all connected right. check if the torches are stable and if the dust is placed where it should be !collectBlocks("torch", 16)';
 const p6 = fragmentForChat(lecture);
-assert.ok(p6.join(' ').split(/\s+/).length <= 11, `cap not applied: ${JSON.stringify(p6)}`);
+assert.ok(p6.length <= 3, `at most 3 lines: ${JSON.stringify(p6)}`);
+// Each line is capped ONLY at a safe boundary, and the boundary search ignores
+// the command (its args contain a comma). Line 2 is 13 words with no sentence or
+// clause break in its prose, so by the standing rule it ships whole - cutting it
+// is exactly the word salad this file exists to prevent. I first asserted a hard
+// 11-word ceiling here; that contradicts the policy, and the code was right.
+const prose = (l) => l.replace(/\s*!\w+\([^)]*\)\s*$/, '');
+assert.ok(p6.every((l) => l.split(/\s+/).length <= 11 || !/[.!?]|[,;:]/.test(prose(l))),
+    `a line over the cap must have no safe boundary: ${JSON.stringify(p6)}`);
 assert.ok(p6.join(' ').includes('!collectBlocks'), 'command survived the cap');
 assert.ok(p6.join(' ').endsWith('!collectBlocks("torch", 16)'), 'command is on the last line');
 // first sentence kept whole, never a mid-phrase cut
 assert.ok(/^you need to make sure its all connected right\b/.test(p6[0]), `cut mid-phrase: ${JSON.stringify(p6)}`);
-ok(`word cap keeps sentence 1 whole and drops the rest: ${JSON.stringify(p6)}`);
+assertSound(p6, lecture, 'lecture');
+ok(`per-line cap, whole sentences only: ${JSON.stringify(p6)}`);
 
 // A long sentence with no comma must NOT be chopped at an arbitrary word.
 const noBoundary = 'i really think we should probably go and check the whole eastern wing of the base again';

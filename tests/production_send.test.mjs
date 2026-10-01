@@ -45,26 +45,52 @@ const WAS_OVER_CAP = [
     'why wont they leave me alone?! ugh, can someone help? i might need to just go back to base',
 ];
 
-let allCapped = true;
+// The cap now runs PER LINE, not on the whole reply: a burst is already several
+// messages, so each gets its own budget and nothing is deleted for sitting in a
+// later sentence. What must hold is that no single line is a long paragraph —
+// except where the line has no sentence or clause break at all, in which case
+// chat_fragment.js ships it whole by design rather than produce word salad.
+const hasBreak = (l) => /[.!?]|[,;:]/.test(l.replace(/\s*!\w+\([^)]*\)\s*$/, ''));
 for (const src of WAS_OVER_CAP) {
     const sent = productionSend(src);
-    const longest = Math.max(...sent.map(words));
-    if (longest > 10) allCapped = false;
-    check(longest <= 10,
-        `"${sent[0].slice(0, 40)}..." -> capped (max ${longest}w of ${words(src)})`,
-        `sent uncut: ${longest} words (${words(src)}w input)`);
+    const bad = sent.filter((l) => words(l) > 10 && hasBreak(l));
+    check(bad.length === 0,
+        `"${sent[0].slice(0, 34)}..." -> ${sent.length} lines, longest ${Math.max(...sent.map(words))}w`,
+        `a long line WITH a safe boundary was not capped: ${JSON.stringify(bad)}`);
 }
-check(allCapped, 'every previously-over-cap live line is now capped', 'some lines still go out long');
+check(WAS_OVER_CAP.every((s) => productionSend(s).length <= 3),
+    'every live line now goes out as a short burst', 'a live line still ships as one block');
 
-// The exact regression: a single-fragment result must be USED, not discarded.
+// The original regression was a single-fragment result being discarded by a
+// `parts.length > 1` guard, sending the original 19-word message whole. The
+// per-line cap now splits these into 3 lines, so the exact input no longer
+// produces one fragment — but the guard is gone from production and the property
+// is what matters: whatever fragmentForChat returns must be SENT, never
+// silently replaced by the original.
 {
-    const one = fragmentForChat(WAS_OVER_CAP[0]);
-    check(one.length === 1,
-        'regression case produces a single fragment (which used to be discarded)',
-        `expected 1 fragment for the regression case, got ${one.length}`);
-    check(productionSend(WAS_OVER_CAP[0])[0] === one[0],
-        'single-fragment result is sent instead of the original',
-        'single-fragment result was thrown away — cap silently skipped');
+    for (const src of WAS_OVER_CAP) {
+        const parts = fragmentForChat(src);
+        const sent = productionSend(src);
+        check(sent.join(' ') === parts.join(' '),
+            `"${src.slice(0, 28)}..." sends exactly what the splitter produced`,
+            `sent output differs from splitter output: ${JSON.stringify(sent)} vs ${JSON.stringify(parts)}`);
+        // Messages under the 55-char threshold are deliberately not touched:
+        // a 4-word reply has nothing to split, and running the splitter over it
+        // would be churn for no gain. They must come out byte-identical.
+        // Compare per-line, not the joined string: a 3-line burst re-joins to
+        // the original text but is delivered as three separate messages, which is
+        // the whole point. Joining hides that and made this assertion fire on
+        // correct output.
+        if (src.length <= 55) {
+            check(sent.length === 1 && sent[0] === src,
+                `"${src.slice(0, 24)}..." under the threshold passes through untouched`,
+                'a short message was altered');
+        } else {
+            check(sent.length > 1 || sent[0] !== src,
+                `"${src.slice(0, 24)}..." was fragmented, not sent as one block`,
+                'the original went out unprocessed');
+        }
+    }
 }
 
 // Nothing to split -> untouched, byte for byte.
