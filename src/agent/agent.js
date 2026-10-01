@@ -682,6 +682,11 @@ export class Agent {
             this._attention.answered();
         }
         if (!self_prompt && !from_other_bot) {
+            // A human talking is what ends her run and what her share is measured
+            // against - without this she is permanently one message ahead of
+            // everyone and the budget reads her as monologuing.
+            this._humanMsgCount = (this._humanMsgCount ?? 0) + 1;
+            if (this._budget) this._budget.humanSpoke();
             this._last_human_msg_text = String(message || '');
             this._last_speaker = source;
             // Did the message just arriving name somebody other than her? This
@@ -1086,6 +1091,42 @@ export class Agent {
                 this._attention ||= new Attention();
                 this._attention.spoke(message);
             } catch (e) { /* cosmetic */ }
+        }
+
+        // ── HOW MUCH IS ENOUGH? ────────────────────────────────────────────
+        // The owner: "ppl dont spam chat as muxh as i see her and ppl shorten
+        // words. who likes to type paraphs noone."
+        //
+        // Measured: 15% of real turns are the 3rd+ in a row from one speaker, so
+        // bursts are fine - but the chattiest person averages 60% of a
+        // conversation, and a bot that answers everything AND initiates on top
+        // of it sits far above that. This is a budget over a rolling window, not
+        // a slower timer, so she can still have a burst.
+        if (!isYandere()) {
+            try {
+                const { ChatBudget } = await import('../utils/chat_budget.js');
+                const { checkLength } = await import('../utils/length_rule.js');
+                this._budget ||= new ChatBudget();
+                const gate = this._budget.canSpeak({
+                    now: Date.now(),
+                    human_msgs_since_her_last: this._budget.consecutive === 0
+                        ? (this._humanMsgCount ?? 0) : 0,
+                    visible_humans: this._visibleHumanCount(),
+                });
+                if (!gate.ok) {
+                    console.log(`${this.name} [budget:${gate.why}] holding back`);
+                    return;
+                }
+                // Length is checked on the SENT text. A wall of text with no stop
+                // in it is the same complaint as a paragraph, so this gates on
+                // words as well as sentences (p90 is 16 words).
+                const len = checkLength(message);
+                if (!len.ok) {
+                    console.log(`${this.name} [length:${len.why}] dropped ${len.words}w/${len.sentences}s: ${String(message).slice(0, 60)}`);
+                    return;
+                }
+                this._budget.note(message);
+            } catch (e) { console.warn('[budget] failed open:', e.message); }
         }
 
         // ── TYPOS, AT THE RATE REAL PLAYERS PRODUCE THEM ──────────────────
