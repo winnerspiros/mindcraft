@@ -805,6 +805,17 @@ export class Agent {
                 // the last one" - so the continuation rule could never fire.
                 // Computed once, when the previous human turn arrived.
                 const _lastTarget = this._last_target || '';
+                // Physical address, computed here where we can await.
+                const _physicallyAddressed = await (async () => {
+                    try {
+                        const { isAddressingMe } = await import('../utils/proximity.js');
+                        const me = this.bot.entity;
+                        if (!me?.position || !me.looking) return false;
+                        return Object.values(this.bot.entities || {}).some((e) =>
+                            e?.type === 'player' && e.position && e.username !== this.name
+                            && isAddressingMe(me.position, e.position, e.looking).addressed);
+                    } catch (_) { return false; }
+                })();
                 const _verdict = shouldReplyTo({
                     message,
                     present: !this._life?.isAway,
@@ -816,20 +827,13 @@ export class Agent {
                     last_speaker: this._last_speaker ?? '',
                     last_target: _lastTarget,
                     // Physical addressing: close AND looking at her. Silence is
-                    // the default when there is no data.
-                    addressed_physically: (() => {
-                        try {
-                            const { isAddressingMe } = await import('../utils/proximity.js');
-                            const me = this.bot.entity;
-                            if (!me?.position || !me.looking) return false;
-                            let hit = false;
-                            for (const e of Object.values(this.bot.entities)) {
-                                if (e?.type !== 'player' || !e.position || e.username === this.name) continue;
-                                if (isAddressingMe(me.position, e.position, e.looking).addressed) { hit = true; break; }
-                            }
-                            return hit;
-                        } catch (_) { return false; }
-                    })(),
+                    // the default when there is no data. Computed above, in the
+                    // enclosing async try - my first version wrapped this in a
+                    // non-async IIFE containing `await`, which is a SyntaxError
+                    // and took the whole service down with a restart loop. The
+                    // offline suite never caught it because nothing in bun run
+                    // test loads agent.js.
+                    addressed_physically: _physicallyAddressed,
                 });
                 if (!_verdict.reply) {
                     console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
