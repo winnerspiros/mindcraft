@@ -783,6 +783,7 @@ export class Agent {
                 const _lastTarget = this._last_target || '';
                 const _verdict = shouldReplyTo({
                     message,
+                    present: !this._life?.isAway,
                     visible_humans: _n,
                     addressed: addressedByName,
                     human_exchange: !!(this.self_prompter
