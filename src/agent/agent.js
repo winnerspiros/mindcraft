@@ -676,6 +676,11 @@ export class Agent {
         // PROPOSITION - "no" is a contentless ack to a bare greeting and a
         // complete argument in reply to a claim, and only the text can tell them
         // apart. See the gate below.
+        // He answered, so any losing-her-patience arc is over. Checked BEFORE
+        // the message is judged, so a reply always cancels the push.
+        if (!self_prompt && !from_other_bot && this._attention) {
+            this._attention.answered();
+        }
         if (!self_prompt && !from_other_bot) {
             this._last_human_msg_text = String(message || '');
             this._last_speaker = source;
@@ -734,6 +739,12 @@ export class Agent {
         // decoration - it describes a state that never reaches the prompt.
         // Tilt is a suggestion, not a filter: it shapes register, and the
         // deterministic layer never decides a message is too angry to send.
+        // Losing patience, or having given up. Only after she has already been
+        // ignored - never an opener.
+        if (!isYandere() && this._attention?.instruction()) {
+            await this.history.add('system', this._attention.instruction());
+        }
+
         if (!isYandere() && this._tilt?.isTilted) {
             const hint = this._tilt.styleHint();
             if (hint) {
@@ -804,6 +815,21 @@ export class Agent {
                     speaker: source,
                     last_speaker: this._last_speaker ?? '',
                     last_target: _lastTarget,
+                    // Physical addressing: close AND looking at her. Silence is
+                    // the default when there is no data.
+                    addressed_physically: (() => {
+                        try {
+                            const { isAddressingMe } = await import('../utils/proximity.js');
+                            const me = this.bot.entity;
+                            if (!me?.position || !me.looking) return false;
+                            let hit = false;
+                            for (const e of Object.values(this.bot.entities)) {
+                                if (e?.type !== 'player' || !e.position || e.username === this.name) continue;
+                                if (isAddressingMe(me.position, e.position, e.looking).addressed) { hit = true; break; }
+                            }
+                            return hit;
+                        } catch (_) { return false; }
+                    })(),
                 });
                 if (!_verdict.reply) {
                     console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
@@ -1045,6 +1071,17 @@ export class Agent {
                     return;
                 }
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
+        }
+
+        // She just spoke. If nobody answers, this is what eventually makes her
+        // say it again - and then give up. The words are the model's; this only
+        // supplies the intent (see utils/attention.js).
+        if (!isYandere() && !self_prompt) {
+            try {
+                const { Attention } = await import('../utils/attention.js');
+                this._attention ||= new Attention();
+                this._attention.spoke(message);
+            } catch (e) { /* cosmetic */ }
         }
 
         // ── TYPOS, AT THE RATE REAL PLAYERS PRODUCE THEM ──────────────────

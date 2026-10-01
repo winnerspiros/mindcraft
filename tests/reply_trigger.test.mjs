@@ -87,6 +87,27 @@ for (const m of ['lol', 'lmao', 'gg', 'brb', 'ok', 'nice one', 'haha']) {
         `group: ignores noise ${JSON.stringify(m)}`, `group: replied to noise ${JSON.stringify(m)}`);
 }
 
+// ── PHYSICAL ADDRESSING: stood in front of her, looking at her ─────────
+// The owner: "unless addresses i mean physically or by text".
+{
+    const grp = { visible_humans: 3, addressed: false, human_exchange: false };
+    // close AND facing her -> addressed, even though her name is nowhere in it
+    check(shouldReplyTo({ ...grp, message: 'brb', addressed_physically: true }).reply,
+        'someone standing in front of her, looking at her, gets an answer',
+        'ignored someone who walked over and is looking at her');
+    // close but facing away -> not addressed
+    check(!shouldReplyTo({ ...grp, message: 'sup', addressed_physically: false }).reply,
+        'someone standing nearby but facing away is not addressed',
+        'answered someone who happened to be nearby');
+    // in a dyad, proximity changes nothing - there is nobody else to be talking to
+    check(shouldReplyTo({ message: 'sup', visible_humans: 1, addressed: false,
+        human_exchange: false, addressed_physically: false }).reply,
+        'dyad: proximity is irrelevant, she answers anyway', 'proximity silenced her in a dyad');
+    // naming her still wins over everything
+    check(shouldReplyTo({ ...grp, message: 'uwu', addressed: true, addressed_physically: false }).reply,
+        'being named still wins', 'name ignored');
+}
+
 // ── DIRECTIONAL ADDRESSING: two people talking, not an announcement ──────
 // The multiparty literature treats addressee inference as its own problem,
 // distinct from "did someone speak" - Duplex-MPE (arXiv 2609.31948) exists to
