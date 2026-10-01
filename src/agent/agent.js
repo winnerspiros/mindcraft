@@ -1189,7 +1189,24 @@ export class Agent {
                 // this only asks whether the TEXT is sendable. A wall of text with
                 // no stop in it is the same complaint as a paragraph, so it gates
                 // on words as well as sentences (p90 is 16 words).
-                const len = checkLength(message);
+                // Only reject what cannot be SPLIT. A paragraph is rescuable -
+                // fragmentForChat() turns it into 2-3 short lines, which is what
+                // a real player does. Judging the whole message here and dropping
+                // it was an ordering bug: fragmentation happens later in the send
+                // path, so paragraphs were being discarded instead of split.
+                let len = checkLength(message);
+                if (!len.ok && len.why === 'paragraph') {
+                    try {
+                        const { fragmentForChat: _frag } = await import('../utils/chat_fragment.js');
+                        const _parts = _frag(message);
+                        if (_parts && _parts.length > 1) {
+                            // Splittable: let it through, the send path will split
+                            // it and charge each line. Not a rejection.
+                            console.log(`${this.name} [length:split] ${_parts.length} short lines instead of ${len.words}w`);
+                            len = { ok: true, words: len.words, sentences: 1, why: 'split' };
+                        }
+                    } catch (_) { /* fall through to the drop */ }
+                }
                 if (!len.ok) {
                     // Tell her WHY it was dropped, so the next attempt is a
                     // shorter one rather than the same wall of text again.
@@ -1370,8 +1387,21 @@ export class Agent {
                         // Small gap so it reads as successive typing rather than
                         // a paste. Sequential, awaited: the order must hold.
                         await new Promise((r) => setTimeout(r, 350 + i * 250));
-                        if (settings.chat_ingame) this.bot.chat(rest[i]);
-                        sendOutputToServer(this.name, rest[i]);
+                        // Every extra line is a REAL message and is charged as
+                        // one. Previously these called bot.chat() directly and
+                        // bypassed the budget, checkLength, the speak gate and
+                        // delivered() - so one reply became three un-budgeted
+                        // lines. That was the spam, and no rate-limit tuning
+                        // could fix it because they were never counted.
+                        const _extra = String(rest[i] || '').trim();
+                        if (!_extra) continue;
+                        try {
+                            const { checkLength: _cl } = await import('../utils/length_rule.js');
+                            if (!_cl(_extra).ok) continue;   // never send a fragment we would drop
+                        } catch (_) { /* fail open on the check itself */ }
+                        this._budget?.delivered();
+                        if (settings.chat_ingame) this.bot.chat(_extra);
+                        sendOutputToServer(this.name, _extra);
                     }
                 }
             }

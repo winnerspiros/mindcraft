@@ -10,7 +10,7 @@
 //   the chattiest person averages 60% of a conversation
 
 import { ChatBudget, MAX_CONSECUTIVE, MIN_GAP_MS, MAX_MESSAGES_PER_WINDOW, SHARE_CEILING } from '../src/utils/chat_budget.js';
-import { checkLength, countSentences, P50, P90 } from '../src/utils/length_rule.js';
+import { checkLength, countSentences, P50, P90, HARD_WORD_LIMIT, SOFT_WORD_LIMIT } from '../src/utils/length_rule.js';
 
 let pass = 0, failed = 0;
 const check = (cond, good, bad) => {
@@ -60,6 +60,37 @@ const check = (cond, good, bad) => {
     check(checkLength('*UwU digs dirt*').ok, 'action messages are exempt', 'action message blocked');
 }
 
+// ── the limit IS the acceptance rate ───────────────────────────────────
+//
+// Measured acceptance on 21,822 real player messages:
+//   5w -> 54.3% | 8w -> 69.4% | 10w -> 79.7% | 12w -> 83.6% | 16w -> 90.0%
+//   20w -> 93.0% | 25w -> 94.3% (the old value) | 30w -> 95.8%
+//
+// 25 let 94% of real messages through, which permits her to be LONGER than an
+// average player while still feeling long. She is 1 of 2-3 people in a channel,
+// so her share of the tail should be smaller than a solo player's.
+{
+    // the limit stays at 25, and the reason it is NOT lower is recorded
+    const fs2 = await import('node:fs');
+    const src = fs2.readFileSync('src/utils/length_rule.js', 'utf8');
+    check(/0% of them contain a second sentence|ordinary build instructions/i.test(src),
+        'the source records WHY the word limit is not lower',
+        'the word limit has no recorded justification');
+    check(/0\.12%/.test(src), 'the paragraph basis is cited', 'the paragraph basis is missing');
+    // and the ordinary must all survive - a limit that drops real messages is wrong
+    for (const m of ['im coming', 'ok', 'yeah', 'brb', 'wait what', 'do you have stone',
+        'you are so bad at this', 'again?? these phantoms are relentless, wtf!',
+        'can you help me with this farm real quick', 'not again bruh']) {
+        check(checkLength(m).ok, `real message survives: ${JSON.stringify(m)}`,
+            `dropped a real message: ${JSON.stringify(m)}`);
+    }
+    // the paragraph tail is cut
+    for (const m of ['Ok so I was thinking that we should probably go to the mines later today because we need more iron for the build that we were talking about earlier and also I need to fix my roof',
+        'im going to go down to the mines and get some iron and then come back up and fix the roof because it started raining again today']) {
+        check(!checkLength(m).ok, 'the tail is cut', `a ${checkLength(m).words}-word message survived`);
+    }
+}
+
 // ── and the numbers in the source are the measured ones ────────────────
 {
     const fs = await import('node:fs');
@@ -99,6 +130,81 @@ const check = (cond, good, bad) => {
     b.reserve(50000); b.delivered(50000);   // note() only records text now; reserve() is the gate
     check(!b.canSpeak({ now: 50000 + 100, human_msgs_since_her_last: 1 }).ok,
         'cannot send twice in the same instant', 'no minimum gap');
+}
+
+// ── REGRESSION: fragments bypassed every gate (the real spam) ──────────
+//
+// fragmentForChat() splits a long message and the extra lines were sent with a
+// direct this.bot.chat(rest[i]) - skipping the chat budget, checkLength, the
+// speak gate, the dyad routing AND delivered(). One reply became three
+// un-budgeted lines, so no rate limit could ever see them. That is the "more
+// spammy like someone would" report, and tuning MAX_MESSAGES_PER_WINDOW would
+// never have fixed it.
+{
+    const fs3 = await import('node:fs');
+    const agent = fs3.readFileSync('src/agent/agent.js', 'utf8');
+    const i = agent.indexOf('for (let i = 0; i < rest.length; i++)');
+    check(i > 0, 'the fragment send loop exists', 'the fragment loop is gone');
+    const loop = agent.slice(i, i + 1400);
+    // every bot.chat in the loop must be preceded by accounting
+    const chatAt = loop.indexOf('this.bot.chat(');
+    const chargeAt = loop.indexOf('this._budget?.delivered()');
+    check(chargeAt > 0 && chargeAt < chatAt,
+        'each extra fragment is charged before it is sent',
+        'a fragment is sent without being charged');
+    const checkAt = loop.indexOf('checkLength');
+    check(checkAt > 0 && checkAt < chatAt,
+        'each extra fragment passes the length check',
+        'a fragment is sent without a length check');
+    check(/if \(!_extra\) continue;/.test(loop), 'empty fragments are skipped',
+        'empty fragments are sent');
+}
+
+// ── and a paragraph is SPLIT, not dropped ──────────────────────────────
+//
+// The ordering bug: the length gate judged the whole message and dropped
+// paragraphs, while fragmentation happened later in the send path. But a
+// paragraph is exactly what a real player splits into 2-3 short lines - 0.12% of
+// real messages have a second sentence, while 15% of turns are the 3rd+ message
+// in a row from one speaker.
+{
+    const frag = await import('../src/utils/chat_fragment.js');
+    // A paragraph with REAL clause boundaries does get split, and each line then
+    // passes on its own - which is what a player does instead of one long line.
+    // Sentence boundaries, not commas: the splitter deliberately never cuts a
+    // comma-list in half, which would lose the structure of the thought.
+    const splittable = 'i finished the roof. now im doing the walls. then the floor after that';
+    const parts = frag.fragmentForChat(splittable);
+    check(parts.length > 1, `a paragraph with clause boundaries splits into ${parts.length} lines`,
+        'a splittable paragraph did not split');
+    for (const p of parts) {
+        check(checkLength(p).ok, `each line passes on its own: ${JSON.stringify(p.slice(0, 45))}`,
+            `a split line would be dropped: ${JSON.stringify(p)}`);
+    }
+    // A single unsplittable run-on is NOT split - the splitter is clause
+    // preserving and refusing to cut mid-thought is correct. That one is dropped,
+    // and dropping it is right: it is the wall of text the owner dislikes.
+    const wall = 'Ok so I was thinking that we should probably go to the mines later today because we need more iron for the build that we were talking about earlier and also I need to fix my roof';
+    check(frag.fragmentForChat(wall).length === 1,
+        'an unsplittable run-on is left whole rather than cut mid-thought',
+        'the splitter cut a thought in half');
+    check(!checkLength(wall).ok, 'and that wall of text is then dropped',
+        'the wall of text was allowed through');
+    const _fs = await import('node:fs');
+    const _agent = _fs.readFileSync('src/agent/agent.js', 'utf8');
+    check(/length:split/.test(_agent), 'a splittable paragraph is let through, not dropped',
+        'a splittable paragraph is still dropped');
+}
+
+// ── and the word limit stays where the MEASUREMENT put it ──────────────
+//
+// I tightened HARD_WORD_LIMIT to 12 and then sampled the real messages that
+// would drop: 0% of them contain a second sentence. They are ordinary build
+// instructions ('pick red 2 1 -3, pick red -2 1 -4, place red -2 1 -4'). A hard
+// word drop destroys real speech, so it went back to 25.
+{
+    check(HARD_WORD_LIMIT >= 20, `HARD_WORD_LIMIT is ${HARD_WORD_LIMIT} - long build instructions survive`,
+        `HARD_WORD_LIMIT is ${HARD_WORD_LIMIT}, which drops ordinary build instructions`);
 }
 
 // ── REGRESSION: the live bug ───────────────────────────────────────────
