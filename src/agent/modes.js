@@ -1056,6 +1056,30 @@ const modes_list = [
                         + Math.random() * (this.cooldown_max_normal - this.cooldown_min_normal);
                     return;
                 }
+                // INITIATIVE. The owner: "she can start a conversation, no
+                // forced". So starting one is allowed - but it is a probability
+                // per eligible turn, never a timer. The old 45s gear produced
+                // the "(AUTO) You feel clingy" loop, which is a different failure
+                // wearing the same clothes. Rates: chattier alone with one person
+                // than in a group, never mid-exchange, never right after speaking.
+                if (!addressedByName && !recentlySpokeTo) {
+                    try {
+                        const { shouldStartConversation } = await import('../utils/reply_trigger.js');
+                        const _go = shouldStartConversation({
+                            visible_humans: agent._visibleHumanCount ? agent._visibleHumanCount() : 0,
+                            human_exchange: !!(agent.self_prompter
+                                && agent.self_prompter.humanExchangeInProgress()),
+                        });
+                        if (!_go.start) {
+                            this.next_start = now + 30000 + Math.random() * 60000;
+                            return;
+                        }
+                        console.log(`${agent.name} [initiative:${_go.why}] starting a conversation`);
+                    } catch (e) {
+                        // fail open to the pre-existing trigger rules
+                    }
+                }
+
                 // ROOM AWARENESS. Being one of 2-3 people means she is not the
                 // host of the room, and two humans talking to each other are not
                 // her conversation to join mid-thread. She defers and lets them
