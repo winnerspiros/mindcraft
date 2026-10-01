@@ -10,7 +10,7 @@
 // persona_bite ("must she be nice"). Neither can catch this: a bare ack is
 // legitimate speech to both. The bug is that it acknowledges nothing.
 
-import { isEmptyAck, isEmptyAckLoose } from '../src/utils/empty_ack.js';
+import { isEmptyAck, isEmptyAckLoose, hasProposition } from '../src/utils/empty_ack.js';
 
 let pass = 0, failed = 0;
 const check = (cond, good, bad) => {
@@ -22,11 +22,26 @@ const check = (cond, good, bad) => {
 check(isEmptyAck('yeah'), '"yeah" is rejected', '"yeah" was accepted');
 check(isEmptyAckLoose('yeah.'), '"yeah." is rejected', '"yeah." was accepted');
 
-// ── every bare ack form ────────────────────────────────────────────────────
+// ── every bare ack form, in the context that makes it empty ───────────────
+// The greeting context is now EXPLICIT. These same tokens are legitimate
+// answers to a claim - "no" to "mob farms go at y=30" is disagreement, and
+// suppressing it deleted her ability to argue. So the question each of these
+// asks is "did the player make a proposition?", and "hi uwu" is the no.
+const GREETING = 'hi uwu';
 for (const s of ['ok', 'okay', 'yep', 'yup', 'sure', 'yeah yeah', 'mm', 'mhm',
-    'hm', 'right', 'true', 'nice', 'cool', 'word', 'bet', 'lol', 'nah', 'nope',
-    'no', 'wow', 'oh', 'ah', ':/', 'ok!', 'yep.'])
-    check(isEmptyAckLoose(s), `"${s}" is rejected`, `"${s}" was accepted`);
+    'hm', 'right', 'true', 'nice', 'cool', 'word', 'bet', 'sup',
+    'yeah ok', 'ok yeah', 'ya sure', 'ok!', 'yep.'])
+    check(isEmptyAck(s, GREETING), `"${s}" after a greeting is rejected`, `"${s}" was accepted`);
+
+// Tokens that answer a CLAIM are real answers and must never be gated. This is
+// the regression the context argument exists to prevent.
+for (const [reply, claim] of [['no', 'mob farms go at y=30'],
+    ['nah', 'pillar straight up'], ['yeah', 'thats wrong'],
+    ['true', 'its 4 wide not 3'], ['right', 'thats what i said'],
+    ['agreed', 'exactly'], ['bet', 'you want me to do it']])
+    check(!isEmptyAck(reply, claim),
+        `"${reply}" to a claim ("${claim}") is a real answer`,
+        `"${reply}" to a claim was suppressed - she cannot agree or disagree`);
 
 // ── must NOT fire on real replies ──────────────────────────────────────────
 // The dangerous half. A gate that eats her content is worse than the bug.
@@ -73,3 +88,15 @@ check(!isEmptyAck('!tp(0, 64, 0)'), 'a bare command alone is not an empty ack',
     'a bare command was flagged as an empty ack');
 check(!isEmptyAck('wait, i broke it !tp(0,64,0)'), 'content plus a command passes',
     'content+command was rejected');
+
+// ── hasProposition: the classifier that makes the context argument work ────
+for (const [t, exp] of [['hi', false], ['hi uwu', false], ['hey', false],
+    ['sup', false], ['thanks', false], ['', false], ['!tp(0,64,0)', false],
+    ['mob farms go at y=30', true], ['thats wrong', true], ['come here', true],
+    ['do you have stone?', true]])
+    check(hasProposition(t) === exp, `hasProposition(${JSON.stringify(t)}) = ${exp}`,
+        `hasProposition(${JSON.stringify(t)}) should be ${exp}`);
+
+console.log(failed
+    ? `\nFAIL — ${pass} passed, ${failed} failed`
+    : `\nPASS — ${pass} empty-ack assertions green`);
