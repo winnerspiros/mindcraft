@@ -730,7 +730,20 @@ export class Agent {
         // and self/system prompts are exempt — only real player chat is gated.
         // Any LLM/parse failure falls through to her normal reply path (see
         // decide()'s fallback), so this can never silence her by accident.
-        if (!self_prompt && !from_other_bot && this.turn_taker && this.turn_taker.enabled) {
+        // Being addressed BY NAME is a direct request for a reply, so it can
+        // never take the silence or backchannel path. This was the live bug the
+        // owner hit: "hey uwu" -> turn_taker chose backchannel -> _pickAck
+        // returned "right" -> the empty-ack gate then ate it as contentless, so
+        // she said NOTHING. Two gates each behaving correctly on their own and
+        // together producing silence. A continuer is the right reply to someone
+        // talking past you, never to someone calling your name.
+        const addressedByName = (() => {
+            try { return new RegExp(`\\b${this.name}\\b`, 'i').test(String(message || '')); }
+            catch (_) { return false; }
+        })();
+
+        if (!self_prompt && !from_other_bot && !addressedByName
+            && this.turn_taker && this.turn_taker.enabled) {
             try {
                 const _dist = await this.turn_taker.score(source, message);
                 if (_dist) {
@@ -885,12 +898,30 @@ export class Agent {
                     human_replied: !!this.last_sender
                         && to_player === this.last_sender
                         && (Date.now() - (this._last_human_msg_at || 0)) < 120000,
+                    // A real thing that just happened to her is a legitimate
+                    // reason to speak even when nobody addressed her. She was
+                    // killed by a phantom: "wtf is wrong with you?" is not
+                    // self-narration, it is a person reacting to something that
+                    // actually happened, and every human in the channel does
+                    // exactly that. The live gate threw away 27 of these in one
+                    // session because it only accepted "a human replied".
+                    // Single-use: one reaction per event. The live logs showed
+                    // 27 separate complaints about the SAME phantom death, which
+                    // is not a person reacting, it is a stuck loop. Consuming the
+                    // flag on first use means she says one thing and then has to
+                    // live with it like everyone else.
+                    notable_event: !!(this._lastNotableEvent
+                        && !this._lastNotableEvent.reported
+                        && Date.now() - this._lastNotableEvent.at < 120000),
                     any_human: this.anyHumanOnline(),
                 });
                 if (!verdict.ok) {
                     console.log(`${this.name} [gate:${verdict.why}] suppressed: ${String(message).slice(0, 90)}`);
                     return;
                 }
+                // The event has now been spoken about; do not let it authorise a
+                // second, third and fourth complaint about the same death.
+                if (this._lastNotableEvent) this._lastNotableEvent.reported = true;
             } catch (e) { console.warn('[gate] failed open:', e.message); }
         }
 
