@@ -36,6 +36,14 @@ import { Curriculum } from './curriculum.js';
 import { LearnedSkillLibrary } from './learned_skill_library.js';
 import Vec3 from 'vec3';
 
+// A player opens the chat box at a pause, not mid-swing. She waits this long
+// after a movement action before starting to type, so she never does the visible
+// stop-then-go (finish a dig -> freeze -> walk off). Kept short because a
+// movement action is only a few 300ms ticks, and capped because interrupting a
+// long build to talk would be worse than talking while moving.
+const PAUSE_BEFORE_TYPING_MS = 700;
+const MAX_WAIT_FOR_PAUSE_MS = 1500;
+
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
         this.last_sender = null;
@@ -1329,6 +1337,33 @@ export class Agent {
     }
 
     async openChat(message, whisperTo = null) {
+        // DIRECTION 2: do not start typing mid-action. A player opens the chat box
+        // at a pause. Without this she finishes a dig, stops dead for a beat, then
+        // walks off - a stop-then-go pattern no player has. A movement action is a
+        // few 300ms ticks, so waiting for the pause costs a fraction of a second.
+        // A long action (mining, building) is NOT worth interrupting, so this is
+        // capped: past the cap she speaks anyway rather than looking frozen.
+        const _actedAt = this._actingAt || 0;
+        const _sinceAct = _actedAt ? Date.now() - _actedAt : Infinity;
+        if (_sinceAct < MAX_WAIT_FOR_PAUSE_MS) {
+            const _wait = Math.min(PAUSE_BEFORE_TYPING_MS, MAX_WAIT_FOR_PAUSE_MS) - _sinceAct;
+            if (_wait > 0) await new Promise((r) => setTimeout(r, _wait));
+        }
+
+        // TYPING OCCUPIES HER HANDS. The owner: "ppl dont do actions in game and
+        // talk at the same time, its not possible since you need to type so you
+        // stop what you doing".
+        //
+        // bot.chat() is fire-and-forget - it queues and returns in about a
+        // millisecond - so without this the chat window is instantly over and she
+        // walks, mines and digs through the entire time the message was supposed
+        // to be typed. A real player holds no pickaxe with the chat box open.
+        try {
+            const { TypingState } = await import('../utils/typing_state.js');
+            this._typing ||= new TypingState();
+            this._typing.begin(String(message ?? '').trim());
+        } catch (e) { console.warn('[typing] failed open:', e.message); }
+
         // RAW /summon INTERCEPT: the model can emit a bare /summon as chat text
         // (it has no !command wrapper), which runs as the op bot with NO power
         // gate and NO count cap — the 200-wither pile went out this way. Catch
@@ -1766,6 +1801,20 @@ export class Agent {
                 this.psyche.update(delta);
                 return;
             }
+            // TYPING WINS OVER MOVING. She must not START an action mid-sentence.
+            // A START-gate and not a freeze: an action already in flight finishes,
+            // which is what a player does - you complete the swing you started.
+            // Freezing mid-swing would read as lag, which is worse.
+            if (this._typing && !this._typing.canStartMovement()) {
+                this._wasSettling = true;
+                this.self_prompter.update(delta);
+                this.psyche.update(delta);
+                return;
+            }
+            // Reaching here means modes are about to run, i.e. she is starting
+            // an action. (_moving was tried here and does not exist in this
+            // codebase - it was always falsy and therefore dead code.)
+            this._actingAt = Date.now();
             // note() ONLY on the transition into acting. Calling it every
             // permitted tick (update() runs at 300ms) pushed lastActionAt forward
             // forever and she never finished settling.
