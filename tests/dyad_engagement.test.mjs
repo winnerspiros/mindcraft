@@ -29,8 +29,15 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
 // ── ignore: the server gets talked at, and she does not care ──────────
 {
     // Narration and status - what a server actually sounds like.
+    //
+    // 'ok' was REMOVED from this list. Its premise was "an acknowledgement is not
+    // a thing you say TO anyone", which is a GROUP observation - with several
+    // people present, "ok" goes to whoever spoke and may not be for her. In a dyad
+    // there is one other person, so "ok" is said to her by default. It now gets
+    // `react` (see the dyad-ack rule), not silence. The group path still ignores
+    // it, via group_ack_to_nobody.
     for (const m of ['im coming', 'brb', 'on my way', 'one sec', 'wait',
-        '*builds a wall*', 'im going to the mines', 'ok', 'there you go',
+        '*builds a wall*', 'im going to the mines', 'there you go',
         'has anyone seen the cows']) {
         const v = dyad(m);
         check(v.mode === 'ignore', `ignored: ${JSON.stringify(m)}`, `answered a room message: ${JSON.stringify(m)} -> ${v.mode}`);
@@ -56,12 +63,29 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
     }
 }
 
-// ── react: the funny/stupid case, and it is NOT a phrase list ──────────
+// ── react: bare acks, reactions, and the funny/stupid case ─────────────
+//
+// CHANGED. These four used to be required to reach `react`, and they no longer
+// do - deliberately. A dyad is one-to-one, so "you are so bad at this" is said
+// TO her and now gets a real reply. Forcing a reaction there was the phrase-table
+// thinking the owner rejected: matching wording instead of judging intent.
+//
+// What still reaches `react` is the genuine reaction/acknowledgement shape:
+// a bare ack, or a noise like "lol". Those want a noise back, not a sentence.
 {
-    const funny = ['you are so bad at this', 'thats actually hilarious',
-        'i walked into a creeper', 'you literally cannot play this game'];
-    const reacted = funny.filter((m) => dyad(m).mode === 'react');
-    check(reacted.length >= 3, `${reacted.length}/4 statements routed to react`, 'statements are not reaching react');
+    for (const m of ['ok', 'yeah', 'sure', 'right', 'k']) {
+        const v = dyad(m);
+        check(v.mode === 'react', `bare ack reacts rather than speaking: ${JSON.stringify(m)}`,
+            `bare ack not treated as an ack: ${JSON.stringify(m)} -> ${v.mode}`);
+    }
+    for (const m of ['lol', 'nice', 'wow']) {
+        const v = dyad(m);
+        check(v.mode === 'react', `noise reacts: ${JSON.stringify(m)}`, `noise did not react: ${JSON.stringify(m)} -> ${v.mode}`);
+    }
+    const inGroup = shouldReplyTo({ message: 'ok', visible_humans: 3 });
+    check(!inGroup.reply && inGroup.why === 'group_ack_to_nobody',
+        'but in a GROUP a bare ack is still not for her',
+        `group ack gave ${JSON.stringify(inGroup)}`);
 }
 {
     // The failure mode this guards: if react were keyed on joke vocabulary, a
@@ -155,6 +179,58 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
     const h = agent.indexOf('said to the room, not to you');
     check(h > 0, 'an ignored message is still stored, so she heard it',
         'ignore throws the message away entirely');
+}
+
+// ── REGRESSION: she only answered when her NAME was used ───────────────
+//
+// Owner, live: "only answered when i said uwu. thats bad". Then "i did, no
+// response" - after direct chat delivery was fixed she received the messages and
+// still said nothing for 'yo', 'gm', 'you there', 'yo bitch'.
+//
+// Cause: pickDyadMode gated on a hand-written phrase list (DIRECT_NEED_DYAD:
+// 'can you', 'help me', 'come here', ...). Anything not on the list fell to
+// `react` or `ignore`, so an ordinary conversational opener produced silence.
+// That is phrase-matching standing in for a judgement - exactly the hardcoding to
+// avoid - and it is wrong on its own terms: in a DYAD there is one other person,
+// so most of what he says is addressed to her BY POSITION.
+{
+    const openers = ['yo', 'yo bitch', 'gm', 'gm uwu', 'you there', 'sup',
+        'yo u', 'hey hey', 'well well', 'that was close', 'holy shit',
+        'ur so bad at this', 'thats actually hilarious', 'no way',
+        'i walked into a creeper', 'you literally cannot play this game',
+        'still alive', 'i found diamonds', 'wait what'];
+    const silent = openers.filter((m) => !dyad(m).reply);
+    check(silent.length === 0,
+        `all ${openers.length} ordinary dyad openers get a response`,
+        `${silent.length}/${openers.length} produced silence: ${JSON.stringify(silent)}`);
+
+    // a question and a request are still replies, for the structural reason
+    for (const m of ['what are you doing', 'can you help me', 'wait for me']) {
+        check(dyad(m).mode === 'speak', `question/request speaks: ${JSON.stringify(m)}`,
+            `${JSON.stringify(m)} -> ${dyad(m).mode}`);
+    }
+    // naming her is still a reply, and is no longer the ONLY thing that is
+    check(dyad('uwu').mode === 'speak', 'naming her speaks', `uwu -> ${dyad('uwu').mode}`);
+    check(dyad('gm').mode === 'speak', 'but so does an ordinary opener',
+        `gm -> ${dyad('gm').mode}`);
+
+    // the gate must not be a phrase list any more
+    const src = (await import('node:fs')).readFileSync('src/utils/reply_trigger.js', 'utf8');
+    const picker = src.slice(src.indexOf('function pickDyadMode'), src.indexOf('function pickDyadMode') + 2600);
+    check(!/DIRECT_NEED_DYAD/.test(picker),
+        'the dyad picker no longer gates on a phrase table',
+        'the dyad picker still gates on DIRECT_NEED_DYAD');
+    // and the picker's own 'speak' default must be reachable, not dead
+    check(/return 'speak';\s*\}/.test(picker),
+        'the picker ends in a speak default (engaging is the dyad norm)',
+        'the picker has no speak default');
+
+    // narration must STILL be silence - the fix is not "answer everything"
+    for (const m of ['im coming', 'im going to the mines', 'wait', 'here',
+        'done', 'there you go', 'has anyone seen the cows']) {
+        check(dyad(m).mode === 'ignore', `narration still silent: ${JSON.stringify(m)}`,
+            `narration now gets an answer: ${JSON.stringify(m)} -> ${dyad(m).mode}`);
+    }
 }
 
 console.log(failed
