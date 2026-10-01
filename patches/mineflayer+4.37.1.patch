@@ -25,3 +25,43 @@ diff --git a/node_modules/mineflayer/lib/plugins/enchantment_table.js b/node_mod
        const [, newItem] = await once(enchantmentTable, 'updateSlot:0')
        return newItem
      }
+
+diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/mineflayer/lib/plugins/physics.js
+--- a/node_modules/mineflayer/lib/plugins/physics.js
++++ b/node_modules/mineflayer/lib/plugins/physics.js
+@@ -239,6 +239,35 @@
+     if ((!shouldUsePhysics || performance.now() - lastPosSend < 2500)) {
+       if (bot._digAimArmed) {
+         lastPosSend = performance.now() // hold clock restarts — next non-dig look still waits
++      } else if (bot._gazeArmed) {
++        // 26.3 GAZE FIX: an idle glance must not wait for a position packet.
++        // The hold above waits for movement, and the movement never comes because
++        // the hold is active - a deadlock, measured: idle_staring acquired the
++        // target and bot.lookAt set entity yaw to 1.2357, while the server's yaw
++        // stayed at the spawn value 109.2 across 30 samples over 60s. The only
++        // drain for _pendingForceLook is updatePosition (below), a POSITION
++        // sender, so a stashed glance was never sent.
++        //
++        // A glance is exactly the shape the 26.3 notes call safe: a bare 'look'
++        // never sets receivedPositionThisTick, so it cannot cause the
++        // invalid_player_movement this hold prevents. Same exemption dig-aim
++        // already takes. Flush it as a bare look, keeping the jitter so repeated
++        // glances cannot phase-lock with the server tick.
++        if (physics._lookJitter && performance.now() < physics._lookJitter) return
++        physics._lookJitter = performance.now() + Math.random() * 30
++        if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
++        lastSentYaw = conv.fromNotchianYaw(yaw)
++        lastSentPitch = conv.fromNotchianPitch(pitch)
++        lastSent.yaw = yaw
++        lastSent.pitch = pitch
++        lastSent.onGround = onGround
++        bot._client.write('look', {
++          yaw,
++          pitch,
++          flags: { onGround, hasHorizontalCollision: false }
++        })
++        sendTickEnd()
++        return
+       } else {
+         bot._pendingForceLook = { yaw, pitch, onGround }
+         return
