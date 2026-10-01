@@ -889,7 +889,10 @@ const GLANCE_BUDGET_COOLDOWN_MS = 45000;
     },
     {
         name: 'idle_hopping',
-        description: 'Spam crouch, hop, and dart around energetically when idle so she feels alive.',
+        // Was: "Spam crouch, hop, and dart around energetically when idle so she
+        // feels alive." The crouch spam is gone - the owner: "shes crouching a
+        // lot". Hops and darts stay, because a player does fidget.
+        description: 'Hop and shift about a little when idle, so she does not stand frozen.',
         interrupts: [],
         on: true,
         active: false,
@@ -950,23 +953,28 @@ const GLANCE_BUDGET_COOLDOWN_MS = 45000;
             }
             const now = Date.now();
 
-            // 1) crouch-spam: FIXED on 26.3 — sneak now sends full input state
-            // (see physics.js setControlState), so toggles no longer desync
-            // the server's shift tracking. Spam freely, cutely, kick-free.
-            if (now < this.spam_until) {
-                if (now > this.next_toggle) {
-                    this.sneaking = !this.sneaking;
-                    bot.setControlState('sneak', this.sneaking);
-                    this.next_toggle = now + 180 + Math.random() * 220;
-                }
-            } else {
-                bot.setControlState('sneak', false);
-                this.sneaking = false;
-                if (now > this.next_spam) {
-                    this.spam_until = now + 800 + Math.random() * 1600;
-                    this.next_spam = now + 5000 + Math.random() * 7000;
-                }
-            }
+            // 1) NO crouch spam. The owner: "shes crouching a lot".
+            //
+            // This was not a leak or a desync - it was a feature. The mode is
+            // described in this file as "Spam crouch, hop, and dart around
+            // energetically when idle", it defaults to on, and it toggled sneak
+            // every 180-400ms inside a window that opened every 5-12s whenever a
+            // player came within 12 blocks. The old comment said to "spam freely,
+            // cutely, kick-free" - which is precisely why it reads as a tic to the
+            // person watching. Nobody crouches several times a second beside
+            // another person; that is a bot fidget, not a player.
+            //
+            // The corpus cannot settle this directly - it is text only, and
+            // crouch/fidget/hop/idle appear 0 times in 21,822 lines. So this is a
+            // judgement call against an explicit report rather than a
+            // measurement. What the corpus does say supports quiet at rest: 9.52%
+            // of real lines are a bare acknowledgement and 35.3% are three words
+            // or fewer.
+            //
+            // Hops stay - a player does fidget. Her real idle behaviour is
+            // activity.js picking up work, which is what she should be doing.
+            bot.setControlState('sneak', false);
+            this.sneaking = false;
 
             // 2) hops — frequent, sometimes a quick double-hop
             if (now < this.hop_until) {
