@@ -120,9 +120,16 @@ const check = (cond, good, bad) => {
         `_actingAt appears ${reads}x - it is written but never read, so direction 2 is not enforced`);
     check(/PAUSE_BEFORE_TYPING_MS/.test(openBlock), 'openChat waits for the pause',
         'openChat does not wait for a pause');
-    check(/MAX_WAIT_FOR_PAUSE_MS/.test(agent),
-        'the wait is capped, so a long build is not interrupted',
-        'the wait is uncapped - she would freeze during a build to talk');
+    // The wait must be BOUNDED regardless of how long she has been acting, or a
+    // long build would freeze her mid-way to speak. MAX_WAIT_FOR_PAUSE_MS only
+    // ever wrapped a Math.min that clamped nothing (700 < 1500 always), so it was
+    // dead and is gone; the bound is now the flat PAUSE_BEFORE_TYPING_MS.
+    const pause = Number(/PAUSE_BEFORE_TYPING_MS = (\d+)/.exec(agent)?.[1]);
+    check(Number.isFinite(pause) && pause > 0 && pause <= 1000,
+        `the pre-typing wait is a flat ${pause}ms, so it cannot grow with a long build`,
+        `the pre-typing wait is unbounded or missing (${pause})`);
+    check(!/MAX_WAIT_FOR_PAUSE_MS/.test(agent), 'no dead cap constant left behind',
+        'the dead cap constant is back');
     check(!/this\._moving/.test(agent),
         'no phantom _moving flag (it never existed - always falsy, dead code)',
         'the phantom _moving flag is back');

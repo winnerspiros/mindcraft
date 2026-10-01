@@ -34,7 +34,6 @@
 const AVG_KEYSTROKE_MS = 200;
 const MIN_TYPING_MS = 900;         // one short word still takes a moment
 const FIRST_CHAR_LAG_MS = 350;     // opening the chat box and focusing it
-const PER_CHAR_MS = 0;             // computed from length below
 
 /**
  * How long typing this exact message occupies her hands.

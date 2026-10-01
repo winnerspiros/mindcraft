@@ -38,11 +38,9 @@ import Vec3 from 'vec3';
 
 // A player opens the chat box at a pause, not mid-swing. She waits this long
 // after a movement action before starting to type, so she never does the visible
-// stop-then-go (finish a dig -> freeze -> walk off). Kept short because a
-// movement action is only a few 300ms ticks, and capped because interrupting a
-// long build to talk would be worse than talking while moving.
+// stop-then-go (finish a dig -> freeze -> walk off). Well under a second, so it
+// never reads as frozen and never interrupts a long build to talk.
 const PAUSE_BEFORE_TYPING_MS = 700;
-const MAX_WAIT_FOR_PAUSE_MS = 1500;
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -1343,11 +1341,9 @@ export class Agent {
         // few 300ms ticks, so waiting for the pause costs a fraction of a second.
         // A long action (mining, building) is NOT worth interrupting, so this is
         // capped: past the cap she speaks anyway rather than looking frozen.
-        const _actedAt = this._actingAt || 0;
-        const _sinceAct = _actedAt ? Date.now() - _actedAt : Infinity;
-        if (_sinceAct < MAX_WAIT_FOR_PAUSE_MS) {
-            const _wait = Math.min(PAUSE_BEFORE_TYPING_MS, MAX_WAIT_FOR_PAUSE_MS) - _sinceAct;
-            if (_wait > 0) await new Promise((r) => setTimeout(r, _wait));
+        const _sinceAct = this._actingAt ? Date.now() - this._actingAt : Infinity;
+        if (_sinceAct < PAUSE_BEFORE_TYPING_MS) {
+            await new Promise((r) => setTimeout(r, PAUSE_BEFORE_TYPING_MS - _sinceAct));
         }
 
         // TYPING OCCUPIES HER HANDS. The owner: "ppl dont do actions in game and
