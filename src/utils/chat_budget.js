@@ -83,12 +83,28 @@ export class ChatBudget {
         return { ok: true, why: 'within_budget' };
     }
 
+    /**
+     * Record what she actually said. The TIMESTAMP is already on the budget from
+     * reserve() at the pre-generation gate - pushing it again here double-counted
+     * every message and made the budget expire twice as fast. What is left is the
+     * text itself, which only checkLength cares about.
+     */
     note(message, now = Date.now()) {
+        this.lastWords = String(message || '').trim().split(/\s+/).filter(Boolean).length;
+    }
+
+    /**
+     * Count the message as spoken BEFORE it exists. The pre-generation gate
+     * consults canSpeak() and then calls this, so a generation that is about to
+     * be thrown away by checkLength() still consumed budget - otherwise the
+     * discarded text would be free and she would keep composing.
+     */
+    reserve(now = Date.now()) {
+        // The clock is a PARAMETER, not Date.now() read here. Reading it inside
+        // made the budget untestable at a synthetic time, and every test that
+        // advanced its own clock was silently testing real wall time instead.
         this.sent.push(now);
         this.lastSentAt = now;
-        // Count words from what she ACTUALLY said, so the length rules below
-        // apply to the text that goes out rather than to the model's intent.
-        this.lastWords = String(message || '').trim().split(/\s+/).filter(Boolean).length;
         this.consecutive++;
     }
 
