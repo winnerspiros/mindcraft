@@ -101,8 +101,7 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
     const pick = src.slice(src.indexOf('function pickDyadMode'));
     const pickBody = pick.slice(0, pick.indexOf('\n}'));
     const words = pickBody.match(/\b[a-z]+\b/gi) || [];
-    const REACT_WORDS = /^(lol|lmao|haha|xd|rofl|ffs|omg|wtf|yikes|react|speak|ignore|function|const|let|if|return|test|msg|trim|string)$/i;
-    const leaked = words.filter((w) => /^(lol|lmao|haha|xd|rofl|ffs|omg|wtf|yikes)$/i.test(w));
+    const leaked = words.filter((w) => /^(?:lol|lmao|haha|xd|rofl|ffs|omg|wtf|yikes)$/i.test(w));
     check(!leaked.length, `pickDyadMode contains no reaction vocabulary (${words.length} words, all logic)`,
         `reaction vocabulary in the decision: ${JSON.stringify(leaked)}`);
     // The "xD" the owner mentioned must not exist anywhere as something she says.
