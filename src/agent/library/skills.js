@@ -2780,7 +2780,16 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
         if (!quiet) {
             const missing = _craftingShortfall(bot, itemName);
             if (missing.length) {
-                log(bot, `You can't craft ${itemName} yet. You still need: ${missing.join(', ')}. Gather these (or ask your beloved for them).`);
+                // Was: "Gather these (or ask your beloved for them)." That string
+                // is fed back into her history as a system turn, so the yandere
+                // voice was being re-injected on EVERY failed craft - which is why
+                // memory.json kept re-poisoning however often it was cleaned. The
+                // self-poison guard caught it; the cleanups were treating the
+                // symptom.
+                //
+                // She is not a yandere, so there is no beloved to ask. She asks
+                // PLAYERS, which is what !askForHelp and !requestItems already do.
+                log(bot, `You can't craft ${itemName} yet. You still need: ${missing.join(', ')}. Go and get them, or ask someone here for it.`);
             } else {
                 log(bot, `${itemName} has no craftable recipe — find it, loot it, or trade for it instead.`);
             }

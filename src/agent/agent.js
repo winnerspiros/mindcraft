@@ -1426,7 +1426,23 @@ export class Agent {
                 // and empty-ack gates, so those judge what the player sees and a
                 // tilde cannot pad an otherwise-empty line into looking like
                 // content.
-                message = String(message).replace(/~+/g, '').replace(/\s{2,}/g, ' ').trim();
+                // Asterisks: measured 59/21,822 (0.270%) in real player chat, and
+                // ALL 59 are stray single characters - "chegg *", "like *",
+                // "*mirrored". Not one is a *bracketed emoticon*, so "*facepalm*"
+                // mid-sentence has no precedent at all. Emphasis is not something
+                // players do here; the asterisks that exist are typos.
+                //
+                // Stripped beside the tildes, BEFORE the length and empty-ack gates,
+                // so those judge what a player would actually see. A bracketed run
+                // goes whole (that is the shape the model emits) and a stray one
+                // goes too, since it is a typo rather than meaning.
+                message = String(message)
+                    .replace(/\*[^*\n]{1,24}\*/g, ' ')   // *facepalm* -> gone
+                    .replace(/\*+/g, ' ')                    // stray * -> gone
+                    .replace(/[ \t]{2,}/g, ' ')
+                    .replace(/~+/g, '')
+                    .replace(/\s{2,}/g, ' ')
+                    .trim();
 
                 let len = checkLength(message);
                 if (!len.ok && len.why === 'paragraph') {
