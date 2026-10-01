@@ -9,7 +9,7 @@
 //   15.07% of turns are the 3rd+ consecutive message from one speaker
 //   the chattiest person averages 60% of a conversation
 
-import { ChatBudget, MAX_CONSECUTIVE, MIN_GAP_MS, MAX_MESSAGES_PER_WINDOW, SHARE_CEILING } from '../src/utils/chat_budget.js';
+import { ChatBudget, MAX_CONSECUTIVE, MIN_GAP_MS, MAX_MESSAGES_PER_WINDOW, RUN_EXPIRES_MS, SHARE_CEILING } from '../src/utils/chat_budget.js';
 import { checkLength, countSentences, P50, P90, HARD_WORD_LIMIT, SOFT_WORD_LIMIT } from '../src/utils/length_rule.js';
 
 let pass = 0, failed = 0;
@@ -89,6 +89,42 @@ const check = (cond, good, bad) => {
         'im going to go down to the mines and get some iron and then come back up and fix the roof because it started raining again today']) {
         check(!checkLength(m).ok, 'the tail is cut', `a ${checkLength(m).words}-word message survived`);
     }
+}
+
+// ── A RUN EXPIRES ─────────────────────────────────────────────────────
+// Live evidence: a wall of "[gate:too_many_in_a_row] not generating" with the solo
+// cadence running every 7-94s and ZERO commands executed. `consecutive` only went up
+// (delivered) or reset when a human spoke (humanSpoke), so a bot on her own hit 2
+// within a minute and was then muted permanently. She was locked out of speaking,
+// not choosing silence.
+{
+    const b2 = new ChatBudget();
+    const t = 1_000_000;
+    b2.delivered(t); b2.delivered(t + 1000);
+    const blocked = b2.canSpeak({ now: t + 2000, human_msgs_since_her_last: 0 });
+    check(blocked.ok === false && blocked.why === 'too_many_in_a_row',
+        'a back-to-back burst of 2 is still blocked', 'the burst cap no longer holds');
+    check(b2.canSpeak({ now: t + 5000, human_msgs_since_her_last: 0 }).ok === false,
+        'still blocked while the burst is fresh', 'the burst expired too early');
+
+    const after = b2.canSpeak({ now: t + RUN_EXPIRES_MS + 10_000, human_msgs_since_her_last: 0 });
+    check(after.ok === true,
+        `she can speak again after ${Math.round(RUN_EXPIRES_MS / 1000)}s of quiet (got ${after.why})`,
+        'she is still muted after a long silence - the counter is one-way');
+
+    // and the monologue ceiling is a window, not a lifetime ban
+    // 3 messages, then look PAST the 10-minute window: inside the window blocking
+    // is correct, the point is that the ceiling does not last forever.
+    const b3 = new ChatBudget();
+    const u = 5_000_000;
+    for (let k = 0; k < 3; k++) b3.delivered(u + k * 60_000);
+    check(b3.canSpeak({ now: u + 4 * 60_000, human_msgs_since_her_last: 0 }).ok === false,
+        'a 3-message monologue inside the window is still blocked',
+        'the monologue ceiling does not hold inside the window');
+    const past = b3.canSpeak({ now: u + 11 * 60_000, human_msgs_since_her_last: 0 });
+    check(past.ok === true,
+        `the monologue ceiling expires with the window (got ${past.why})`,
+        'the monologue ceiling is a lifetime ban');
 }
 
 // ── and the numbers in the source are the measured ones ────────────────

@@ -35,6 +35,14 @@ const WINDOW_MS = 10 * 60 * 1000;
 const MAX_MESSAGES_PER_WINDOW = 12;   // ~1 per 50s average, human-ish
 const MAX_CONSECUTIVE = 2;            // corpus: runs of 2-4, but she is 1 of 2-3 players
 const MIN_GAP_MS = 2500;              // not machine-gun fast
+// A "run" is a run in TIME as well as in order. Two messages 40s apart are not a
+// run; two back to back in the same breath are. Without this the counter is
+// one-way: consecutive only ever goes UP (delivered) or resets when a human
+// speaks (humanSpoke), so a bot on her own hits 2 within a minute and is then
+// muted FOREVER - every later turn returns too_many_in_a_row. Live evidence: a
+// wall of that line, zero commands executed, while the solo cadence ran every
+// 7-94s. She was not choosing silence, she was locked out of it.
+const RUN_EXPIRES_MS = 90 * 1000;
 const SHARE_CEILING = 0.55;           // she is one of 2-3 people, not the room
 const MIN_SHARE_SAMPLE = 8;            // turns of context before share means anything
 
@@ -42,6 +50,8 @@ export class ChatBudget {
     constructor() {
         /** @type {number[]} */
         this.sent = [];          // budget ledger: every ATTEMPT, sent or not
+        /** @type {number[]} */
+        this.deliveredAt = [];   // what the room ACTUALLY saw, timestamped
         this.deliveredCount = 0; // what the room actually saw - share uses this
         this.consecutive = 0;    // her messages in a row with nothing from a human
         this.lastSentAt = 0;
@@ -66,6 +76,12 @@ export class ChatBudget {
         const now = ctx.now ?? Date.now();
         this.sent = this.sent.filter((t) => now - t < WINDOW_MS);
 
+        // A run expires: if nothing of hers has gone out for RUN_EXPIRES_MS, the
+        // burst is over and the counter is no longer evidence of domination.
+        if (this.consecutive > 0 && this.lastSentAt && now - this.lastSentAt >= RUN_EXPIRES_MS) {
+            this.consecutive = 0;
+        }
+
         if (this.consecutive >= MAX_CONSECUTIVE) {
             return { ok: false, why: 'too_many_in_a_row' };
         }
@@ -83,8 +99,16 @@ export class ChatBudget {
         // or talking to herself. Using sent.length here blocked her at attempt 3
         // with 0 messages actually sent.
         const hers = this.deliveredCount;
+        // Same time-expiry as the run above: 3 undelivered-by-anyone messages is
+        // a monologue only if they are RECENT. deliveredCount is a lifetime total,
+        // so without the window check she hits 3 once and is then never allowed
+        // to speak alone again, however long the silence has been.
         if (humans === 0 && hers >= 3) {
-            return { ok: false, why: 'monologue' };
+            // Window on deliveredAt, NOT on `sent`: `sent` is the reservation
+            // ledger and delivered() never wrote to it, so counting it here saw
+            // zero messages and the expiry could never trigger.
+            this.deliveredAt = this.deliveredAt.filter((t) => now - t < WINDOW_MS);
+            if (this.deliveredAt.length >= 3) return { ok: false, why: 'monologue' };
         }
         // A share needs a sample. At 4 of 5 turns the arithmetic gives 80%, which
         // is not evidence of anything - the humans simply have not spoken yet.
@@ -130,6 +154,7 @@ export class ChatBudget {
 
     /** A message actually went out. Now the run advances. */
     delivered(now = Date.now()) {
+        this.deliveredAt.push(now);
         this.lastSentAt = now;
         this.consecutive++;
         this.deliveredCount++;
@@ -148,4 +173,4 @@ export class ChatBudget {
     }
 }
 
-export { WINDOW_MS, MAX_MESSAGES_PER_WINDOW, MAX_CONSECUTIVE, MIN_GAP_MS, SHARE_CEILING };
+export { WINDOW_MS, MAX_MESSAGES_PER_WINDOW, MAX_CONSECUTIVE, MIN_GAP_MS, RUN_EXPIRES_MS, SHARE_CEILING };
