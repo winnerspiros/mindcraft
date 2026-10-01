@@ -59,7 +59,16 @@ const modes = readFileSync('src/agent/modes.js', 'utf8');
 // ── staring: glance, look away, look back ──────────────────────────────
 {
     const i = modes.indexOf("name: 'idle_staring'");
-    const block = modes.slice(i, i + 6000);
+    // From this mode to the next, never a fixed character count - the mode has
+    // outgrown 6000 chars, and a short window silently turns real assertions into
+    // false failures.
+    const _j = modes.indexOf("name: '", i + 10);
+    const block = modes.slice(i, _j > i ? _j : i + 12000);
+    // Comments excluded: this mode QUOTES the old buggy line in a comment to
+    // explain what it replaced, and my assertion matched that quote. Assert on
+    // code, never on a file that documents itself.
+    const code = block.replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
     check(i > 0, 'idle_staring still exists', 'idle_staring is gone');
 
     // the old hold was 6000 + rand*4000 => 6-10s
@@ -75,26 +84,63 @@ const modes = readFileSync('src/agent/modes.js', 'utf8');
     // the gap must be enforced, not merely stored
     const store = block.indexOf('this.next_look_back = this.next_change');
     const use = block.indexOf('Date.now() < this.next_look_back');
-    check(use > store, 'the gap is enforced after it is stored',
-        'the gap is stored but never checked');
+    const expire = block.indexOf('Date.now() >= this.next_look_back');
+    check(use > store && expire > store,
+        'the gap is both enforced and allowed to expire',
+        'the gap is stored but never checked, or checked but never expires');
 
-    // it must not defeat itself: re-arming only happens on target CHANGE, so a
-    // cleared stare is not instantly re-acquired
-    const gapAt = use;
-    const rearm = block.indexOf('this.staring = true');
-    check(rearm < gapAt,
-        'stare re-arms only when the target changes, so the gap survives',
-        'the stare re-arms every tick and the gap cannot hold');
+    // ── REGRESSION: gaze_started must mean "has run", not "is scheduled" ──
+    // Setting it at acquisition, while next_change was still in the future, made
+    // the gap check switch the gaze off on the tick it began. Measured:
+    // gaze_started=true with staring=false on every tick - she looked at nobody.
+    check(/if \(this\.staring && !this\.gaze_started\) this\.gaze_started = true/.test(block) === false,
+        'gaze_started is NOT set at acquisition (that killed every gaze)',
+        'gaze_started is set when the gaze is merely scheduled');
+    check(/this\.gaze_started = false;\s*\/\/ a fresh gaze has not run yet/.test(block)
+        || /gaze_started = false/.test(block),
+        'a fresh gaze starts unrun', 'a fresh gaze is treated as already run');
 
-    // and the mob hold stays long - watching a creeper is not a social act
-    check(/4000 \+ Math\.random\(\) \* 1000/.test(block),
-        'mob-watching keeps its longer hold', 'the mob hold was changed too');
+    // ── REGRESSION: no per-window coin flip for a person ──
+    // `staring = Math.random() < (personNear ? 0.8 : 0.3)` plus a 2-12s reset
+    // overwrote the glance and erased the gap. It is the yandere shape: a
+    // probabilistic lock-on.
+    check(!/Math\.random\(\) < \(personNear \? 0\.8/.test(code),
+        'no per-window coin flip for a person (the probabilistic lock-on)',
+        'the per-window person coin flip is back');
+
+    // ── MOBS RUN THE SAME CYCLE, JUST SHORTER ──
+    // The owner: "that goes for mobs btw, maybe she sees a mob around so she looks
+    // at it". Mobs used to get a 30% roll and a 2-12s window with no gap.
+    check(/else if \(nearestMob\)/.test(block),
+        'a nearby mob is a gaze target in its own right', 'mobs are not looked at');
+    check(/1000 \+ Math\.random\(\) \* 1500/.test(block),
+        'a mob glance is shorter than a person glance', 'the mob hold is not shorter');
+    check(/2000 \+ Math\.random\(\) \* 4000/.test(block),
+        'and a mob gets a look-away gap too', 'a mob has no look-away gap');
+
+    // ── REGRESSION: the gap must apply to mobs as well ──
+    // I left `&& isPlayer` on both gap checks when mobs joined the cycle, which
+    // meant a mob's gap could neither fire nor expire: she looked at a cow and
+    // never looked away.
+    const gapLine = block.slice(block.indexOf('Date.now() < this.next_look_back') - 260,
+        block.indexOf('Date.now() < this.next_look_back'));
+    check(!/isPlayer\)\s*\{|&& isPlayer/.test(gapLine),
+        'the gap applies to mobs, not just people', 'the gap is still player-only');
 }
 
 // ── she looks at the person she is ENGAGING, not the nearest body ──────
 {
     const i = modes.indexOf("name: 'idle_staring'");
-    const block = modes.slice(i, i + 6000);
+    // From this mode to the next, never a fixed character count - the mode has
+    // outgrown 6000 chars, and a short window silently turns real assertions into
+    // false failures.
+    const _j = modes.indexOf("name: '", i + 10);
+    const block = modes.slice(i, _j > i ? _j : i + 12000);
+    // Comments excluded: this mode QUOTES the old buggy line in a comment to
+    // explain what it replaced, and my assertion matched that quote. Assert on
+    // code, never on a file that documents itself.
+    const code = block.replace(/\/\*[\s\S]*?\*\//g, '')
+        .split('\n').map((l) => l.replace(/^\s*\/\/.*$/, '')).join('\n');
     check(/_attentionPlayer/.test(block),
         'the stare prefers the player she is engaging', 'it still takes the nearest player');
     check(/find\(\(p\) => p\?\.username === _engagedName\)/.test(block),

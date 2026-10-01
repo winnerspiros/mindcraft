@@ -567,7 +567,7 @@ const modes_list = [
     },
     {
         name: 'idle_staring',
-        description: 'Animation to look around when idle — but fixate on nearby players, staring into their eyes.',
+        description: 'Animation to look around when idle. She glances at a nearby player or mob, looks away, then looks back — she does not lock on and stare.',
         interrupts: [],
         on: true,
         active: false,
@@ -638,11 +638,23 @@ const modes_list = [
                 //
                 // Mob-holding stays longer because watching a creeper is not the
                 // same social act as watching a person.
+                // ── GLANCE, LOOK AWAY, LOOK BACK — people AND mobs ──────
+                // The owner: "that goes for mobs btw, maybe she sees a mob around
+                // so she looks at it"
+                //
+                // Mobs were the odd one out: a 4-5s hold with no look-back gap at
+                // all, so she either ignored a nearby mob or tracked it in long
+                // unbroken holds. Watching a creeper is the same act as watching a
+                // person, only with a shorter attention span and a real reason to
+                // break off. So the SHAPE is identical; only the LENGTH differs.
                 this.next_change = Date.now() + (isPlayer
                     ? 1500 + Math.random() * 2000
-                    : 4000 + Math.random() * 1000);
-                // and the away-gap, so she is not staring continuously
-                this.next_look_back = this.next_change + 2500 + Math.random() * 4500;
+                    : 1000 + Math.random() * 1500);
+                // and the away-gap, so she is not staring continuously at anything
+                this.next_look_back = this.next_change + (isPlayer
+                    ? 2500 + Math.random() * 4500
+                    : 2000 + Math.random() * 4000);
+                this.gaze_started = false;   // a fresh gaze has not run yet
             }
             // RCON-truth counts as a target too: if the server says a player
             // is near but no entity rendered, hold the stare on them instead
@@ -659,18 +671,53 @@ const modes_list = [
                     // tell survived precisely where it mattered most.
                     this.next_change = Date.now() + 1500 + Math.random() * 2000;
                     this.next_look_back = this.next_change + 2500 + Math.random() * 4500;
+                    this.gaze_started = false;   // scheduled, not yet run
                 }
             } else if (!target && !rconTarget) {
                 this.last_entity = null;
+                this.gaze_started = false;
             }
+            // gaze_started means "a gaze has actually RUN", not "one is
+            // scheduled". Setting it here - at acquisition, while next_change is
+            // still in the future - was the bug: the gap check immediately below
+            // sees a future next_look_back and switches the gaze off on the very
+            // tick it began. Measured state: gaze_started=true with staring=false
+            // on every tick, and she never looked at anyone.
+            //
+            // It is therefore set where the gaze is ACTED ON (the next_change
+            // branch), so the gap can only interrupt a gaze that already happened.
+            if (!this.staring) this.gaze_started = false;
 
             // Honour the away-gap: between looking at a person and looking back,
             // she looks somewhere else. Without this the shorter hold above would
             // just re-acquire the instant it expired, which is a faster version of
             // the same 24/7 staring.
-            if (this.staring && this.next_look_back && Date.now() < this.next_look_back
-                && isPlayer) {
+            // The gap only applies to a gaze that has ALREADY STARTED. Without
+            // that guard this check ran on the same tick the target was acquired:
+            // next_look_back is ~4-10s in the future, so `now < next_look_back` was
+            // true immediately and staring was set false in the same breath - the
+            // gaze lasted exactly zero ticks. Measured: after one tick staring=false
+            // with last_entity already set, and because last_entity stayed set the
+            // re-arm could never fire either, so she never looked at anyone again.
+            // No `isPlayer` guard: mobs run the same cycle now, and with it left on
+            // a mob's gap could neither fire nor expire - she would look at a cow
+            // and never look away. The guard only ever existed to shorten the old
+            // 6-10s person lock-on, which no longer exists.
+            if (this.staring && this.gaze_started && this.next_look_back
+                && Date.now() < this.next_look_back) {
                 this.staring = false;
+            }
+            // The gap has ELAPSED: let her look back. Clearing last_entity here is
+            // what makes the behaviour resume - while it stayed set, the re-arm
+            // (`target !== this.last_entity`) could never fire for the same nearby
+            // player, so she looked once and was then never allowed to look at them
+            // again. Measured symptom: 0 emissions of !lookAtPlayer, and the owner
+            // reporting she never looks at players. The gap still prevents
+            // CONTINUOUS staring, because re-acquiring computes a fresh one.
+            if (this.next_look_back && Date.now() >= this.next_look_back) {
+                this.next_look_back = 0;
+                this.gaze_started = false;
+                if (this.last_entity) this.last_entity = null;
             }
             if ((target || rconTarget) && this.staring) {
                 // 26.3: stare via throttled lookAt (max 1 head-turn per 600ms
@@ -710,11 +757,61 @@ const modes_list = [
                 this.last_entity = null;
 
             if (Date.now() > this.next_change) {
-                // RCON-truth holds the person-priority: a server-confirmed
-                // player nearby keeps the stare 80% of the time even with no
-                // entity rendered; true emptiness falls back to mob odds.
+                // ── NO PER-WINDOW COIN FLIP FOR A PERSON ──────────────────
+                // This used to be: staring = Math.random() < (personNear ? 0.8 :
+                // 0.3), with next_change reset to now + 2-12s.
+                //
+                // That roll was the actual reason she never looked at players,
+                // and it was fighting the hold set on target acquisition: the
+                // 1.5-3.5s gaze was overwritten within a tick or two, and then a
+                // fresh coin toss decided whether to look at all. It also
+                // overwrote next_change, so the look-back gap was erased before it
+                // could act. Measured: staring=false on every tick despite a target
+                // being acquired and gaze_started correctly true.
+                //
+                // The roll is also the yandere shape - a probabilistic lock-on. A
+                // player does not re-decide every few seconds whether to keep
+                // looking at someone; they glance, look away, look back. The CYCLE
+                // is the behaviour, so for a person the cycle is deterministic and
+                // the randomness moves to its LENGTHS (below), where it belongs.
+                //
+                // Mobs keep the roll: watching a creeper is genuinely optional, so
+                // it stays a choice rather than a commitment.
+                // A MOB IS ALSO WORTH A LOOK. The owner: "that goes for mobs btw,
+                // maybe she sees a mob around so she looks at it". So the mob
+                // branch is no longer a 30% coin flip with a 2-12s window - it runs
+                // the same glance/away/look-back cycle, just shorter. The 30% roll
+                // is kept only as the reason to look at all, which is the one
+                // genuinely optional decision when nothing needs watching.
                 const personNear = isPlayer || !!rconTarget;
-                this.staring = Math.random() < (personNear ? 0.8 : 0.3);
+                if (personNear) {
+                    this.staring = true;
+                    // The gaze is being ACTED ON now, so it has run. This is the
+                    // only place gaze_started becomes true, which is what makes the
+                    // gap mean "looked, now looking away" rather than "about to
+                    // look".
+                    this.gaze_started = true;
+                    // A glance, not a lock-on: 1.5-3.5s on, 2.5-7s looking
+                    // elsewhere, then look back. Same shapes as acquisition, so
+                    // there is exactly one definition of the cycle.
+                    this.next_change = Date.now() + 1500 + Math.random() * 2000;
+                    this.next_look_back = this.next_change + 2500 + Math.random() * 4500;
+                } else if (nearestMob) {
+                    // A mob nearby: she looks at it, on the same cycle as a person
+                    // but shorter (1-2.5s, then 2-6s elsewhere). Same shape, less
+                    // patience - which is what watching something that might come
+                    // at you actually looks like.
+                    this.staring = true;
+                    this.gaze_started = true;
+                    this.next_change = Date.now() + 1000 + Math.random() * 1500;
+                    this.next_look_back = this.next_change + 2000 + Math.random() * 4000;
+                } else {
+                    // Nothing to look at. Gaze ends, and the next acquisition
+                    // starts a fresh cycle.
+                    this.staring = false;
+                    this.gaze_started = false;
+                    this.next_change = Date.now() + Math.random() * 10000 + 2000;
+                }
                 if (!this.staring) {
                     // 26.3: glance-away goes through the same throttled lookAt
                     // path (see physics.js) — safe with players near.
@@ -722,7 +819,6 @@ const modes_list = [
                     const pitch = (Math.random() * Math.PI / 2) - Math.PI / 4;
                     bot.look(yaw, pitch, false);
                 }
-                this.next_change = Date.now() + Math.random() * 10000 + 2000;
             }
         }
     },
@@ -1334,6 +1430,11 @@ class ModeController {
 
     exists(mode_name) {
         return modes_map[mode_name] != null;
+    }
+
+    /** The mode object itself, for callers that need its state (and for tests). */
+    get(mode_name) {
+        return modes_map[mode_name] || null;
     }
 
     setOn(mode_name, on) {

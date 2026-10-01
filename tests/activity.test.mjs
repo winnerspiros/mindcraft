@@ -73,8 +73,10 @@ const CONTENT = { hunger: 20, hp: 20, inventory: { food: 64, torch: 64, tool: 1,
         'being looked at with nothing interesting does NOT stop her',
         'an uninteresting look froze her - that is the "if nothing interesting, continue" clause');
 
-    // "if nothing intresting continue" -> with something interesting, she engages
-    const interesting = chooseActivity({ ...CONTENT, attention: true, attention_interesting: true });
+    // "if nothing intresting continue" -> with something interesting she ENGAGES...
+    // ...but only ENGAGE_INTERRUPT_RATE of the time, because she is self-centered
+    // and her own goals outrank interaction. Pinned so this is deterministic.
+    const interesting = chooseActivity({ ...CONTENT, attention: true, attention_interesting: true, rand: () => 0.0 });
     check(interesting.activity === ACTIVITY.ANSWER_ATTENTION,
         'an interesting look -> she engages', `got ${interesting.activity}`);
 }
@@ -88,10 +90,30 @@ const CONTENT = { hunger: 20, hp: 20, inventory: { food: 64, torch: 64, tool: 1,
         `got ${nearly.activity}`);
     check(hungry.activity === ACTIVITY.EAT, 'at the cutoff she eats', `got ${hungry.activity}`);
 
-    // attention outranks hunger: a person is more important than food
-    const both = chooseActivity({ ...CONTENT, hunger: 2, attention: true, attention_interesting: true });
-    check(both.activity === ACTIVITY.ANSWER_ATTENTION, 'a person outranks being hungry',
-        `got ${both.activity}`);
+    // A person CONSIDERED ahead of an idle activity - but not always taken.
+    // She is self-centered, so interrupting what she is doing for someone is a
+    // cost she pays ENGAGE_INTERRUPT_RATE of the time, not every time. The old
+    // assertion ("a person outranks being hungry", written when attention always
+    // won) was flaky by construction and that flakiness was the signal.
+    //
+    // Pinned rand, so this is deterministic, and both outcomes are asserted:
+    // inside the rate she engages, outside it she carries on. What must never
+    // happen is losing track of the person entirely.
+    const engage = chooseActivity({ ...CONTENT, attention: true, attention_interesting: true, rand: () => 0.0 });
+    const skip = chooseActivity({ ...CONTENT, attention: true, attention_interesting: true, rand: () => 0.99 });
+    check(engage.activity === ACTIVITY.ANSWER_ATTENTION, 'an interesting person does get answered',
+        `got ${engage.activity}`);
+    check(skip.activity !== ACTIVITY.ANSWER_ATTENTION,
+        'and is NOT always answered - her own work wins the rest of the time',
+        `got ${skip.activity} (she is not self-centered)`);
+    check(/noted|back_to_it|looking/.test(skip.why) || skip.activity === ACTIVITY.EXPLORE,
+        'but she notes them and carries on rather than ignoring them',
+        `got ${skip.activity} (${skip.why})`);
+
+    // and hunger still wins over engaging when she is genuinely starving
+    const starving = chooseActivity({ ...CONTENT, hunger: 2, attention: true, attention_interesting: true, rand: () => 0.99 });
+    check(starving.activity === ACTIVITY.EAT, 'a starving player eats, whatever is going on',
+        `got ${starving.activity}`);
 
     // but hunger still beats a half-built wall
     const wall = chooseActivity({ ...CONTENT, hunger: 2, nearby_build: true });
