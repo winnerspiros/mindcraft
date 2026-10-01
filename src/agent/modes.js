@@ -791,6 +791,10 @@ const modes_list = [
         interrupts: [],
         on: true,
         active: false,
+        // Cooldowns are read lazily in update(), not here: modes_list is a
+        // module-level const built at import time, which happens BEFORE
+        // standalone.js calls setSettings() - so settings is still {} at this
+        // point and touching it here crashed the bot on boot.
         cooldown: 180000, // min ms between bed follow-ups
         last_follow: 0,
         update: async function (agent) {
@@ -805,6 +809,12 @@ const modes_list = [
             const now = Date.now();
             if (now - agent._sleeper_time > 30000) return; // nobody recently went to bed
             if (!agent.isIdle()) return; // work-respect: never pull her off a dig/fight for bed
+            // Config is read HERE, not where this object is defined: modes_list is
+            // built at import time, before setSettings() injects the config, so
+            // settings.* is undefined at definition time. Reading it in update()
+            // is both correct and what makes the cooldown configurable live.
+            const cfgCd = settings.mode_cooldowns?.sleep_together;
+            if (typeof cfgCd === 'number') this.cooldown = cfgCd;
             if (now - this.last_follow < this.cooldown) return;
             const name = agent._last_sleeper;
             if (!name) return;
@@ -862,6 +872,8 @@ const modes_list = [
                 if (name !== agent.name) return; // someone online — don't skip their night
             if (bot.isSleeping) return;
             const now = Date.now();
+            const cd = settings.mode_cooldowns?.sleep_alone;
+            if (typeof cd === 'number') this.cooldown = cd;
             if (now - this.last_try < this.cooldown) return;
             this.last_try = now;
             execute(this, agent, async () => {
@@ -890,6 +902,8 @@ const modes_list = [
             const bot = agent.bot;
             if (!agent.isIdle() || bot.pathfinder.goal) return;
             const now = Date.now();
+            const cd = settings.mode_cooldowns?.seek_company;
+            if (typeof cd === 'number') this.cooldown = cd;
             if (now - this.last_seek < this.cooldown) return;
             // someone already close — nothing to do (stare/chat take it).
             // 26.3 RCON-truth: entity scans miss players the server withholds

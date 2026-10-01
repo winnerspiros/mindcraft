@@ -32,7 +32,7 @@ export class ReflectiveMemory {
         this.enabled = settings.reflection_memory !== false;
         this.interval = settings.reflection_interval || 15;
         this.recall_count = settings.reflection_recall_count || 5;
-        this.max_memories = 200;
+        this.max_memories = settings.reflection_max_memories || 200;
         this.fp = `./bots/${agent.name}/reflections.json`;
 
         this.memories = [];   // [{ id, text, embedding? }]
