@@ -963,7 +963,15 @@ export class Agent {
             if (!isYandere() && message.length > 55) {
                 const { fragmentForChat } = await import('../utils/chat_fragment.js');
                 const parts = fragmentForChat(message);
-                if (parts && parts.length > 1) {
+                // Take the result even when it is a SINGLE fragment. The old
+                // `parts.length > 1` guard meant a reply that could only be cut
+                // at one boundary came back as ["short first clause"] - one
+                // element - and the whole guarded block was skipped, so the
+                // ORIGINAL 19-22 word message went out untouched. That is why
+                // every live line was over the cap: the cap existed, was tested,
+                // and never ran. A single safe fragment is still the capped
+                // version and must still be sent instead of the original.
+                if (parts && parts.length) {
                     message = parts[0];
                     const rest = parts.slice(1);
                     console.log(`${this.name} [fragment] ${parts.length} lines: ${JSON.stringify(parts)}`);
