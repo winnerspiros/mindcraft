@@ -1134,7 +1134,7 @@ export class Agent {
         if (!isYandere()) {
             try {
                 const { ChatBudget } = await import('../utils/chat_budget.js');
-                const { checkLength } = await import('../utils/length_rule.js');
+                const { checkLength, lengthGuidance } = await import('../utils/length_rule.js');
                 this._budget ||= new ChatBudget();
                 const gate = this._budget.canSpeak({
                     now: Date.now(),
@@ -1151,7 +1151,11 @@ export class Agent {
                 // words as well as sentences (p90 is 16 words).
                 const len = checkLength(message);
                 if (!len.ok) {
+                    // Tell her WHY it was dropped, so the next attempt is a
+                    // shorter one rather than the same wall of text again.
                     console.log(`${this.name} [length:${len.why}] dropped ${len.words}w/${len.sentences}s: ${String(message).slice(0, 60)}`);
+                    this.history.add('system', lengthGuidance());
+                    this.history.save();
                     return;
                 }
                 this._budget.note(message);
