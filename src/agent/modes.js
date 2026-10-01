@@ -1056,6 +1056,21 @@ const modes_list = [
                         + Math.random() * (this.cooldown_max_normal - this.cooldown_min_normal);
                     return;
                 }
+                // ROOM AWARENESS. Being one of 2-3 people means she is not the
+                // host of the room, and two humans talking to each other are not
+                // her conversation to join mid-thread. She defers and lets them
+                // finish. The exemption is being addressed BY NAME: a direct
+                // question outranks etiquette, and real people answer those even
+                // mid-argument - deferring there would be the bigger tell.
+                let humansTalking = false;
+                try {
+                    humansTalking = !!(agent.self_prompter
+                        && agent.self_prompter.humanExchangeInProgress());
+                } catch (_) { humansTalking = false; }
+                if (humansTalking && !addressedByName) {
+                    this.next_start = now + 20000 + Math.random() * 25000;
+                    return;
+                }
             }
             // WORK-RESPECT (2026-09-27: this mode interrupted !collectBlocks
             // mid-dig — "click one block and leave" — because interrupts:['all']
