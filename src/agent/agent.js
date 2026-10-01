@@ -1034,6 +1034,25 @@ export class Agent {
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
         }
 
+        // ── THE ONE HARD LIMIT, IN CODE ────────────────────────────────────
+        // The persona licenses all of it: swearing, dark jokes, "die bitch",
+        // crude sexual jokes, insults. That is allowed and is what makes her
+        // read as a person. But the prompt is advice, and the surrounding
+        // register is now "say the worst thing you can think of" - which is
+        // the shape of instruction that eventually produces the one thing it
+        // was told to avoid. So the identity attack is enforced here, where
+        // the model cannot argue with it. Everything else passes untouched.
+        if (!isYandere()) {
+            try {
+                const { scrubIdentitySlur } = await import('../utils/identity_slur.js');
+                const scrubbed = scrubIdentitySlur(message);
+                if (!scrubbed.clean) {
+                    console.warn(`${this.name} [identity-slur] blocked: ${scrubbed.hits.join(', ')}`);
+                    return;
+                }
+            } catch (e) { console.warn('[identity-slur] failed open:', e.message); }
+        }
+
         // ── MIRRORING OBSERVER ─────────────────────────────────────────────
         // The owner: "when you talk you dont necessarily [need a response] for
         // responses. you can continue on your saying, change subject etc." The
