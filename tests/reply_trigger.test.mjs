@@ -154,6 +154,33 @@ for (const m of ['lol', 'lmao', 'gg', 'brb', 'ok', 'nice one', 'haha']) {
         'being named mid-thread still wins', 'ignored a direct call mid-thread');
 }
 
+// ── REGRESSION: she was spoken to and did not answer ────────────────────
+//
+// Live journal, 18:39:55:
+//   UwU received message from YandereDev : uwu
+//   UwU [trigger:nobody_here] not for me (0 human(s) here): uwu
+//
+// _visibleHumanCount() counts players within 16 BLOCKS, so a player further away
+// read as "nobody is here" and she stayed silent. The logical error underneath:
+// proximity is a proxy for who is in the ROOM, and it was being used as
+// evidence that a message had no AUTHOR. A message from a named human HAS an
+// author, full stop.
+{
+    const v = shouldReplyTo({ message: 'uwu', visible_humans: 0, has_real_sender: true, addressed: true });
+    check(v.reply, 'a message from a real sender is never nobody_here', `ignored: ${v.why}`);
+    check(v.why !== 'nobody_here', 'the reason is not nobody_here', `reason was ${v.why}`);
+
+    // control: a synthetic turn with nobody around is still nobody_here
+    const syn = shouldReplyTo({ message: 'anything', visible_humans: 0 });
+    check(!syn.reply && syn.why === 'nobody_here', 'a synthetic turn with nobody online is still nobody_here',
+        `synthetic turn gave ${syn.why}`);
+
+    // an unaddressed real message gets a MODE, it is not dropped
+    const un = shouldReplyTo({ message: 'im coming', visible_humans: 0, has_real_sender: true });
+    check(un.reply || un.mode === 'ignore', 'an unaddressed message from a real sender gets a mode',
+        `dropped: ${JSON.stringify(un)}`);
+}
+
 // ── alone: nothing to reply to ───────────────────────────────────────────
 {
     const v = shouldReplyTo({ visible_humans: 0, addressed: false, human_exchange: false, message: 'im coming' });

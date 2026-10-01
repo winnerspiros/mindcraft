@@ -139,7 +139,10 @@ export function shouldReplyTo(ctx) {
 
     // Callers pass the count because they already have the entity list;
     // recomputing it here would duplicate the 26.3 stale-tablist handling.
-    const humans = Math.max(0, Number(ctx?.visible_humans) || 0);
+    // let, not const: a real sender with nobody else nearby is coerced to a dyad
+    // of one below. `const` here was a runtime TypeError, and a parse check
+    // cannot see that class of bug.
+    let humans = Math.max(0, Number(ctx?.visible_humans) || 0);
 
     // She is at the toilet / dinner / watching youtube. A person who has left
     // the computer does not answer, and that is the single most human thing a
@@ -149,7 +152,19 @@ export function shouldReplyTo(ctx) {
     // A message cannot be for her when nobody is here to have sent it. Without
     // this, 0 fell through to the dyad branch below and she replied into an
     // empty server.
-    if (humans === 0) return { reply: false, why: 'nobody_here' };
+    //
+    // But "nobody is here" is a statement about the ROOM, and it must not
+    // override the fact that somebody just spoke. A real sender is a human
+    // present, by definition - the live bug was a player messaging her from
+    // across the map (>16 blocks) and getting silence, because proximity was
+    // treated as evidence that no one had sent anything. Only synthetic turns
+    // (a system or self prompt) can be nobody-here.
+    if (humans === 0 && !ctx?.has_real_sender) return { reply: false, why: 'nobody_here' };
+    // A real sender and nobody else nearby IS a dyad of one, not a group. Without
+    // this, an unaddressed message from the only player on the server fell to the
+    // GROUP branch and came back as group_not_addressed - a different bug from the
+    // same root cause (treating the proximity count as the whole story).
+    if (humans === 0 && ctx?.has_real_sender) humans = 1;
 
     if (ctx?.addressed) {
         return { reply: true, why: humans === 1 ? 'addressed_in_dyad' : 'addressed_by_name' };

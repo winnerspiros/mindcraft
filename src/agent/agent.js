@@ -826,6 +826,7 @@ export class Agent {
         // she said NOTHING. Two gates each behaving correctly on their own and
         // together producing silence. A continuer is the right reply to someone
         // talking past you, never to someone calling your name.
+        let _hasRealSenderFlag = false;
         const addressedByName = (() => {
             try { return new RegExp(`\\b${this.name}\\b`, 'i').test(String(message || '')); }
             catch (_) { return false; }
@@ -838,7 +839,14 @@ export class Agent {
         if (!self_prompt && !from_other_bot) {
             try {
                 const { shouldReplyTo } = await import('../utils/reply_trigger.js');
-                const _n = this._visibleHumanCount();
+                // A real, named sender means a human IS present. Proximity (16
+                // blocks) is a proxy for who is in the room, not evidence that a
+                // message has no author - and treating it that way is the live
+                // bug where she was spoken to from across the map and stayed
+                // silent. Only synthetic turns (system/self) may be nobody_here.
+                const _hasRealSender = !self_prompt && source !== 'system' && source !== this.name;
+                const _n = _hasRealSender ? Math.max(1, this._visibleHumanCount()) : this._visibleHumanCount();
+                _hasRealSenderFlag = _hasRealSender;
                 // Directional addressing: a message that named somebody OTHER
                 // than her is not an announcement, and if the same person speaks
                 // again immediately they are still talking to that person. The
@@ -867,6 +875,7 @@ export class Agent {
                     message,
                     present: !this._life?.isAway,
                     visible_humans: _n,
+                    has_real_sender: _hasRealSenderFlag,
                     addressed: addressedByName,
                     human_exchange: !!(this.self_prompter
                         && this.self_prompter.humanExchangeInProgress()),
