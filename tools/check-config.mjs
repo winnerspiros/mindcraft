@@ -45,21 +45,20 @@ const BOOT_READ = new Set([
     'init_message', 'mindserver_port', 'auto_open_ui', 'profile',
 ]);
 
+// Known-dead keys, with the commit that superseded each. Annotated in
+// settings.js; listed here so they are not rediscovered as new warnings.
+const KNOWN_DEAD = {
+    self_prompt_requires_players: 'superseded by two-gear autonomy (89e384c)',
+};
+
 console.log(`\nsettings.js — ${declared.length} keys\n`);
-console.log('unread keys (declared but never read):');
-let unread = 0;
-for (const k of declared) {
-    if (used.has(k) || BOOT_READ.has(k)) continue;
-    console.log(`  DEAD   ${k}`);
-    unread++;
+const unread = declared.filter((k) => !used.has(k) && !BOOT_READ.has(k));
+for (const k of unread) {
+    console.log(`  DEAD   ${k}${KNOWN_DEAD[k] ? ` (known: ${KNOWN_DEAD[k]})` : ''}`);
 }
-if (!unread) console.log('  (none)');
-else if (unread === 1 && declared.includes('self_prompt_requires_players')) {
-    // Known: replaced by two-gear autonomy (89e384c). Annotated in settings.js.
-    console.log('  DEAD   self_prompt_requires_players (known; superseded by two-gear autonomy)');
-} else {
-    warn(`${unread} key(s) do nothing — remove them or wire them up`);
-}
+if (!unread.length) console.log('  (none)');
+const unknown = unread.filter((k) => !KNOWN_DEAD[k]);
+if (unknown.length) warn(`${unknown.length} unread key(s) do nothing: ${unknown.join(', ')}`);
 
 // --- 2. types must match ----------------------------------------------------
 // Anything explicitly listed as boolean must actually be boolean. A string
