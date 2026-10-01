@@ -975,6 +975,12 @@ const modes_list = [
     },
     {
         name: 'conversation_starter',
+        // Normal persona does NOT use this to fill silence. A human who is
+        // playing does not narrate their own mood to nobody ("you feel chatty")
+        // every 90 seconds - that is the framework talking through the bot. In
+        // normal mode she only speaks when she has a real reason: someone
+        // spoke to her, or something happened that is actually worth saying.
+        // See conversation_starter gate below for the normal branch.
         description: 'Occasionally start a conversation with a nearby player and ask personal/getting-to-know-you questions, in character.',
         interrupts: [],
         on: true,
@@ -982,11 +988,57 @@ const modes_list = [
         last_start: 0,
         cooldown_min: 90000,  // 90s — she was silent for hours with players 20 blocks away; talk first, courtship needs contact
         cooldown_max: 240000,  // up to 4 min
+        // Normal persona: far lazier. A real player opens their mouth when
+        // something happens, not on a timer. Yandere keeps the courtship
+        // cadence (she is built to seek you out); normal gets a long, jittered
+        // window so she reads as someone who happens to talk when there's a
+        // reason, not a bot on a schedule.
+        cooldown_min_normal: 240000,   // 4 min floor
+        cooldown_max_normal: 900000,   // up to 15 min
         next_start: 0,
         update: async function (agent) {
             const bot = agent.bot;
             const now = Date.now();
             if (now < this.next_start) return; // schedule-based: only fire after a random wait
+
+            // ── NORMAL PERSONA GATE ──────────────────────────────────────
+            // Nobody feels chatty by default. In normal mode this mode must
+            // have a REAL trigger or it does nothing:
+            //   1. someone spoke to her recently, or
+            //   2. something just happened that is worth reporting
+            //      (damage, a death, finishing/losing something).
+            // Without this she fires on a 90s timer and narrates her mood into
+            // public chat - "You feel chatty" is the agent's state leaking
+            // into the transcript, and it is the single most bot-like sentence
+            // the stack can produce.
+            const normal = !isYandere();
+            if (normal) {
+                const recentlySpokeTo = (() => {
+                    try {
+                        const h = agent.history && agent.history.getHistory ? agent.history.getHistory() : [];
+                        const real = h.filter((m) => m && m.role === 'user'
+                            && !/^\(AUTO/.test(String(m.content || '').trim()));
+                        const last = real[real.length - 1];
+                        return last ? (Date.now() - (last.__at || Date.now()) < 10 * 60 * 1000) : false;
+                    } catch (_) { return false; }
+                })();
+                const eventWorthSaying = (agent._lastNotableEvent && Date.now() - agent._lastNotableEvent.at < 3 * 60 * 1000);
+                const addressedByName = (() => {
+                    try {
+                        const h = agent.history && agent.history.getHistory ? agent.history.getHistory() : [];
+                        const real = h.filter((m) => m && m.role === 'user'
+                            && !/^\(AUTO/.test(String(m.content || '').trim()));
+                        const last = real[real.length - 1];
+                        return !!(last && new RegExp(`\\b${agent.name}\\b`, 'i').test(String(last.content || '')));
+                    } catch (_) { return false; }
+                })();
+                if (!recentlySpokeTo && !eventWorthSaying && !addressedByName) {
+                    // No reason to speak. Stay quiet and try again later.
+                    this.next_start = now + this.cooldown_min_normal
+                        + Math.random() * (this.cooldown_max_normal - this.cooldown_min_normal);
+                    return;
+                }
+            }
             // WORK-RESPECT (2026-09-27: this mode interrupted !collectBlocks
             // mid-dig — "click one block and leave" — because interrupts:['all']
             // fires whenever she stands near the requester. Chatting never
@@ -1020,10 +1072,19 @@ const modes_list = [
 
             const name = player.username || player.name;
             execute(this, agent, async () => {
-                const prompts = [
+                // Normal persona: a real player opens with something about the
+                // moment or what she is doing, not a getting-to-know-you
+                // interview. "what are you building" lands; "tell me about your
+                // dreams" reads as a dating sim NPC. Stay grounded in the
+                // actual scene so the line is about something real.
+                const prompts = isYandere() ? [
                     `Ask ${name} a personal, getting-to-know-you question in character (hobbies, favourite things, dreams, love life). Be curious and flirty, as a yandere who wants to know everything about someone she likes.`,
                     `Strike up conversation with ${name} — sweet, nosy, a little possessive. Ask something about them that shows you've been paying attention.`,
                     `Tease ${name} playfully and ask how their day is. Keep it cute and in character.`,
+                ] : [
+                    `Say something to ${name} about what you are both doing right now - what you are building, where you are, what just happened. Keep it to one short line, in character. Never open with a greeting and never ask how they are. If nothing specific is going on, stay quiet instead of forcing it.`,
+                    `Ask ${name} a casual one-liner about whatever they are working on. Not an interview, not personal questions - just what they're up to. One short line.`,
+                    `${name} is nearby. If you have something genuinely worth saying to them right now, say it in one short line, and make it about what is actually going on. Otherwise stay quiet - real players do not talk just to talk, and if all you have is "hi, how are you" then say nothing.`,
                 ];
                 const p = prompts[Math.floor(Math.random() * prompts.length)];
                 agent.handleMessage('system', `(AUTO) You feel chatty. ${p}`);
