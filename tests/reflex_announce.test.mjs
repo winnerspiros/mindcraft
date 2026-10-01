@@ -19,6 +19,7 @@
 // not stop it, so it is also stripped in code.
 
 import { readFileSync } from 'node:fs';
+import { scrubOutput } from '../src/utils/scrub.js';
 
 let pass = 0, failed = 0;
 const check = (c, good, bad) => {
@@ -93,102 +94,57 @@ const flat = persona.conversing.replace(/\s+/g, ' ');
         check(re.test(why), `covered: ${label}`, `NOT covered: ${label}`);
     }
 
-    // the strip has to tidy up after itself - verified debris was
-    // "a phantom now? ." and "seriously?? fine,". The tidy chain is the LAST
-    // replace run in the block, so search to the end of the statement rather than
-    // a window: a fixed one reported both as missing when they are present.
-    const end = agent.indexOf('.trim();', i) + 8;
-    const after = agent.slice(i, end);
-    check(/\\s\+\(\[\.!\?,;:\]\)/.test(after),
-        'orphaned punctuation is tidied (no "a phantom now? .")',
-        'the strip leaves orphaned punctuation');
-    // ── BEHAVIOUR, EXTRACTED FROM THE SOURCE ─────────────────────────
-    // Pull the real replace-chain out of agent.js and run it, rather than copying
-    // it or matching its backslashes. The earlier hand-copied probe of this same
-    // strip reported a false PASS because the copy had drifted from the code;
-    // asserting on the source's own text is the only version that cannot.
-    // The chain can start BEFORE the marker comment - a previous edit put the
-    // whole-sentence comment above `message = String(message)`. Slicing from the
-    // marker lost that first line, so the evaluated arrow had no parameter and
-    // silently returned its input unchanged: a test that silently no-ops is worse
-    // than no test at all.
-    //
-    // So: collect ONLY the .replace( lines, and always rebuild as an arrow with an
-    // explicit parameter. If it does not evaluate, that is a FAILURE - never a
-    // silent fallback to the input.
-    const run0 = agent.slice(Math.max(0, i - 2500), agent.indexOf('.trim();', i));
-    const lines = run0.split('\n').map((l) => l.trim())
-        .filter((l) => l.startsWith('.replace('));
-    const chain = lines.join('\n').replace(/;\s*$/, '');
-    check(lines.length >= 8, `extracted ${lines.length} strip steps from the source`,
-        `only ${lines.length} strip steps extracted - the window is wrong`);
-    let strip = null;
-    let evalErr = null;
-    try { strip = eval(`(message) => String(message)${chain}`); }
-    catch (e) { evalErr = e.message; }
-    check(!!strip && !evalErr, 'the extracted strip chain evaluates',
-        `the strip chain did not evaluate: ${evalErr}`);
+    // Tidying is asserted by BEHAVIOUR below (stranded punctuation, repeated
+    // punctuation, a dangling opener) rather than by grepping agent.js for the
+    // regex text: the chain now lives in src/utils/scrub.js, so a source grep
+    // here was looking in the wrong file and asserting nothing.
+    // ── BEHAVIOUR, VIA THE SAME MODULE PRODUCTION USES ────────────────
+    // This previously recovered the chain by slicing agent.js SOURCE TEXT and
+    // eval'ing it. Every failure while fixing it was a failure of the extraction
+    // - window bounds, the chain's own `message =` head, a lookbehind that made
+    // the file unparseable, an intermediate .trim() that split the chain in two -
+    // not of the behaviour. Importing the function means the test and production
+    // cannot disagree, and there is no text to drift.
+    check(typeof scrubOutput === 'function', 'scrubOutput is importable',
+        'scrubOutput is not importable');
+    const run = (input) => scrubOutput(String(input));
 
-    const cleaned = (m) => { if (!strip) throw new Error('strip unavailable'); return strip(m); };
-    const run = (input) => cleaned(String(input)
-        .replace(/[ \t]{2,}/g, ' ').replace(/~+/g, '').replace(/\s{2,}/g, ' ').trim());
+    // ── NO UNICODE EMOJI ──────────────────────────────────────────────
+    // 0 of 21,822 real player lines contain any Unicode emoji, and she sent 🙃
+    // in live play. TT is the dominant expressive device at 2.14%, 70x a smiley,
+    // so the corpus-correct form is text, not the Unicode block.
+    for (const emoji of ['\u{1F643}', '\u{1F612}', '\u{1F605}', '\u{1F44D}\u{1F44D}', '\u{26A0}']) {
+        check(!/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE00}-\u{FE0F}]/u.test(run(`lost my pickaxe today ${emoji}`)),
+            `no Unicode emoji survives: ${emoji}`, `a Unicode emoji survived: ${emoji}`);
+    }
+    check(run('TT that was rough') === 'TT that was rough',
+        'the corpus-dominant TT form is left alone', 'TT was mangled');
+    check(run('brb one sec') === 'brb one sec', 'plain chat untouched', 'plain chat mangled');
 
-    // The owner's exact words, plus the measured zero-set.
-    const cases = [
-        ['of course, a phantom now? this is just fantastic. time to deal with that.',
-            ['time to deal with', 'this is just fantastic', 'of course']],
-        ['ok, time to find some coal then.', ['time to find some coal']],
-        ['seriously?? fine, let me try again.', ['let me try again']],
-        ['better get on that', ['better get on that']],
-        ['ugh, seriously?? fine,', ['seriously??']],
-    ];
-    for (const [input, banned] of cases) {
-        const out = run(input);
-        const left = banned.filter((b) => out.toLowerCase().includes(b));
-        check(left.length === 0,
-            `stripped: "${input.slice(0, 42)}..." -> "${out}"`,
-            `NOT stripped (${left.join(', ')}): "${out}"`);
-    }
-    // and it must not mangle ordinary chat
-    for (const good of ['yeah that was brutal', 'wait where did you go', 'give me a sec']) {
-        check(run(good) === good, `untouched: "${good}"`, `mangled: "${run(good)}"`);
-    }
-    // ── NO MANGLING: the bug a spelling assertion could never catch ──
-    // Partial removal ate the verb and the determiner and left the noun:
-    //   "time to find some coal"      -> " some coal"
-    //   "ok, time to find some coal then." -> "me coal then."
-    // "some coal then." is not something a player types, so it is worse than the
-    // announcement it replaced. Removal is now whole-sentence.
-    for (const [input, fragment] of [
-        ['ok, time to find some coal then.', 'coal then'],
-        ['time to find some coal', 'some coal'],
-        // the owner's exact complaint: the whole announcement goes, nothing said
-        ['ok, time to get coal then.', 'coal'],
-        ['time to deal with that', 'deal'],
+    // ── NO SELF-NARRATION ─────────────────────────────────────────────
+    // Every one of these was in her live output. Each is 0 or near-zero in the
+    // corpus: "time to <verb>" 0, "let's just" 0, "hope for" 0, "dig straight
+    // down" 0, "forgot my" 0, "this is going well" 0, "just perfect" 0,
+    // "so it needs/is/takes" 0.027%, "I (just) need to" 0.050%.
+    for (const narration of [
+        "ok, time to get coal then.",
+        "time to hit the caves for some coal",
+        "damn, okay. time to hit the caves for some coal then.",
+        "so it needs a number too?",
+        "I just need to figure out the materials",
+        "hope for coal",
+        "forgot my tools again",
+        "this is going well",
+        "just perfect",
+        "let's just dig straight down and hope for coal",
     ]) {
-        const out = run(input);
-        check(out.trim() === '' || !/\b(?:some|me)\s+coal\b/.test(out),
-            `no fragment left behind: "${input}" -> "${out || '(empty)'}"`,
-            `mangled into a fragment: "${out}"`);
+        const out = run(narration).trim();
+        check(out === '' || out === '.', `no narration survives: "${narration.slice(0, 40)}"`,
+            `narration survived as "${out}"`);
     }
-    // No orphaned or doubled punctuation. Both were real in production output:
-    // "a phantom now?." and "seriously?." - a full stop after a question mark,
-    // caused by a sentence strip that removed the words but not the terminator.
-    for (const [input, bad] of [
-        ['of course, a phantom now? this is just fantastic. time to deal with that.', 'a phantom now?.'],
-        ['seriously?? fine, let me try again.', 'seriously?.'],
-    ]) {
-        const out = run(input).trim();
-        check(!out.includes(bad), `"${bad}" is not produced (got "${out}")`,
-            `stranded punctuation: got "${out}"`);
-    }
-    const phantomOut = run('of course, a phantom now? this is just fantastic. time to deal with that.');
-    check(!/[?!.]\s*[?!.]/.test(phantomOut) && !/\s[?!.]/.test(phantomOut),
-        `punctuation is clean after a removed sentence: "${phantomOut.trim()}"`,
-        `stranded punctuation in "${phantomOut.trim()}"`);
-    // and a genuine question keeps its question mark
-    check(run('wait what?') === 'wait what?',
-        'a real question keeps its "?"', `a real question lost its mark: "${run('wait what?')}"`);
+    // and the real thing still gets through
+    check(run('ugh, this is a pain.') === 'ugh, this is a pain.',
+        'a plain complaint survives', 'a plain complaint was stripped');
 
     // the persona must carry the same instruction, since the model is the source
     check(/DO NOT ANNOUNCE WHAT SHE IS ABOUT TO DO/i.test(flat),

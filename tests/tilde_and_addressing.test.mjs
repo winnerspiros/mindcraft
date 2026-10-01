@@ -22,6 +22,7 @@
 // content.
 
 import { readFileSync } from 'node:fs';
+import { scrubOutput } from '../src/utils/scrub.js';
 
 // Source with comments removed. All three of these checks initially failed
 // against comment text: the source quotes `bot.on('chat', ...)` and "mm~" in the
@@ -41,13 +42,21 @@ const check = (cond, good, bad) => {
 
 // ── the strip is real and it is in the right place ─────────────────────
 {
+    // The tilde regex now lives in src/utils/scrub.js; agent.js calls
+    // scrubOutput(message). What still matters - and is what this always meant to
+    // check - is ORDER: the scrub has to happen before checkLength, so the gates
+    // judge the text the player will actually see. Grepping agent.js for the
+    // regex reported "no tilde strip exists" once the chain was extracted.
     const agent = CODE;
-    const strip = agent.indexOf("replace(/~+/g, '')");
+    const scrub_ = agent.indexOf('scrubOutput(message)');
     const check_ = agent.indexOf('checkLength(message)');
-    check(strip > 0, 'the tilde is stripped in the send path', 'no tilde strip exists');
-    check(strip > 0 && strip < check_,
-        'the strip happens BEFORE the length gate, so the gates judge what the player sees',
-        'the length gate runs on the un-stripped text');
+    check(scrub_ > 0, 'the output is scrubbed in the send path', 'no scrub call exists');
+    check(scrub_ > 0 && scrub_ < check_,
+        'the scrub happens BEFORE the length gate, so the gates judge what the player sees',
+        'the length gate runs on the un-scrubbed text');
+    // and the behaviour itself, which is the real assertion
+    check(scrubOutput('yeah, mm~') === 'yeah, mm',
+        'a trailing tilde is removed', `tilde survived: "${scrubOutput('yeah, mm~')}"`);
 
     // behaviour, not just presence
     const stripFn = (s) => String(s).replace(/~+/g, '').replace(/\s{2,}/g, ' ').trim();

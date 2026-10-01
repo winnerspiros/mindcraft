@@ -12,6 +12,14 @@ const PAUSED = 2
 // answer?", across Enron / university forum / Google Answers. -1.74 to -2.04.
 const TURN_TAKING_ALPHA = 1.74;
 
+// Action pacing, deliberately separate from TURN_TAKING_ALPHA. That exponent
+// models the gap between human CHAT turns; a self-prompt turn is a game action,
+// not a message. Measured evidence for the range below: a real player's working
+// rhythm is seconds, not minutes - swing, collect, place, repeat - and the old
+// 30-600s range left her idle for 3-10 minutes per turn.
+const ACTION_GEAR_MIN = 4000;
+const ACTION_GEAR_MAX = 22000;
+
 const HUMAN_EXCHANGE_WINDOW_MS = 25000;
 const HUMAN_EXCHANGE_IDLE_MS = 90000;
 export class SelfPrompter {
@@ -82,6 +90,29 @@ export class SelfPrompter {
     // with the paper's own exponent reproduces the 70-80% figure; measured
     // 80% at a=1.74. It is also unbounded above, as a power law is, and the
     // cap below is there only so she cannot go silent for an hour.
+    // ── ACTION PACING IS NOT CHAT PACING ─────────────────────────────
+    // The owner: "in game she is still preety idle too btw, no look, not doing
+    // stuff on her own, no fighting nothing"
+    //
+    // Measured gaps between her self-prompt turns: 326s, 198s, 581s, 40s, 47s,
+    // 118s. Three to TEN minutes of standing still per turn.
+    //
+    // That is a category error I inherited. The Pareto sample below uses
+    // TURN_TAKING_ALPHA=1.74, the measured distribution of the gap between HUMAN
+    // CHAT TURNS - it is the right model for deciding when to ANSWER someone, and
+    // it stays for that. But the same gear was pacing her SOLO self-prompt
+    // turns, which are not chat turns at all: they are game actions. Walk, mine,
+    // build. Nobody stands still for ten minutes between swings at a block, and
+    // realistic latency does not compensate for that - it just reads as frozen.
+    //
+    // So: chat pacing and action pacing are now separate. The Pareto distribution
+    // stays where it belongs (reply latency to a human); a turn that is doing
+    // something uses its own much tighter range, because what is being paced is a
+    // task rather than a message.
+    _actionGear() {
+        return Math.round(ACTION_GEAR_MIN + Math.random() * (ACTION_GEAR_MAX - ACTION_GEAR_MIN));
+    }
+
     _jitteredGear(solo) {
         const min = solo ? this.gear_solo_min : this.gear_chatty_min;
         const max = solo ? this.gear_solo_max : this.gear_chatty_max;
@@ -291,7 +322,10 @@ export class SelfPrompter {
             const solo = !this._otherPlayersOnline();
             // Per-turn jitter, not a constant (see gear_* comments in the
             // constructor). Engagement-aware when players are around.
-            const gear = solo ? this._jitteredGear(true) : this._engagementGear();
+            // A solo turn is her doing something, so it is paced as an action, not
+            // as chat. With a human present the chat-pacing gear stays, because
+            // there the turn is genuinely a turn in a conversation.
+            const gear = solo ? this._actionGear() : this._engagementGear();
             this._last_gear = gear;
             console.log(`[cadence] ${solo ? 'solo' : 'social'} next turn in ${Math.round(gear / 1000)}s (engagement=${this._recent_human_chars} chars)`);
             // Discovery's MissionPlanner, ported cheap: every self-prompt turn
