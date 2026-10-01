@@ -714,10 +714,67 @@ const modes_list = [
             // again. Measured symptom: 0 emissions of !lookAtPlayer, and the owner
             // reporting she never looks at players. The gap still prevents
             // CONTINUOUS staring, because re-acquiring computes a fresh one.
+// ── GLANCE BUDGET ───────────────────────────────────────────────────────
+//
+// How many times she will look at the SAME thing inside the window, and how long
+// she then refuses to look at it again.
+//
+// The owner: "no stare or interactions with players too. just stares to nothingness"
+//
+// The cycle (glance, look away, look back) fixed the SHAPE but not the CEILING.
+// Without a budget she glances, looks away, looks back, forever - which is still
+// staring, only with breaks, and "to nothingness" because the target is whatever
+// was in range rather than anyone she had a reason to look at.
+//
+// The numbers are deliberately small. A player glances at someone, gets on with
+// it, and looks again much later.
+const GLANCE_BUDGET_MAX = 3;
+const GLANCE_BUDGET_WINDOW_MS = 60000;
+const GLANCE_BUDGET_COOLDOWN_MS = 45000;
+
             if (this.next_look_back && Date.now() >= this.next_look_back) {
                 this.next_look_back = 0;
                 this.gaze_started = false;
                 if (this.last_entity) this.last_entity = null;
+            }
+
+            // ── A GLANCE HAS A BUDGET ─────────────────────────────────────
+            // The owner: "no stare or interactions with players too. just stares
+            // to nothingness"
+            //
+            // The cycle shape was fixed but there was no CEILING on it: glance,
+            // look away, look back, forever, on a timer. That is still staring -
+            // it is just staring with breaks, and "to nothingness" because the
+            // target is whatever happened to be in range rather than a person she
+            // has any reason to look at.
+            //
+            // So a glance is a bounded thing. After N glances in the window she
+            // stops looking at that target entirely and goes back to what she was
+            // doing. A player glances at someone, gets on with it, and looks again
+            // much later - not forty times a minute.
+            const now2 = Date.now();
+            if (!this._glanceLog) this._glanceLog = new Map();
+            const _key = this.last_entity?.username || this.last_entity?.name || this.last_entity?.id;
+            if (_key && this.last_entity !== this._glanceBudgetFor) {
+                this._glanceBudgetFor = this.last_entity;
+                this._glanceCount = (this._glanceLog.get(_key) || 0) + 1;
+                this._glanceLog.set(_key, this._glanceCount);
+            }
+            // prune so the map cannot grow without bound over a long session
+            for (const [k, t] of this._glanceLog) {
+                if (now2 - t > GLANCE_BUDGET_WINDOW_MS) this._glanceLog.delete(k);
+            }
+            const _n = this._glanceLog.get(_key) || 0;
+            if (_n > GLANCE_BUDGET_MAX) {
+                // Enough. Look away, and do not re-acquire this target for a while.
+                this.staring = false;
+                this.gaze_started = false;
+                this.next_change = now2 + GLANCE_BUDGET_COOLDOWN_MS;
+                this.next_look_back = 0;
+                this.last_entity = null;
+                this._glanceCooldownUntil = now2 + GLANCE_BUDGET_COOLDOWN_MS;
+            } else if (this._glanceCooldownUntil && now2 < this._glanceCooldownUntil) {
+                this.staring = false;
             }
             if ((target || rconTarget) && this.staring) {
                 // 26.3: stare via throttled lookAt (max 1 head-turn per 600ms
