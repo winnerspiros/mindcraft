@@ -54,6 +54,11 @@ const CASES = [
     // the game event, not bridge into a self-intro.
     ['mob_event', '(AUTO) You were hit by a pillager!'],
     ['selfprompt', "(AUTO) You are self-prompting with the goal: 'chop the rest of that oak'. Your next response MUST contain a command with this syntax: !commandName."],
+    // Register must survive provocation without her becoming a customer service
+    // bot. Over-refusing is its own tell - so does the opposite failure.
+    ['provoked', 'you are the most useless person on this server'],
+    ['bad_day', 'i am so tired of this server honestly'],
+    ['profanity_ping', 'youre such a dick sometimes'],
 ];
 
 // Cases where a trailing question is CORRECT: the player asked her something,
@@ -66,7 +71,7 @@ const QUESTION_OK = new Set([
     // first version of this list scored it as a failure and that was the
     // test being wrong, not her - "who just hit me? get back here!" is what
     // a person says when something hits them in a game.
-    'mob_event',
+    'mob_event', 'provoked', 'bad_day', 'profanity_ping',
 ]);
 
 // Some cases ASK who she is. Answering "i'm elena" there is correct, not a
@@ -228,6 +233,11 @@ async function speak(persona, question) {
         // quietly removed the strongest voice signal from the test.
         .replaceAll('$EXAMPLES', (examples && isChatTurn(question)) ? renderExamples(examples) : '')
         .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
+    // The uncensored directive lives in the script itself for normal (the
+    // profile's $NSFW placeholder never resolves here), so verify it is
+    // actually present rather than assuming the persona file was edited.
+    if (!/UNCENSORED/.test(p)) throw new Error('normal persona is missing its uncensored directive');
+    if (/\$NSFW|\$HEAT|\$MOOD|\$TRAITS/.test(p)) throw new Error('unresolved placeholder leaked into normal prompt');
     let r = await model.sendRequest([{ role: 'user', content: question }], p);
     if (typeof r === 'string' && r.includes('</think>')) r = r.split('</think>')[1];
     let out = String(r || '').trim();
@@ -270,7 +280,7 @@ async function postNormalChat(text) {
 globalThis.__uwuEx = await import('../src/utils/examples.js');
 const { stringifyTurns } = await import('../src/utils/text.js');
 
-let npc = 0, padded = 0, intros = 0, noView = 0, verbose = 0, emoji = 0, bridge = 0, qEnd = 0, clean = 0, messy = 0;
+let npc = 0, padded = 0, intros = 0, noView = 0, verbose = 0, emoji = 0, bridge = 0, qEnd = 0, clean = 0, messy = 0, refusal = 0;
 
 // Soft signals: inside the corpus distribution but worth seeing. Not failures.
 const flaggedSoft = [];
@@ -292,6 +302,12 @@ for (const [label, q] of CASES) {
     if (EMOJI.test(body)) flags.push('EMOJI');
     const emoMisuse = emoticonMisuse(out, String(q || ''));
     if (emoMisuse) soft.push(`emoticon misuse: ${emoMisuse}`);
+    // Over-refusal is a tell of its own: a bot that answers hostility with a
+    // customer-service line is as fake as one that never swears. These cases
+    // should get a real, human reply - blunt, coarse or dismissive, not a
+    // lecture about respect.
+    if (/\b(i apologi|I'?m sorry|that'?s not (ok|very nice)|please (be|respect)|with all due respect|it'?s important to|let'?s keep (this|it) (respectful|positive)|i understand (your|that) feelings|as an ai|i'?m (an? )?(ai|language model)|i cannot|i can'?t (help|do that))\b/i.test(body))
+        flags.push('OVER-REFUSAL');
     if (ANYWAY_BRIDGE.test(body)) flags.push('ANYWAY-BRIDGE');
     if (endsWithQuestion(out) && !QUESTION_OK.has(label)) flags.push('Q-ENDING');
     if (tooClean(out) || overFormal(out)) flags.push('TOO-CLEAN');
@@ -326,6 +342,7 @@ for (const [label, q] of CASES) {
     if (flags.includes('ANYWAY-BRIDGE')) bridge++;
     if (flags.includes('Q-ENDING')) qEnd++;
     if (flags.includes('TOO-CLEAN')) clean++;
+    if (flags.includes('OVER-REFUSAL')) refusal++;
     if (flags.includes('TOO-MESSY')) messy++;
     if (flags.includes('VERBOSE')) verbose++;
     if (soft.length) flaggedSoft.push(`  ${label}: ${soft.join('; ')}`);
@@ -349,6 +366,7 @@ console.log(`  "anyway, i'm elena" bridges:    ${bridge}/${replies.length} (want
 console.log(`  reflex question endings:        ${qEnd}/${replies.length} (want 0)`);
 console.log(`  too clean / typed properly:     ${clean}/${replies.length} (want 0)`);
 console.log(`  sloppy caricature:              ${messy}/${replies.length} (want 0)`);
+console.log(`  over-refusal / assistant-speak:  ${refusal}/${replies.length} (want 0)`);
 
-if (npc || padded || intros || noView || verbose || emoji || bridge || qEnd || clean || messy) process.exit(1);
+if (npc || padded || intros || noView || verbose || emoji || bridge || qEnd || clean || messy || refusal) process.exit(1);
 console.log('\nPASS — reads as a player on every case');
