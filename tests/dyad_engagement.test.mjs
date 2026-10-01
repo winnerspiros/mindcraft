@@ -155,13 +155,19 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
 {
     const fs = await import('node:fs');
     const agent = fs.readFileSync('src/agent/agent.js', 'utf8');
-    check(/_verdict\.mode === 'ignore'/.test(agent), 'agent.js honours mode:ignore',
+    // The consumed variable is `_final`, not `_verdict`: room engagement can
+    // override the text verdict, and reading `_verdict` here would make that
+    // override computed-and-dropped. These checks used to pin `_verdict` and
+    // failed once that moved - correctly, since the pin was the bug.
+    check(/_final\.mode === 'ignore'/.test(agent), 'agent.js honours mode:ignore',
         'ignore is computed and then ignored - she replies anyway');
     // "before the send" has to mean the ignore check is inside routeResponse,
     // which returns early. Comparing string offsets against the FIRST bot.chat(
     // in the file is meaningless - the file has several and routeResponse is not
     // the first thing in it. Check the enclosing function instead.
-    const ri = agent.indexOf("_verdict.mode === 'ignore'");
+    // `_final`, not `_verdict` - room engagement overrides the text verdict and
+    // reading `_verdict` would make that override dead.
+    const ri = agent.indexOf("_final.mode === 'ignore'");
     const rStart = agent.lastIndexOf('routeResponse', ri);
     const rEnd = agent.indexOf('\n    }', ri);
     const body = agent.slice(rStart, rEnd);
@@ -173,7 +179,7 @@ const dyad = (msg, extra = {}) => shouldReplyTo({ message: msg, visible_humans: 
     const after = agent.slice(ri, ri + 600);
     check(/return true;|return false;/.test(after), 'the ignore path returns instead of continuing',
         'ignore does not stop the message');
-    check(/_verdict\.mode === 'react'/.test(agent), 'react reaches the model as intent',
+    check(/_final\.mode === 'react'/.test(agent), 'react reaches the model as intent',
         'react mode is computed and then dropped');
     // and ignore must not be a silent discard - she has to have HEARD it
     const h = agent.indexOf('said to the room, not to you');
