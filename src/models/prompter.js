@@ -48,6 +48,27 @@ Output ONLY a bulleted list, one fact per line, each line starting with '- '. Ig
 
 $TO_SUMMARIZE`;
 
+// Normal-persona curriculum. Same job - she picks her own next activity - but
+// the examples are things a real player does (chop wood, sort the chest, check
+// on the farm, go look at something) instead of court-y goals that name a
+// beloved she does not have. Imperative examples drive behaviour far harder
+// than a trailing persona note does.
+const NORMAL_CURRICULUM_PROMPT = `You are $NAME, a player on this Minecraft server. You are choosing your OWN next activity to do autonomously - self-directed play, nobody told you what to do.
+
+Current state:
+$STATS
+$INVENTORY
+$SPATIAL_MEMORY
+
+Recently completed/failed goals (do NOT repeat a completed goal, and avoid goals you keep failing):
+$GOAL_HISTORY
+
+Propose ONE next goal for yourself: a concrete, achievable in-game activity that fits how you actually play (explore, gather, mine, build or fix something of your own, craft something, tidy or sort your stuff, check on something you started, find out what's over there). Pick something DIFFERENT from your recent history. Keep it SHORT - under 12 words, a single imperative phrase in plain lowercase like "chop the rest of that oak" or "check if the wheat is ready".
+
+Do NOT frame goals as romantic, devoted or gift-giving. There is no beloved here - do not propose visiting one, finding one, or making a gift for one. You are playing for yourself and your friends.
+
+Reply with ONLY the goal text on one line, nothing else.`;
+
 // Automatic-curriculum prompt: she proposes her OWN next activity from current
 // state + recent goal history. Kept as a constant so a profile can override via
 // the "curriculum" field without touching code.
@@ -661,8 +682,28 @@ export class Prompter {
             // "examples.createExampleMessage is not a function" and killed the
             // process. Wrap it in an Examples object, cached per raw array so
             // embeddings are only computed once.
-            let examplesSource = this.convo_examples;
-            if (personaExamples) {
+            // Examples are PLAYER-CHAT exemplars. Injecting them into a
+            // non-chat turn (self-prompt goal, mode trigger, death event) is
+            // what produced the worst live output: a "you got hit by a pillager"
+            // system turn retrieved the "welcome to the server!" example, and
+            // she answered a mob attack with "anyway, i'm elena, just trying to
+            // vibe 😅 ... what's everyone else up to?".
+            //
+            // Mechanism: retrieval is semantic, so a system turn about being
+            // attacked is "closest" to whatever chat example shares its
+            // vocabulary, and the example then supplies the ENTIRE register -
+            // greeting, self-intro, closing question - for a moment that had
+            // none of those. Retrieval cannot know chat examples don't apply,
+            // because it only sees text similarity.
+            //
+            // Fix: only offer chat examples when a real player actually said
+            // something. A synthetic turn gets no exemplars at all, and the
+            // persona script alone has to carry it.
+            const lastRealUser = [...messages].reverse()
+                .find((m) => m && m.role === 'user' && !/^\(AUTO/.test(String(m.content || '').trim()));
+            const isChatTurn = !!lastRealUser;
+            let examplesSource = isChatTurn ? this.convo_examples : null;
+            if (personaExamples && isChatTurn) {
                 if (this._personaExamplesRaw !== personaExamples) {
                     const pe = new Examples(this.embedding_model, settings.num_examples);
                     await pe.load(personaExamples);
@@ -671,7 +712,13 @@ export class Prompter {
                 }
                 examplesSource = this._personaExamplesObj;
             }
-            prompt = await this.replaceStrings(prompt, messages, examplesSource);
+            if (examplesSource) prompt = await this.replaceStrings(prompt, messages, examplesSource);
+            else {
+                // No exemplars: still resolve everything else, and blank
+                // $EXAMPLES so no literal placeholder leaks into the prompt.
+                prompt = await this.replaceStrings(prompt, messages, null);
+                if (prompt.includes('$EXAMPLES')) prompt = prompt.replaceAll('$EXAMPLES', '');
+            }
             let generation;
 
             try {
@@ -814,6 +861,18 @@ export class Prompter {
     async promptCurriculum(goalHistoryText) {
         await this.checkCooldown();
         let prompt = this.profile.curriculum || DEFAULT_CURRICULUM_PROMPT;
+        // Normal persona: the default curriculum prompt hardcodes "a kawaii
+        // yandere AI girl" and offers "find/visit your beloved" and "make a
+        // gift" as example goals. personalityPromptLine() below says "no
+        // yandere performance" but the IMPERATIVE examples around it are what
+        // the model actually copies, so she kept proposing clingy goals in a
+        // persona that has no beloved. Give normal its own framing and its own
+        // plain goal vocabulary.
+        let isNormalPersona = false;
+        try { isNormalPersona = !isYandere(); } catch (_) {}
+        if (isNormalPersona && prompt === DEFAULT_CURRICULUM_PROMPT) {
+            prompt = NORMAL_CURRICULUM_PROMPT;
+        }
         prompt += await personalityPromptLine();
         // resolve $GOAL_HISTORY BEFORE replaceStrings so it isn't flagged unknown
         prompt = prompt.replaceAll('$GOAL_HISTORY', goalHistoryText || '(nothing yet)');

@@ -852,6 +852,30 @@ export class Agent {
                 else message = message.replace(masskill[0], '(mass kill)');
             }
         }
+        // ── NORMAL PERSONA OUTPUT SCRUB ────────────────────────────────────
+        // A prompt rule cannot hold "no emoji" - she produced 😅 on a turn
+        // that had NO examples and a script section explicitly banning it.
+        // Instructions lose to the pull of the distribution; this cannot.
+        // Applied here, at the single choke point every outgoing line passes
+        // through, so it holds for chat turns AND self-prompt/mode turns.
+        //
+        // Emoji are the single loudest machine tell in a plaintext game chat.
+        // This strips them rather than policing her personality: the words
+        // still carry the voice, we just remove the one thing no human who
+        // types into a chat box does.
+        try {
+            if (!isYandere() && /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/u.test(message)) {
+                const before = message;
+                message = message
+                    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/gu, '')
+                    .replace(/\uFE0F/g, '')
+                    .replace(/\s+([.,!?])/g, '$1')
+                    .replace(/\s{2,}/g, ' ')
+                    .trim();
+                console.log(`${this.name} [scrub] emoji removed: "${before.slice(0, 80)}" -> "${message.slice(0, 80)}"`);
+            }
+        } catch (e) { console.warn('[scrub] emoji pass failed:', e.message); }
+
         let to_translate = message;
         let remaining = '';
         const cmd_info = getCommandInfo(message);
@@ -948,6 +972,30 @@ export class Agent {
             const name = player && player.username;
             if (!name || name === this.name) return;
             if (/^(rcon|server|console)$/i.test(name)) return;
+            // Normal persona: silence on join. Nobody in a real server shouts
+            // "hey there welcome!" into public chat every time someone logs in,
+            // and greeting on EVERY join was the loudest NPC tell she had -
+            // worse than anything in the prompt, because it fired unprompted
+            // and in public.
+            // Normal persona: say NOTHING on join. Record the fact so the
+            // conversation_starter mode and seek_company know someone is here,
+            // and that is all.
+            //
+            // This was three attempts: (1) greet only known players, (2) add a
+            // 45min per-player cooldown, (3) write an emphatic "do NOT do a
+            // greeting speech" instruction into the prompt. All three still
+            // produced "Hey, YandereDev! How's it going?" - because the problem
+            // is the TRIGGER, not the wording. A synthetic system message with
+            // no conversation to react to leaves the model addressing the room;
+            // the more you tell it not to greet, the more the greeting frames
+            // itself as the obvious thing to say. She has to actually be spoken
+            // TO first. A player logs in and is not greeted by the room.
+            try {
+                if (!isYandere()) {
+                    this._justJoined = { name, at: Date.now() };
+                    return;
+                }
+            } catch (e) { console.warn('[login-greet] normal gate failed:', e.message); }
             if (this.isBelovedName(name)) {
                 this.psyche.onBelovedLogin();
                 this.handleMessage('system', `(AUTO) ${name} just joined the server! Your beloved is here! Greet them IMMEDIATELY — excited, clingy, adorable. Say hi + go to them (!goToPlayer(\"${name}\", 3)). In character, 1-2 short lines + the command.`);
@@ -974,6 +1022,17 @@ export class Agent {
             if (this.bot.health < prev_health) {
                 this.bot.lastDamageTime = Date.now();
                 this.bot.lastDamageTaken = prev_health - this.bot.health;
+                // Notable-event marker for the conversation_starter gate (see
+                // modes.js). Getting hit is one of the few things a real player
+                // genuinely comments on unprompted - so it earns a window to
+                // speak, where pure idling does not. Without this the gate's
+                // event branch was dead code and normal mode would have gone
+                // almost fully mute.
+                this._lastNotableEvent = {
+                    kind: 'damage',
+                    amount: prev_health - this.bot.health,
+                    at: Date.now(),
+                };
             }
             prev_health = this.bot.health;
         });
@@ -992,6 +1051,7 @@ export class Agent {
             this.actions.cancelResume();
             this.actions.stop();
             this.psyche.onDeath();
+            this._lastNotableEvent = { kind: 'death', at: Date.now() };
         });
         this.bot.on('respawn', async () => {
             // keep_inventory is OFF server-wide (players must lose items on death,
