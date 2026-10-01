@@ -1175,22 +1175,11 @@ export class Agent {
         // a slower timer, so she can still have a burst.
         if (!isYandere()) {
             try {
-                const { ChatBudget } = await import('../utils/chat_budget.js');
                 const { checkLength, lengthGuidance } = await import('../utils/length_rule.js');
-                this._budget ||= new ChatBudget();
-                const gate = this._budget.canSpeak({
-                    now: Date.now(),
-                    human_msgs_since_her_last: this._budget.consecutive === 0
-                        ? (this._humanMsgCount ?? 0) : 0,
-                    visible_humans: this._visibleHumanCount(),
-                });
-                if (!gate.ok) {
-                    console.log(`${this.name} [budget:${gate.why}] holding back`);
-                    return;
-                }
-                // Length is checked on the SENT text. A wall of text with no stop
-                // in it is the same complaint as a paragraph, so this gates on
-                // words as well as sentences (p90 is 16 words).
+                // RATE limits are already settled by the pre-generation gate, so
+                // this only asks whether the TEXT is sendable. A wall of text with
+                // no stop in it is the same complaint as a paragraph, so it gates
+                // on words as well as sentences (p90 is 16 words).
                 const len = checkLength(message);
                 if (!len.ok) {
                     // Tell her WHY it was dropped, so the next attempt is a
@@ -1198,9 +1187,11 @@ export class Agent {
                     console.log(`${this.name} [length:${len.why}] dropped ${len.words}w/${len.sentences}s: ${String(message).slice(0, 60)}`);
                     this.history.add('system', lengthGuidance());
                     this.history.save();
-                    return;
+                    return;   // no delivered() - the room never saw this
                 }
-                this._budget.note(message);
+                // The message is going out, so the run finally advances.
+                this._budget?.delivered();
+                this._budget?.note(message);
             } catch (e) { console.warn('[budget] failed open:', e.message); }
         }
 
