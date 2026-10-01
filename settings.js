@@ -55,7 +55,17 @@ const settings = {
     // Idle-when-alone behaviour is the two-gear autonomy in self_prompter.js
     // (chatty 45s with players, quiet 150s solo), added in 89e384c.
     "self_prompt_requires_players": true,
-    "init_message": "You have just awakened in this world. Introduce yourself in character, casually, the way you would in a group chat.", // sends to all on spawn
+    // NORMAL PERSONA: no self-introduction on spawn.
+    //
+    // This fired on EVERY boot with nobody having spoken, and produced
+    // "sooo i just woke up in this weird place... anyone want to show me
+    // around? 😅" - a greeting register, an emoji, and a hollow question
+    // ending, all three of which the voice probe fails on. A player who logs
+    // into a server they have been playing for hours does not announce
+    // themselves; she only speaks when someone speaks to her or something
+    // actually happens. The yandere init message is kept below as the example
+    // of what this used to be.
+    "init_message": "", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
     "speak": false,
