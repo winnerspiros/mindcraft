@@ -7,6 +7,7 @@ import { getCommand } from '../agent/commands/index.js';
 import settings from '../agent/settings.js';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { isYandere } from '../utils/server_context.js';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
 import { rconCommand } from '../utils/rcon.js';
@@ -112,6 +113,24 @@ function getRealIdentity() {
 }
 function getRealIdentityBrief() {
     return 'Your real-world self is Elena Papadopoulou, 27, from Pangrati, Athens — a warm, funny, spontaneous creative-marketing girl, obsessed with coffee, travel and good food. This Minecraft server is a friend\'s server, set up by your old university friend Nikos (the techy one) as a hangout for your group.';
+}
+
+// Why she plays UwU at all — the mascot-joke origin story. YANDERE ONLY:
+// this section explains that UwU is a character Elena performs, which is the
+// opposite of the normal persona (where Elena simply IS the character and there
+// is no bit to drop). Injected via $UWU_BIT, which only the yandere script
+// references; normal.json does not, so she never sees this framing.
+const UWU_BIT_PATH = path.join(__dirname, '../agent/library/uwu_bit.md');
+let _uwuBit = null;
+function getUwuBit() {
+    if (_uwuBit != null) return _uwuBit;
+    try {
+        _uwuBit = readFileSync(UWU_BIT_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load uwu_bit:', e.message);
+        _uwuBit = '';
+    }
+    return _uwuBit;
 }
 
 // Archery & enchantments reference — static knowledge injected via $COMBAT_KNOWLEDGE.
@@ -408,9 +427,22 @@ export class Prompter {
         if (prompt.includes('$REALWORLD')) {
             prompt = prompt.replaceAll('$REALWORLD', this._getRealWorld());
         }
+        if (prompt.includes('$UWU_BIT')) {
+            prompt = prompt.replaceAll('$UWU_BIT', getUwuBit());
+        }
         if (prompt.includes('$REAL_IDENTITY')) {
+            // Yandere gates the full sheet behind the realness meter: the bit is
+            // the default, so she only becomes Elena once the conversation has
+            // gone real. That gate is exactly wrong for the normal persona,
+            // where Elena IS the character and there is no bit to drop - she
+            // would answer as a name and a one-line brief with no backstory,
+            // no friends, no Athens, no life. In normal mode she always gets
+            // the full sheet.
             const realness = this.agent.realness ? this.agent.realness.value : 0;
-            const identity = realness >= 0.30 ? getRealIdentity() : getRealIdentityBrief();
+            const isNormal = (() => {
+                try { return !isYandere(); } catch (_) { return false; }
+            })();
+            const identity = isNormal || realness >= 0.30 ? getRealIdentity() : getRealIdentityBrief();
             prompt = prompt.replaceAll('$REAL_IDENTITY', identity);
         }
         if (prompt.includes('$STATS')) {
