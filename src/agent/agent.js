@@ -8,6 +8,7 @@ import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { scrubOutput } from '../utils/scrub.js';
+import { reactToHurt, assessThreats } from '../utils/threat.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -1864,6 +1865,34 @@ export class Agent {
         });
 
         this.bot.on('entityHurt', (entity, source) => {
+            // ── REACT, DO NOT NARRATE ─────────────────────────────────
+            // The owner: "a phantom attacjs her, she should fight, not complain"
+            // and "she is not fighting nothing".
+            //
+            // This lives HERE, on entityHurt, and that is the whole fix. I first put
+            // it in the `health` handler and read the attacker from `source` - but
+            // bot.on('health') is emitted with no argument, so `source` was always
+            // undefined, the attacker was always null, and the branch that starts a
+            // fight goal was UNREACHABLE. The flee branch could only run off the
+            // health<14 fallback.
+            //
+            // That is precisely why a phantom produced a complaint and no command:
+            // the only event carrying the attacker is entityHurt, and the only path
+            // from it to her was a text injection in player_activity.js
+            // ("phantom just hit YOU!"). Text, not state.
+            //
+            // State-driven and immediate: fight when she is armed and the attacker
+            // is close, otherwise get clear. No phrase, no delay, and deliberately
+            // NOT through the model - a round-trip is far too slow to answer a hit,
+            // and letting the model decide is what produced the complaint.
+            if (entity === this.bot.entity) {
+                const r = reactToHurt({ bot: this.bot, attacker: source });
+                if (r.goal) {
+                    console.log(`[threat] hurt: ${r.action} (${r.reason})`);
+                    this.self_prompter.start(r.goal);
+                }
+            }
+
             // track who is harming her so she can retaliate (verbal -> attack -> TNT)
             if (entity === this.bot.entity && source && source.type === 'player' && source.username !== this.name) {
                 const name = source.username || source.name;
@@ -1937,6 +1966,40 @@ export class Agent {
             }
         });
 
+        // ── ACT BEFORE, NOT AFTER ──────────────────────────────────────
+        // The owner: "about enemies she needs to be aware and act before. lets say
+        // a creeper approach her, deal with it before it just comes and explodes".
+        //
+        // A hurt reflex reacts after the hit, which is already too late for a
+        // creeper - it is priming, it is on a timer, and by the time entityHurt
+        // fires the damage is done. So danger is scanned continuously and acted on
+        // while it is still only approaching.
+        //
+        // Deliberately cheap and pure: assessThreats() reads state and returns a
+        // decision. It never calls the model, because a round-trip is far too slow
+        // for a priming creeper, and a self-prompt goal is the right unit for
+        // "deal with it" while being far too slow to be the detector.
+        this._threatScan = setInterval(() => {
+            try {
+                if (!this.bot?.entity) return;
+                const r = assessThreats({
+                    bot: this.bot,
+                    entities: Object.values(this.bot.entities || {}),
+                });
+                if (r.action === 'ignore') return;
+                // Do not re-aim at the same threat every tick: that would restart
+                // the goal forever and she would never finish dealing with it.
+                const key = r.target ? `${r.target.id}:${r.action}` : r.action;
+                if (this._lastThreatKey === key && Date.now() - (this._lastThreatAt || 0) < 8000) return;
+                this._lastThreatKey = key;
+                this._lastThreatAt = Date.now();
+                console.log(`[threat] ${r.action}: ${r.reason}`);
+                this.self_prompter.start(r.goal);
+            } catch (e) {
+                console.warn('[threat] scan failed:', e?.message);
+            }
+        }, 1000);
+
         let prev_health = this.bot.health;
         this.bot.lastDamageTime = 0;
         this.bot.lastDamageTaken = 0;
@@ -1956,41 +2019,12 @@ export class Agent {
                     at: Date.now(),
                 };
 
-                // ── REACT, DO NOT NARRATE ─────────────────────────────────
-                // The owner: "a phantom attacjs her, she should fight, not
-                // complain". Measured: "phantom just hit YOU!" produced
-                // "of course, a phantom now? this is just fantastic." and no
-                // command at all - being hit set lastDamageTime and a
-                // notable-event marker, and that marker existed ONLY to let her
-                // speak. There was no reflex to act, so a complaint was the only
-                // possible output, which is the one option no player takes.
-                //
-                // State-driven and immediate: fight if she can fight sensibly,
-                // otherwise get clear. No phrase and no delay - the same shape as
-                // the survival check in activity.js, where survival outranks
-                // commentary. Deliberately NOT routed through the model: a
-                // round-trip is far too slow to respond to a phantom, and letting
-                // the model decide is what produced the complaint in the first
-                // place.
-                try {
-                    const _src = (typeof source !== 'undefined' && source) ? source : null;
-                    const _attacker = _src?.entity || _src?.player
-                        || _src?.mobType ? (_src.entity || _src) : null;
-                    const _weapon = this.bot.inventory
-                        ?.items?.()?.find((i) => /sword|axe$/i.test(String(i?.name || '')));
-                    const _threat = _attacker && _attacker.position
-                        && this.bot.entity?.position
-                        && _attacker.position.distanceTo(this.bot.entity.position) < 12
-                        ? _attacker : null;
-                    // Fight when armed and the thing is close; run when it is not.
-                    // A player does not stand still trading hits with a phantom
-                    // holding nothing, and does not flee from one holding a sword.
-                    if (_weapon && _threat) {
-                        this.self_prompter.start('get the thing that just hit me');
-                    } else if (_threat || this.bot.health < 14) {
-                        this.self_prompter.start('get away from this and get my health back');
-                    }
-                } catch (_) { /* a reflex must never take the bot down */ }
+                // The fight-or-flee reflex is NOT here. It is in the entityHurt
+                // handler above, because bot.on('health') carries no `source` at
+                // all - an earlier version of this reflex lived here and read the
+                // attacker from `source`, so it was always undefined and the
+                // branch that started a fight goal could never run. That is why a
+                // phantom produced a complaint and no command.
             }
             prev_health = this.bot.health;
         });
