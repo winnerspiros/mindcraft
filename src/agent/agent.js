@@ -489,11 +489,54 @@ export class Agent {
         //
         // Lesson: a grep that finds nothing is not proof an event cannot fire.
         // Verify by reading the emit site, not by string-matching the call.
-        this.bot.on('chat', (username, message) => {
+        // uwu / DIRECT CHAT DELIVERY.
+        //
+        // Measured live: playerChat arrives intact and the sender resolves fine
+        // (uuid "be0835a4-..." -> "YandereDev", plain "yo"). So the remaining
+        // fragility is the hop messagestr -> legacy regex pattern -> 'chat', which
+        // fails SILENTLY when the pattern does not match: no event, no log, the
+        // owner's message simply vanishes. Three inferences on this path were
+        // wrong before I measured it (dead-code listener, junk filter dropping
+        // "uwu", uuid resolution failing), so delivery no longer depends on the
+        // pattern chain at all.
+        //
+        // 'chat' stays as a fallback in case the pattern does match; _seen dedupes
+        // so a message handled directly is not handled twice.
+        this._seenChat = this._seenChat || new Map();
+        const _deliver = (username, message) => {
             if (serverProxy.getNumOtherAgents() > 0) return;
-            // only respond to open chat messages when there are no other agents
+            const key = `${username}\u0000${message}`;
+            const now = Date.now();
+            // drop repeats of the same text inside a 3s window (pattern + direct
+            // path both firing), but allow the same word again later
+            if (this._seenChat.get(key) > now - 3000) return;
+            this._seenChat.set(key, now);
+            if (this._seenChat.size > 200) {
+                for (const [k, t] of this._seenChat) if (t < now - 30000) this._seenChat.delete(k);
+            }
             respondFunc(username, message, false);
+        };
+
+        this.bot._client?.on?.('playerChat', (data) => {
+            try {
+                const plain = String(data.plainMessage26 ?? data.plainMessage ?? '').trim();
+                if (!plain) return;
+                let username = data.senderName || data.sender;
+                try {
+                    for (const [n, p] of Object.entries(this.bot.players || {})) {
+                        if (p && p.uuid === data.sender) { username = n; break; }
+                    }
+                } catch (_) { /* keep the raw sender */ }
+                // strip any <@> mention decoration but keep the words
+                const clean = plain.replace(/^<[^>]*>\s*/, '').trim();
+                if (!clean) return;
+                _deliver(String(username), clean);
+            } catch (e) { console.warn('[chat-direct] failed:', e.message); }
         });
+
+        // fallback: fires only when the legacy pattern DOES match, and _deliver
+        // dedupes against the direct path above
+        this.bot.on('chat', (username, message) => _deliver(username, message));
 
         // uwu: guest-server join flow — AuthMe-style /register-/login prompts
         // + one /kit probe. Prompt-gated only (never sends blind), max 2 tries
