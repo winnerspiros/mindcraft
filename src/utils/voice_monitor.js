@@ -1,40 +1,21 @@
 // Runtime voice-drift monitor.
 //
-// Purpose: catch LONG-RUNNING erosion of Elena's voice (hours of conversation),
-// not the immediate causes. The timer-driven self-prompt bug is already fixed,
-// the word cap now actually runs, and the persona is in voice — what remains is
-// gradual drift back toward the default assistant register.
+// Catches long-running erosion of Elena's voice; the immediate causes are already
+// fixed (timer-driven self-prompts, and a word cap that existed but never ran).
+// What is left is gradual drift back toward the default assistant register.
 //
-// Why deterministic heuristics rather than an embedding model: this is a 1-OCPU
-// box and the model is API-hosted, so there is nothing local to embed with. A
-// regex bundle costs nothing, cannot hallucinate, and every threshold below is
-// derived from measured data rather than invented.
+// Heuristics, not embeddings: 1-OCPU box, API-hosted LLM, nothing local to embed
+// with. Every threshold is the p95 of the 868 unique real player lines in
+// bots/UwU/histories, so real players rarely cross one. Measured false-positive
+// rates: words 14 [3.8%], caps .167 [4.1%], punct .333 [2.7%], emoji 0 [0%].
+// CAPS is the weak one — a 1-word line is 100% capitalised, so "Hi" trips it.
 //
-// THRESHOLDS — all p95 of the 868 unique real player lines from this server's
-// own history (bots/UwU/histories), not from literature:
+// Alerts fire on a rate over a window, never on one message.
 //
-//   words > 14        p95 = 14   → trips 3.8% of real player lines
-//   caps  > 0.167     p95 = .167 → trips 4.1% (real: "Bruh", "Hi")
-//   punct > 0.333     p95 = .333 → trips 2.7% when gated to messages >=4 words
-//   emoji > 0         p95 = 0    → trips 0% (corpus had zero Unicode emoji)
-//   self-intro                  → 1.7% of real lines do introduce themselves
-//
-// Two of those are not textbook-clean and I am leaving them honest: CAPS trips
-// on "Hi" and "Bruh" because a 1-word sentence is 100% capitalised by
-// construction. It is a weak signal rather than a broken one, so it stays.
-//
-// A threshold is only useful if real players rarely cross it, so each one is set
-// at the 95th percentile of REAL behaviour rather than at my guess of "too long".
-// Alerting fires on a RATE over a window, never on a single message: one player
-// typing a novel is not drift, and neither is one long reply.
-//
-// Evidence for the shape (A-anchor re-injection, 4-8 turn onset, compaction not
-// resetting drift) came from arXiv 2605.24279 (ContextEcho), 2609.24532 and
-// 2402.10962, all verified to resolve. This module deliberately implements ONLY
-// the detection half of that recommendation. Re-anchoring is not added: it is
-// prompt surgery on a persona already fighting drift, and until there is a
-// measured drift event to fix, it would be an untested change to the thing that
-// is currently working.
+// Shape follows arXiv 2605.24279 / 2609.24532 / 2402.10962 (all verified), but
+// only the DETECTION half of that recommendation is implemented. Re-anchoring is
+// deliberately absent: prompt surgery on a persona already in voice, with no
+// measured drift left to fix.
 
 const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/u;
 const SELF_INTRO_RE = /\b(i'?m|my name is|this is|call me)\s+[a-z]/i;
