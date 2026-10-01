@@ -515,9 +515,15 @@ export class Agent {
         else if (init_message) {
             await this.handleMessage('system', init_message, 2);
         }
-        else {
-            this.openChat("Hello world! I am "+this.name);
+        else if (isYandere()) {
+            // Yandere announces herself on spawn — that is the character.
+            this.openChat("Hello world! I am " + this.name);
         }
+        // Normal: say nothing. There is no init_message AND no fallback intro.
+        // The old unconditional else meant that setting init_message to ""
+        // (which is how the normal persona stopped introducing itself on every
+        // boot) silently rerouted her into a hardcoded "Hello world! I am
+        // Elena" instead. Silence is the default; there is nothing to do here.
     }
 
     checkAllPlayersPresent() {
@@ -790,6 +796,31 @@ export class Agent {
     async routeResponse(to_player, message) {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
+
+        // ── NORMAL PERSONA: SPEAK GATE ────────────────────────────────────
+        // Deterministic, not a model call — see utils/speak_gate.js for why.
+        // This is the choke point: every outgoing line reaches it, and unlike
+        // the prompt it cannot be argued with by a turn that happens to look
+        // conversational. `human_replied` is true only when a real player said
+        // something this turn; that single flag is what separates a reply from
+        // narration, and it is the thing the model was previously guessing.
+        if (!isYandere()) {
+            try {
+                const { gateNormalChat } = await import('../utils/speak_gate.js');
+                const verdict = gateNormalChat({
+                    message,
+                    to_player,
+                    self_prompt,
+                    human_replied: !!this.last_sender && to_player === this.last_sender,
+                    any_human: this.anyHumanOnline(),
+                });
+                if (!verdict.ok) {
+                    console.log(`${this.name} [gate:${verdict.why}] suppressed: ${String(message).slice(0, 90)}`);
+                    return;
+                }
+            } catch (e) { console.warn('[gate] failed open:', e.message); }
+        }
+
         if (self_prompt && this.last_sender) {
             // this is for when the agent is prompted by system while still in conversation
             // so it can respond to events like death but be routed back to the last sender
