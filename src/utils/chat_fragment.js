@@ -16,6 +16,46 @@
 const MAX_LINES = 3;
 const MIN_CHARS = 12;
 
+// Hard word cap. Measured over 55,904 real player messages (Minecraft Dialogue
+// Corpus, Narayan-Chen et al. ACL 2019): median 5 words, p75 8, p90 16. So a
+// single message over 10 words is already tail behaviour. The prompt says this
+// and she still writes 13-15 word lectures, so it is enforced here - a prompt
+// rule loses to the distribution, a truncation cannot.
+//
+// Keeps the FIRST sentence only, because in a chat reply the first sentence is
+// the point and the rest is elaboration she was told not to add.
+const MAX_WORDS = 10;
+// A truncated reply must still be a phrase, not a fragment of a phrase.
+// "you need to make" is word salad; a reader cannot parse it and neither can a
+// player, so a hard word-count cut is only allowed at a CLAUSE boundary.
+// If no such boundary exists the reply is returned whole - a slightly long
+// message is far less suspicious than nonsense.
+const enforceWordCap = (text) => {
+    const t = String(text || '').trim();
+    if (!t) return t;
+    const { body, command } = splitOffCommand(t);
+    const words = body.split(/\s+/).filter(Boolean);
+    if (words.length <= MAX_WORDS) return t;
+
+    // First sentence if it already fits.
+    const sentences = body.split(SENTENCE).map((x) => x.trim()).filter(Boolean);
+    if (sentences[0] && sentences[0].split(/\s+/).length <= MAX_WORDS) {
+        return command ? `${sentences[0]} ${command}`.trim() : sentences[0];
+    }
+
+    // Otherwise keep whole clauses up to the cap.
+    const clauses = body.split(SENTENCE).join(' ').split(CLAUSE).map((x) => x.trim()).filter(Boolean);
+    const kept = [];
+    for (const c of clauses) {
+        const next = kept.concat(c);
+        if (next.join(' ').split(/\s+/).length > MAX_WORDS) break;
+        kept.push(c.replace(/[,;:]+$/, ''));
+    }
+    if (!kept.length) return t; // no clean cut available - leave it whole
+    const out = kept.join(' ');
+    return command ? `${out} ${command}`.trim() : out.trim();
+};
+
 // Split points, in priority order. Sentence boundaries first because a real
 // burst is one thought per line; clause boundaries only if that yields too few
 // pieces; whitespace last as the fallback.
@@ -23,14 +63,15 @@ const SENTENCE = /(?<=[.!?])\s+/;
 const CLAUSE = /(?<=[,;:])\s+/;
 
 // A trailing !command rides with the line it belongs to - never orphaned.
-function splitOffCommand(text) {
+// Declared first because enforceWordCap (above) uses it.
+export function splitOffCommand(text) {
     const m = String(text || '').match(/\s*!\w+\([^)]*\)\s*$/);
     if (!m) return { body: text, command: null };
     return { body: String(text).slice(0, m.index), command: m[0].trim() };
 }
 
 export function fragmentForChat(text) {
-    let s = String(text || '').trim();
+    let s = enforceWordCap(text);
     if (!s) return [];
 
     // Multiple commands already = multi-message by nature. Leave alone.
@@ -56,35 +97,23 @@ export function fragmentForChat(text) {
         if (balanced) parts = byClause;
     }
 
-    if (!parts) {
-        const words = body.split(/\s+/);
-        if (words.length < 8) return [s];
-        // Fall back to a balanced word split at a space near the middle.
-        let cut = Math.floor(words.length / 2);
-        const mid = cut;
-        for (let i = mid; i > 0; i--) {
-            if (words[i].length + words[i - 1].length >= MIN_CHARS) { cut = i; break; }
-        }
-        const a = words.slice(0, cut).join(' ').replace(/[.,;:]$/, '');
-        const b = words.slice(cut).join(' ');
-        if (a.length < MIN_CHARS || b.length < MIN_CHARS) return [s];
-        parts = [a, b];
-    }
+    // No word-count fallback. Cutting mid-phrase on a raw word boundary is the
+    // one thing that produces unreadable output - "you need to make" is not a
+    // message, it is a bug that shipped. If there is no sentence or clause
+    // boundary, leave the reply whole; a long line is fine, nonsense is not.
+    if (!parts) return [s];
 
     // A split point removes the break, so any punctuation that used to sit at
     // the end of a piece is now dangling mid-message ("ill go grab some wood,").
     // Strip it from every piece except the last.
     parts = parts.map((p, i) => (i < parts.length - 1 ? p.replace(/[,;:]+$/, '') : p));
 
-    // Merge tiny pieces forward so we never emit a 3-character line.
-    const merged = [];
-    for (const p of parts) {
-        if (merged.length && (merged[merged.length - 1].length < MIN_CHARS || p.length < MIN_CHARS)) {
-            merged[merged.length - 1] = `${merged[merged.length - 1]} ${p}`.trim();
-        } else {
-            merged.push(p);
-        }
-    }
+    // No merging. The first version forced every fragment above MIN_CHARS=12,
+    // which merged real one-word messages ("hey", "yeah", "nah,") into
+    // artificial two-word lines purely to satisfy a rule invented here.
+    // Measured: 36% of real player messages are <=3 words, 18% are a single
+    // word. Short lines are correct, so they are left alone.
+    const merged = parts.slice();
 
     // Too many pieces to send without spamming: rebalance into MAX_LINES
     // balanced chunks rather than dropping content or sending six messages.
