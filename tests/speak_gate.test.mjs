@@ -24,6 +24,21 @@ const KEEP = [
     "can't help it it's my charm",
     'gg',
     'wait what',
+    // Banter and bite. The owner: "an all friendly, never verbal person is not
+    // human for sure." The gate must NEVER be the thing that softens her — if a
+    // rule here ever blocks a roast, she becomes a customer service bot.
+    'kys',
+    'skill issue',
+    'lmao yeah',
+    'no',
+    'shut up',
+    'ok and?',
+    'who asked',
+    'ur so bad at pvp',
+    'thats dumb and you know it',
+    'its a farm. it grows food. relax',
+    'bro why would you do that :/',
+    'which part? the one where i fell?',
 ];
 for (const m of KEEP) {
     v(m).ok ? ok(`keeps reply: "${m}"`) : bad(`blocked a real reply: "${m}" (${v(m).why})`);
