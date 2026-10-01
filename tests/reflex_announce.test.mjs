@@ -161,6 +161,29 @@ const flat = persona.conversing.replace(/\s+/g, ' ');
         check(out === '' || out === '.', `no narration survives: "${narration.slice(0, 40)}"`,
             `narration survived as "${out}"`);
     }
+    // ── NO SEAM DEBRIS ───────────────────────────────────────────────
+    // Removing a narration sentence used to leave its punctuation welded onto
+    // whatever followed. On her own live output:
+    //   "...time to mine for some stone. !mineBlock stone 0 0" -> ".!mineBlock stone 0 0"
+    //   "...ugh. !breakBlock wood 0 0" ->
+    //       "omg this is ridiculous. i'll pick a block to break. ugh.!breakBlock wood 0 0"
+    // The command still parsed, which is why the actions ran, but "ugh.!breakBlock"
+    // is not something a person types.
+    for (const [input, bad] of [
+        ['time to mine for some stone. !mineBlock stone 0 0', '.!mineBlock'],
+        ['ugh. !breakBlock wood 0 0', 'ugh.!breakBlock'],
+        ['ugh, fine!. i saw that coming. !attack pillager 0 0', 'fine!.'],
+    ]) {
+        const out = run(input);
+        check(!out.includes(bad), `no seam debris: "${bad}" (got "${out.trim()}")`,
+            `seam debris "${bad}" in "${out.trim()}"`);
+    }
+    // the command itself must survive the scrub intact, or the scrub has broken
+    // the one thing the line was for
+    check(run('time to mine for some stone. !mineBlock stone 0 0') === '!mineBlock stone 0 0',
+        'and the command survives the scrub intact',
+        `the scrub damaged a command: "${run('time to mine for some stone. !mineBlock stone 0 0')}"`);
+
     // and the real thing still gets through
     check(run('ugh, this is a pain.') === 'ugh, this is a pain.',
         'a plain complaint survives', 'a plain complaint was stripped');
