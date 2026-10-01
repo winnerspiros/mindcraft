@@ -54,7 +54,7 @@
   "scripts": {
     "postinstall": "patch-package && python3 fix-26.2-protocol.py",
     "start": "bash tools/boot.sh",
-    "test": "node tools/check-26-3-support.mjs && node tools/check-config.mjs && node tests/turn_taker.test.mjs && node tests/reflective_memory.test.mjs && node tests/persona_parity.test.mjs && node tests/chat_fragment.test.mjs && node tests/no_self_poison.test.mjs && node tests/speak_gate.test.mjs && node tests/cadence_ack.test.mjs && node tests/persona_bite.test.mjs && node tests/example_selection.test.mjs && node tests/production_send.test.mjs && node tests/voice_monitor.test.mjs && node tests/empty_ack.test.mjs && node tests/persona_disagree.test.mjs && node tests/persona_notsycophant.test.mjs && node tests/frag_rebalance.mjs",
+    "test": "node tools/check-26-3-support.mjs && node tools/check-config.mjs && node tests/turn_taker.test.mjs && node tests/reflective_memory.test.mjs && node tests/persona_parity.test.mjs && node tests/chat_fragment.test.mjs && node tests/no_self_poison.test.mjs && node tests/speak_gate.test.mjs && node tests/cadence_ack.test.mjs && node tests/persona_bite.test.mjs && node tests/example_selection.test.mjs && node tests/production_send.test.mjs && node tests/voice_monitor.test.mjs && node tests/empty_ack.test.mjs && node tests/persona_disagree.test.mjs && node tests/persona_notsycophant.test.mjs && node tests/frag_rebalance.mjs && node tests/venting.test.mjs",
     "reinstall": "npm run clean:modules && npm install",
     "clean:modules": "node -e \"const fs=require('fs');const p=require('path');['node_modules','package-lock.json'].forEach(f=>{if(fs.existsSync(f)){if(fs.lstatSync(f).isDirectory()){fs.rmSync(f,{recursive:true,force:true});}else{fs.unlinkSync(f);}}});\""
   },

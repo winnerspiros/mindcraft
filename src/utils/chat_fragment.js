@@ -24,6 +24,19 @@ const MIN_CHARS = 12;
 // Keeps the FIRST sentence only, because in a chat reply the first sentence is
 // the point and the rest is elaboration she was told not to add.
 const MAX_WORDS = 10;
+// VENTING IS THE EXCEPTION, and it is measured, not felt. Real players do write
+// long here: of 868 lines, the venting-marked ones run to 25 words and 11% of
+// them exceed 10, where the corpus median is 5. Someone who just lost it in
+// real life and then got creepered in game sends a paragraph, and that paragraph
+// IS the point - it is them getting it off. Capping it at 10 words deletes the
+// entire reason they typed it.
+//
+// So the cap yields to emotional register. A rant stays whole; a calm remark
+// stays short. Detect the rant, not the length: length alone would let her pad
+// ordinary replies, which is the failure mode this cap exists to prevent.
+const RANT = /\b(fuck|fucking|shit|wtf|damn|hell|pissed|angry|furious|so (fucking )?mad|driving me (crazy|nuts)|cant (stand|take) (this|it|him|her|them)|done with|fucking (again|seriously)|im so (tired|angry|pissed)|why the (fuck|hell|shit)|ridiculous|unfair)\b/i;
+const rantLine = (text) => RANT.test(String(text || ''));
+
 // A truncated reply must still be a phrase, not a fragment of a phrase.
 // "you need to make" is word salad; a reader cannot parse it and neither can a
 // player, so a hard word-count cut is only allowed at a CLAUSE boundary.
@@ -35,6 +48,7 @@ const enforceWordCap = (text) => {
     const { body, command } = splitOffCommand(t);
     const words = body.split(/\s+/).filter(Boolean);
     if (words.length <= MAX_WORDS) return t;
+    if (rantLine(t)) return t;   // let it out; do not edit someone's rant down
 
     // First sentence if it already fits.
     const sentences = body.split(SENTENCE).map((x) => x.trim()).filter(Boolean);
