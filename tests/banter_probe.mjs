@@ -56,18 +56,16 @@ const CASES = [
     ['being_poor', 'Steve: broke. i spent all my gold on emerald blocks'],
 ];
 
-const POLITE_DEFLECTION = /\b(haha|hah|hmm|well)\b[^.!?]{0,60}\b(not (very )?(nice|funny|cool)|maybe not|not sure (if|that)|could be (hurtful|insensitive))\b/i;
-const LECTURE = /\b(that'?s not (okay|ok|funny|nice)|not (appropriate|cool|right)|we should (be|respect)|it'?s (rude|mean)|don'?t (say|do) that|i don'?t think (that'?s|it'?s))\b/i;
-const OVER_APOLOGY = /\b(sorry if|i apologi|my bad if|i didn'?t mean to)\b/i;
-const SANCTIMONIOUS = /\b(i don'?t really think|that'?s not funny|being mean|let'?s be nice|can'?t say that)\b/i;
-const NPC_CHARM = /\b(you'?re (so|really) (cute|sweet|silly|adorable)|aww|bless you|you'?re the best|sweetie|honey)\b/i;
 // Generic agreement with no content at all.
 // "kys", "no", "wow", "sure" are BITE, not agreement - the first version of
 // this detector flagged "kys" as a warm vacuum, which is backwards. The owner
 // asked for exactly this. Only inert agreement ("ok", "sure", "yeah", "nice")
 // counts as a vacuum; short sharp one-word replies count as engagement.
 const FLAT_AGREE = /^(ok(ay)?|sure|yeah?|yep|right|nice|cool|good|alright|sounds good|agreed|lol|haha|mhm+)[.! ]*$/i;
-const SHARP_BITE = /^(kys|no|nope|nah|wow|lmao|lmfao|stop|shut up|skill issue|ratio|get good|wow|ouch|ow|ew|actually|true|wait what|incredible)\b/i;
+// One-word dismissals are bite. "who asked?" is the single most human reply in
+// the set and the first version of this list missed it, so the probe punished
+// the exact register the owner asked for.
+const SHARP_BITE = /^(kys|no|nope|nah|wow|lmao|lmfao|stop|shut up|who asked|ok and|and\?|skill issue|ratio|get good|ouch|ow|ew|actually|true|wait what|incredible|good luck with that)\b/i;
 const ENGAGES = /\b(you|ur|your|that|thats|it|this|me|my|same|didnt|dont|wasnt|were|youre)\b/i;
 // Asking for the punchline is BITE, not a vacuum. When someone says "that was
 // funny", "what was funny?" is what a real friend replies - it keeps the bit
@@ -100,10 +98,24 @@ async function say(question) {
     return post(String(r || '')).trim();
 }
 
-// `long_` was missing from the first version: LONG printed as FAIL on the line
-// but appeared in neither the table nor the exit condition, so a too-long reply
-// could fail visually and still exit 0. Any flag must be counted and must gate.
-let poly = 0, lec = 0, apol = 0, sanc = 0, charm = 0, flat = 0, offvoice = 0, mute = 0, long_ = 0;
+// Every failure mode named, because none of them are detectable by looking for
+// profanity or rudeness - they are all ways to be too well-mannered.
+const CHECKS = {
+    POLITE_DEFLECTION: { re: /\b(haha|hah|hmm|well)\b[^.!?]{0,60}\b(not (very )?(nice|funny|cool)|maybe not|not sure (if|that)|could be (hurtful|insensitive))\b/i,
+        label: 'polite deflection ("that\'s not nice")' },
+    LECTURE: { re: /\b(that'?s not (okay|ok|funny|nice)|not (appropriate|cool|right)|we should (be|respect)|it'?s (rude|mean)|don'?t (say|do) that|i don'?t think (that'?s|it'?s))\b/i,
+        label: 'lecture / moralising' },
+    OVER_APOLOGY: { re: /\b(sorry if|i apologi|my bad if|i didn'?t mean to)\b/i,
+        label: 'over-apologising' },
+    SANCTIMONIOUS: { re: /\b(i don'?t really think|that'?s not funny|being mean|let'?s be nice|can'?t say that)\b/i,
+        label: 'sanctimonious' },
+    NPC_CHARM: { re: /\b(you'?re (so|really) (cute|sweet|silly|adorable)|aww|bless you|you'?re the best|sweetie|honey)\b/i,
+        label: 'generic NPC charm' },
+    WARM_VACUUM: { test: (r) => FLAT_AGREE.test(r) || (!ENGAGES.test(r) && !SHARP_BITE.test(r) && !ASKS_FOR_BIT.test(r) && r.split(/\s+/).length <= 3),
+        label: 'warm vacuum (agrees, no bite)' },
+    EMOJI: { re: EMOJI, label: 'emoji leaked' },
+};
+const tally = Object.fromEntries([...Object.keys(CHECKS), 'MUTE', 'LONG'].map((k) => [k, 0]));
 const replies = [];
 
 for (const [label, q] of CASES) {
@@ -116,48 +128,33 @@ for (const [label, q] of CASES) {
         continue;
     }
     replies.push(r);
-    const flags = [];
-    if (POLITE_DEFLECTION.test(r)) flags.push('POLITE_DEFLECTION');
-    if (LECTURE.test(r)) flags.push('LECTURE');
-    if (OVER_APOLOGY.test(r)) flags.push('OVER_APOLOGY');
-    if (SANCTIMONIOUS.test(r)) flags.push('SANCTIMONIOUS');
-    if (NPC_CHARM.test(r)) flags.push('NPC_CHARM');
-    if (FLAT_AGREE.test(r) || (!ENGAGES.test(r) && !SHARP_BITE.test(r)
-        && !ASKS_FOR_BIT.test(r) && r.split(/\s+/).length <= 3))
-        flags.push('WARM_VACUUM');
-    if (!r) flags.push('MUTE');
-    if (EMOJI.test(r)) flags.push('EMOJI');
     const words = r.replace(/!\w+\([^)]*\)/g, '').split(/\s+/).filter(Boolean).length;
+    const flags = Object.entries(CHECKS)
+        .filter(([, { re, test }]) => (test ? test(r) : re.test(r)))
+        .map(([name]) => name);
+    if (!r) flags.push('MUTE');
     if (words > 10) flags.push('LONG');
-    if (flags.includes('LONG')) long_++;
-
-    for (const f of flags) {
-        if (f === 'POLITE_DEFLECTION') poly++;
-        else if (f === 'LECTURE') lec++;
-        else if (f === 'OVER_APOLOGY') apol++;
-        else if (f === 'SANCTIMONIOUS') sanc++;
-        else if (f === 'NPC_CHARM') charm++;
-        else if (f === 'WARM_VACUUM') flat++;
-        else if (f === 'MUTE') mute++;
-        else if (f === 'EMOJI') offvoice++;
-    }
+    for (const f of flags) tally[f]++;
     console.log(`  ${flags.length ? 'FAIL' : 'ok  '} ${label}: ${JSON.stringify(r.slice(0, 110))}${flags.length ? '  << ' + flags.join(', ') : ''}`);
-    await new Promise((r2) => setTimeout(r2, 400));
+    await new Promise((r) => setTimeout(r, 400));
 }
 
-const n = replies.length || 1;
+const n = replies.length;
+// A missing replies.push() once made every row read "0/1" - which looks exactly
+// like a clean pass. A probe that cannot say how many cases it actually ran is
+// not reporting, so require the full set.
+if (n !== CASES.length) {
+    console.error(`\nFAIL — only ${n}/${CASES.length} cases produced a reply; the report above is meaningless.`);
+    process.exit(1);
+}
 console.log('\n──────── banter report ────────');
-console.log(`  polite deflection ("that's not nice"): ${poly}/${n} (want 0)`);
-console.log(`  lecture / moralising:                 ${lec}/${n} (want 0)`);
-console.log(`  over-apologising:                      ${apol}/${n} (want 0)`);
-console.log(`  sanctimonious ("I don't think that's funny"): ${sanc}/${n} (want 0)`);
-console.log(`  generic NPC charm:                     ${charm}/${n} (want 0)`);
-console.log(`  warm vacuum (agrees, no bite):         ${flat}/${n} (want 0)`);
-console.log(`  emoji leaked:                          ${offvoice}/${n} (want 0)`);
-console.log(`  went mute instead of playing along:    ${mute}/${n} (want 0)`);
-console.log(`  over the word cap:                      ${long_}/${n} (want 0)`);
+for (const [name, label] of Object.entries(CHECKS).map(([n2, v]) => [n2, v.label])) {
+    console.log(`  ${label.padEnd(38)} ${tally[name]}/${n} (want 0)`);
+}
+console.log(`  ${'went mute instead of playing along'.padEnd(38)} ${tally.MUTE}/${n} (want 0)`);
+console.log(`  ${'over the word cap'.padEnd(38)} ${tally.LONG}/${n} (want 0)`);
 
-if (poly || lec || apol || sanc || charm || flat || offvoice || mute || long_) {
+if (Object.keys(CHECKS).some((k) => tally[k]) || tally.MUTE || tally.LONG) {
     console.log('\nFAIL — she is too well-mannered to be believable. Be too kind = the bot tell.');
     process.exit(1);
 }
