@@ -6,6 +6,7 @@ import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
+import { Tilt } from '../utils/tilt.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -729,6 +730,18 @@ export class Agent {
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
+        // How angry she is right now. Without this the persona's rage section is
+        // decoration - it describes a state that never reaches the prompt.
+        // Tilt is a suggestion, not a filter: it shapes register, and the
+        // deterministic layer never decides a message is too angry to send.
+        if (!isYandere() && this._tilt?.isTilted) {
+            const hint = this._tilt.styleHint();
+            if (hint) {
+                await this.history.add('system',
+                    `How you are feeling right now: ${hint} (tilt ${(this._tilt.level * 100).toFixed(0)}%)`);
+            }
+        }
+
         let behavior_log = this.bot.modes.flushBehaviorLog().trim();
         if (behavior_log.length > 0) {
             const MAX_LOG = 500;
@@ -1032,6 +1045,19 @@ export class Agent {
                     return;
                 }
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
+        }
+
+        // ── TYPOS, AT THE RATE REAL PLAYERS PRODUCE THEM ──────────────────
+        // Measured: 1.3% of 21,822 real player messages carry a typo, and 88% of
+        // that is a dropped apostrophe ("its", "youre", "dont"). The owner asked
+        // for this ("typos like the one i did accidentalky are normal also"). A
+        // bot that typos constantly is far more wrong than one that never does,
+        // so this is a seasoning and the rate is pinned to the measurement.
+        if (!isYandere()) {
+            try {
+                const { applyTypo } = await import('../utils/typo.js');
+                message = applyTypo(message);
+            } catch (e) { console.warn('[typo] failed open:', e.message); }
         }
 
         // ── THE ONE HARD LIMIT, IN CODE ────────────────────────────────────
@@ -1401,6 +1427,14 @@ export class Agent {
             }
         });
         this.bot.on('death', () => {
+            // Death raises tilt, so the fourth death actually makes her louder
+            // than the first. Without this the persona's rage section had no way
+            // to become true, because nothing ever told her she was upset.
+            if (!isYandere()) {
+                this._tilt ||= new Tilt();
+                this._tilt.note('death');
+                console.log(`${this.name} [tilt] died - now ${(this._tilt.level * 100).toFixed(0)}%`);
+            }
             this.actions.cancelResume();
             this.actions.stop();
             this.psyche.onDeath();
