@@ -474,11 +474,14 @@ export class Agent {
             } catch (e) { console.warn('[sysmsg] handle failed:', e.message); }
         });
 
-        this.bot.on('chat', (username, message) => {
-            if (serverProxy.getNumOtherAgents() > 0) return;
-            // only respond to open chat messages when there are no other agents
-            respondFunc(username, message, false);
-        });
+        // NOTE: `bot.on('chat', ...)` used to live here. It is DEAD CODE on this
+        // build and must not be re-added. Verified in the vendored fork
+        // (mineflayer-26.2, Complexity-ML): lib/plugins/chat.js emits only
+        // 'message' and 'messagestr', and a repo-wide grep for emit('chat', finds
+        // nothing. The 26.3 signed-chat bridge emits message/messagestr DIRECTLY
+        // and, unlike the old signed path, never runs the regex patterns that
+        // would have re-emitted 'chat'. Player chat reaches handleMessage via
+        // the messagestr path, which is the one that has been working.
 
         // uwu: guest-server join flow — AuthMe-style /register-/login prompts
         // + one /kit probe. Prompt-gated only (never sends blind), max 2 tries
@@ -1200,6 +1203,17 @@ export class Agent {
                 // a real player does. Judging the whole message here and dropping
                 // it was an ordering bug: fragmentation happens later in the send
                 // path, so paragraphs were being discarded instead of split.
+                // '~' IS A MINECRAFT EMOTE (~name = "name waves"), not
+                // punctuation. As a trailing tic it means nothing to a reader.
+                // Measured in 21,822 real player messages: '~' appears in ONE
+                // (0.005%), and that one is a typo rather than an emote, while
+                // '*' appears in 59 (0.270%). A trailing tilde is a 1-in-21,822
+                // tic and must never reach chat. Stripped here, BEFORE the length
+                // and empty-ack gates, so those judge what the player sees and a
+                // tilde cannot pad an otherwise-empty line into looking like
+                // content.
+                message = String(message).replace(/~+/g, '').replace(/\s{2,}/g, ' ').trim();
+
                 let len = checkLength(message);
                 if (!len.ok && len.why === 'paragraph') {
                     try {
