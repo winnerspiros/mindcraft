@@ -70,8 +70,16 @@ export function splitOffCommand(text) {
 }
 
 export function fragmentForChat(text) {
-    let s = enforceWordCap(text);
-    if (!s) return [];
+    if (!String(text || '').trim()) return [];
+    // Fragment FIRST, then cap each line. The order was backwards and it cost
+    // real content: enforceWordCap ran on the whole reply and kept only the
+    // first fitting sentence, so "ok so. first thing. i fixed the door. then i
+    // found diamonds..." shipped as "ok so." - 24 words reduced to 2. A burst
+    // already exists as separate messages, so each line gets the full budget:
+    // a 3-line reply can say 30 words as three short lines, which is what a real
+    // player does, where a 10-word cap on the whole message silently deletes
+    // everything after the first clause.
+    let s = String(text).trim();
 
     // Multiple commands already = multi-message by nature. Leave alone.
     const commandCount = (s.match(/!\w+\(/g) || []).length;
@@ -117,17 +125,30 @@ export function fragmentForChat(text) {
     // Too many pieces to send without spamming: rebalance into MAX_LINES
     // balanced chunks rather than dropping content or sending six messages.
     if (merged.length > MAX_LINES) {
-        const total = merged.join(' ').split(/\s+/).length;
-        const per = Math.ceil(total / MAX_LINES);
-        const words = merged.join(' ').split(/\s+/);
-        const out = [];
-        for (let i = 0; i < words.length; i += per) {
-            const chunk = words.slice(i, i + per).join(' ').replace(/[.,;:]$/, '');
-            if (chunk) out.push(chunk);
+        // Fold the SHORTEST neighbours together until the burst fits. Slicing on
+        // a raw word count instead - which is what this used to do - cuts
+        // mid-phrase and is the exact "you need to make" bug this file already
+        // refuses to commit elsewhere. Merging whole clauses keeps every line
+        // parseable, and folding the shortest pair first puts the extra content
+        // where it does the least damage.
+        parts = merged.slice();
+        while (parts.length > MAX_LINES) {
+            let best = 0;
+            for (let i = 0; i < parts.length - 1; i++)
+                if (parts[i].length + parts[i + 1].length < parts[best].length + parts[best + 1].length)
+                    best = i;
+            parts.splice(best, 2, `${parts[best].replace(/[,;:]+$/, '')} ${parts[best + 1]}`);
         }
-        parts = out.slice(0, MAX_LINES);
     }
 
+    // Cap each LINE, not the whole reply. A burst is several messages, so each
+    // one gets its own budget; a single line still gets cut to the first clause
+    // that fits, which is where the "no mid-phrase cuts" rule actually matters.
+    // Attach the command FIRST, then cap each line. Capping before the attach
+    // left the last line uncapped - enforceWordCap is what splits the command
+    // back off, so it needs to see the line whole: "check if the torches are
+    // stable and if the dust is placed where it should be !collectBlocks(...)"
+    // went out at 17 words that way.
     if (command) parts[parts.length - 1] = `${parts[parts.length - 1]} ${command}`.trim();
-    return parts.filter(Boolean);
+    return parts.map(enforceWordCap).filter(Boolean);
 }

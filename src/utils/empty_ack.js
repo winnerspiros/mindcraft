@@ -20,10 +20,10 @@
 // "should she speak at all" and "must she be nice". Neither can see this: a bare
 // ack is legitimate speech to both of them.
 
-// A bare acknowledgement: a single token (or a stutter of one) plus optional
-// trailing punctuation or a text emoticon. Kept deliberately short — this must
-// never fire on a reply that carries content, so it is an exhaustive list of
-// the empties rather than a general "short reply" test.
+// A bare acknowledgement: one ack token (or a stutter of one) plus optional
+// trailing punctuation. Anchored at both ends, so this is an exhaustive list of
+// the empties rather than a general "short reply" test — anything longer than
+// one token cannot match and is left alone.
 const ACKS = [
     'ok', 'okay', 'k', 'kk', 'yeah', 'yeah yeah', 'yep', 'yup', 'ya', 'yep yeah',
     'sure', 'sure thing', 'mm', 'mhm', 'hm', 'hmm', 'right', 'true', 'agreed',
@@ -35,19 +35,16 @@ const ACKS = [
 const BARE_ACK = new RegExp(
     `^(${ACKS.map((a) => a.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})[.!,]*$`, 'i');
 
-// Words that make an ack into an actual reply: content, an action, a question,
-// a complaint, or a jab. A bare ack contains none of these by construction.
-const HAS_CONTENT = /\?|\b(i|we|it|that|this|there|you|me|my|go|going|gonna|come|bring|need|want|wait|stop|give|build|mine|get|help|can|could|would|should|let|look|check|open|close|place|break|fix|died|death|die|killed|lag|lagging|server|phantom|pillager|mob|wood|stone|iron|diamond|farm|base|house|shelter|fence|floor|wall|door|chest|bow|arrow|sword|torch|bed|craft|hungry|tired|bored|afk|ready|not yet|almost|actually)\b/i;
-
 export function isEmptyAck(text) {
+    // Commands are stripped first, so "ok !tp(0,64,0)" is judged as "ok" — still
+    // an empty ack, because a teleport does not acknowledge anything. No further
+    // content check is needed: BARE_ACK is anchored, so a match means the reply
+    // IS one ack token and nothing else.
     const body = String(text || '')
-        .replace(/![A-Za-z_][A-Za-z_0-9]*\([^)]*\)/g, ' ')   // a command is content
+        .replace(/![A-Za-z_][A-Za-z_0-9]*\([^)]*\)/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
-    if (!body) return false;                                   // silence is not this bug
-    if (!BARE_ACK.test(body)) return false;                    // it said something
-    // "ok but the roof is broken" is not an empty ack.
-    return !HAS_CONTENT.test(body);
+    return !!body && BARE_ACK.test(body);
 }
 
 // Extra punctuation-stripped form: "yeah." / "yeah!" / "ok :)" still count.
