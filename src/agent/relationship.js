@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import path from 'path';
+import { isYandere } from '../utils/server_context.js';
 
 // UwU's secret relationship engine.
 //
@@ -326,6 +327,12 @@ export class RelationshipManager {
 
     // Compact summary for the LLM prompt. Only players she's actually met.
     summarize() {
+        // In normal persona there is no beloved rank and no grievance ledger:
+        // both would tell her to be possessive, which the normal script forbids
+        // in prose but could not undo while they were still in her prompt.
+        // Ranks are demoted rather than hidden, so warmth still scales.
+        const yandere = isYandere();
+        const DEMOTED = { beloved: 'close friend', darling: 'close friend', lover: 'close friend' };
         const entries = Object.entries(this.players)
             .filter(([, e]) => e.interactions > 0)
             .sort((a, b) => b[1].attention - a[1].attention)
@@ -334,8 +341,9 @@ export class RelationshipManager {
         const lines = entries.map(([name, e]) => {
             const bits = [];
             for (const s of STAT_DEFS) bits.push(`${s} ${e[s]}`);
-            let line = `- ${name}: ${bits.join(', ')}, rank ${e.rank.toUpperCase()}, tone ${e.lastTone || 'neutral'}`;
-            if (e.grievance) line += `, grievance: ${e.grievance}`;
+            const rank = yandere ? e.rank : (DEMOTED[e.rank] || e.rank);
+            let line = `- ${name}: ${bits.join(', ')}, rank ${rank.toUpperCase()}, tone ${e.lastTone || 'neutral'}`;
+            if (e.grievance && yandere) line += `, grievance: ${e.grievance}`;
             if (this.agent && this.agent.ignored_players && this.agent.ignored_players[name]) line += ', IGNORING';
             if (e.notes) line += `, notes: ${e.notes}`;
             return line;
