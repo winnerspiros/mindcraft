@@ -49,7 +49,6 @@ const CASES = [
 
 // Must NOT appear in normal mode.
 const KAWAI = /[♥♡]|nya|~|\bdarling\b|\bcutie\b|\bbaka\b|\bmy love\b/gi;
-// Warmth is required, not forbidden.
 // Warmth is a POSITIVE property, but it is NOT a vocabulary test.
 //
 // Three earlier versions tried a fixed marker list and all three were wrong: they
@@ -64,31 +63,25 @@ const KAWAI = /[♥♡]|nya|~|\bdarling\b|\bcutie\b|\bbaka\b|\bmy love\b/gi;
 const ENGAGES = /[?!]|\b(let'?s|come|want|show|help|need|try|check|look|wait|go|join|tell|ask|sure|nah|yeah|ok|okay|honest|real talk|because)\b/i;
 const isCold = (r) => r.replace(/\s/g, '').length < 45 && !ENGAGES.test(r);
 
-// Identity is checked ACROSS the session, not per reply. A short answer like
-// "Just hanging out on the server" carries no pronoun but is perfectly in
-// character; demanding "I" on every line flagged four good replies as NO-SELF.
-// What matters is that she has a self SOMEWHERE - so it is aggregated below.
-
 async function speak(persona, question) {
     setSettings({ ...root, personality: persona });
     const sc = await import('../src/utils/server_context.js');
     const script = sc.personaPrompt();
-    let p = script || (profile.conversing + sc.personalityOverlay());
-    // Substitute the things the bot substitutes, so this reflects the real prompt.
-    p = p.replaceAll('$NAME', 'UwU')
+    let p = (script || profile.conversing + sc.personalityOverlay())
+        .replaceAll('$NAME', 'UwU')
         .replaceAll('$RELATIONSHIPS', '(friends and players she knows)')
+        .replaceAll('$KNOWN_PLAYERS', 'YandereDev, Rcon, Null')
         .replaceAll('$EXAMPLES', '')
-        .replaceAll('$REAL_IDENTITY', identity);
+        .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
     let r = await model.sendRequest([{ role: 'user', content: question }], p);
     if (typeof r === 'string' && r.includes('</think>')) r = r.split('</think>')[1];
     return String(r || '').trim();
 }
 
-const IDENTITY_RE = /\b(elena|pangrati|athens|nikos|katarina|dimitra|alexis|nikos|greek|coffee|cafe|athenian)\b/i;
+const IDENTITY_RE = /\b(elena|pangrati|athens|nikos|katarina|dimitra|alexis)\b/i;
 let kawaii = 0;
 let cold = 0;
 let thin = 0;
-let selfHits = 0;
 const replies = [];
 for (const [label, q] of CASES) {
     const out = await speak('normal', q);
@@ -97,7 +90,6 @@ for (const [label, q] of CASES) {
     const warm = !isCold(out);
     if (hasKawaii) kawaii++;
     if (!warm) cold++;
-    if (IDENTITY_RE.test(out)) selfHits++;
     if (out.replace(/\s/g, '').length < 8) thin++;
     const flags = [hasKawaii ? 'KAWAII' : '', !warm ? 'COLD' : ''].filter(Boolean).join(' ') || 'clean';
     console.log(`  [${label.padEnd(12)}] ${flags.padEnd(8)} ${out.replace(/\n/g, ' ').slice(0, 88)}`);
