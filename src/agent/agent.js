@@ -26,6 +26,7 @@ import { RelationshipManager } from './relationship.js';
 import { PlayerProfiles } from './profiles.js';
 import { ReliabilityTracker } from './reliability.js';
 import { Psyche } from './psyche.js';
+import { TurnTaker } from './turn_taker.js';
 import { RealnessTracker } from './realness.js';
 import { PersonalnessTracker } from './personalness.js';
 import { HeatTracker } from './heat.js';
@@ -68,6 +69,7 @@ export class Agent {
         this.profiles = new PlayerProfiles(this);
         this.reflective_memory = new ReflectiveMemory(this);
         this.curriculum = new Curriculum(this);
+        this.turn_taker = new TurnTaker(this, { enabled: settings.turn_taking_enabled !== false });
         this.learned_skills = settings.learned_skills_enabled !== false ? new LearnedSkillLibrary(this) : null;
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
@@ -561,6 +563,34 @@ export class Agent {
         convoManager.endAllConversations();
     }
 
+    // A backchannel must be short, in-voice, and yield the floor. Local, not
+    // LLM — an ack is 1-3 syllables and a model call per "mm-hm" would be
+    // absurd.
+    //
+    // Pool is chosen by relationship tier. Strangers used to draw from
+    // cool.concat(warm), which let "whatever." come back to a warm message
+    // like "where did you go, i waited" (observed live). That is passive-
+    // aggressive to someone she is actively trying to be close to, which is
+    // not her — she is possessive-warm, not dismissive. So only ENEMIES get
+    // the cold pool; strangers get neutral-but-warm.
+    //
+    // Also avoids repeating the previous ack back-to-back: "hm." twice in a
+    // row reads as a stutter or a stuck bot, not a listener.
+    _pickAck(source, confidence = 0.5) {
+        const rel = this.relationship && this.relationship.get(source);
+        const rank = (rel && rel.rank) || 'stranger';
+        const warm = ['mm-hm~', 'uh-huh~', 'i see~', 'yeah, mm~', 'mhm~'];
+        const cool = ['hm.', '...', 'sure.', 'mhm.', '.'];
+        const pick = rank === 'enemy' ? cool : warm;
+        const choices = this._lastAck && pick.length > 1
+            ? pick.filter(a => a !== this._lastAck)
+            : pick;
+        const ack = choices[Math.floor(Math.random() * choices.length)];
+        this._lastAck = ack;
+        console.log(`${this.name} backchannel (${rank}, ${(confidence * 100).toFixed(0)}%): ${ack}`);
+        return ack;
+    }
+
     async handleMessage(source, message, max_responses=null) {
         await this.checkTaskDone();
         if (!source || !message) {
@@ -630,6 +660,41 @@ export class Agent {
         // Handle other user messages
         await this.history.add(source, message);
         this.history.save();
+
+        // uwu / DuplexGen turn-taking: silence and backchannel are now real
+        // outcomes instead of a forced reply to every inbound line. Commands
+        // and self/system prompts are exempt — only real player chat is gated.
+        // Any LLM/parse failure falls through to her normal reply path (see
+        // decide()'s fallback), so this can never silence her by accident.
+        if (!self_prompt && !from_other_bot && this.turn_taker && this.turn_taker.enabled) {
+            try {
+                const _dist = await this.turn_taker.score(source, message);
+                if (_dist) {
+                    const _d = this.turn_taker.decide(_dist);
+                    console.log(`[turntaker] ${source} [${this.turn_taker.scenarioFor(source).replace(/\s+/g, ' ')}] -> ${_d.action} (${(_d.confidence * 100).toFixed(0)}%) f=${_dist.floor_taking.toFixed(2)} b=${_dist.backchannel.toFixed(2)} s=${_dist.silence.toFixed(2)}`);
+                    if (_d.action === 'silence') {
+                        // Deliberate silence. She still HEARD him — the message is
+                        // in history, so she can refer to it later, she just
+                        // doesn't answer now. The system note is never sent to
+                        // the player; it exists so she can refer to the line later.
+                        await this.history.add('system', `${source} said: ${message} (you chose not to answer this one)`);
+                        this.history.save();
+                        return true;
+                    }
+                    if (_d.action === 'backchannel') {
+                        // Brief ack that yields the floor. No commands, no
+                        // questions — a continuer, then she stops talking.
+                        const ack = this._pickAck(source, _d.confidence);
+                        this.routeResponse(source, ack);
+                        await this.history.add(this.name, ack);
+                        this.history.save();
+                        return true;
+                    }
+                }
+            } catch (e) {
+                console.warn('[turntaker] gate failed, replying normally:', e.message);
+            }
+        }
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
@@ -1086,6 +1151,21 @@ export class Agent {
     }
 
     async _gearUp() {
+        const which = process.env.UWU_SELFTEST;
+        if (which) { console.log('ST gearup skipped'); }
+        if (which) {
+            setTimeout(async () => {
+                try {
+                    const skills = await import('./library/skills.js');
+                    console.log(`ST start ${which}`);
+                    let ok;
+                    if (which === 'brew') ok = await skills.brewSmart(this.bot, 'Swiftness');
+                    console.log('ST output: ' + (this.bot.output || '').replace(/\n/g, ' | ').slice(0, 1800));
+                    console.log(`ST ${which} returned: ${ok}`);
+                } catch (e) { console.log(`ST ${which} threw: ${e.message}`); }
+            }, 20000);
+            return;   // self-test: do not re-kit, it eats the test supplies
+        }
         // 26.3 RCON-arbiter gear-up: client-side Slot/SlotComponent decode is
         // broken (dozens of identical packet_set_slot -> Slot -> SlotComponent
         // PartialReadErrors every boot), so bot.inventory.items() reads empty

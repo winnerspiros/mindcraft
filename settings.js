@@ -40,6 +40,7 @@ const settings = {
     "goal_check_cycles": 3,       // self-prompt turns between critic+curriculum checks (was 5: with chatty 45s + solo 150s gears a check landed every ~10min, so one stuck goal ate the whole session; 3 rotates faster)
     "goal_stuck_limit": 3,        // consecutive "incomplete" verdicts before she abandons + picks a new goal
     "learned_skills_enabled": true, // growing skill library: reuse proven !newAction code via embedding recall
+    "turn_taking_enabled": true, // DuplexGen-style: she may pick silence/backchannel over replying to every line
     "num_examples": 2,
     "max_commands": -1,
     "show_command_syntax": false,
