@@ -39,10 +39,17 @@ export class ModerationWatcher {
     start() {
         if (this.timer) return;
         this.timer = setInterval(() => this._check(), 1000);
+        // Engagement decay rides the existing 1s moderation tick rather than
+        // adding another interval - one timer per bot is plenty on a 1-OCPU box,
+        // and this one already runs.
+        this._cadenceTimer = setInterval(() => {
+            try { this.agent?.self_prompter?.tickCadence?.(); } catch (_) {}
+        }, 30000);
     }
 
     stop() {
         if (this.timer) { clearInterval(this.timer); this.timer = null; }
+        if (this._cadenceTimer) { clearInterval(this._cadenceTimer); this._cadenceTimer = null; }
     }
 
     _check() {
