@@ -8,7 +8,21 @@ const settings = {
     "mindserver_port": 8080,
     "auto_open_ui": false, // headless box, no browser
 
+    // ── Moderation (she flags, she decides) ────────────────────────────────
+    // The watcher only FLAGS suspicious movement as data for her to judge; it
+    // never acts on its own. So these change how much she notices, never what
+    // she is allowed to do.
+    "moderation_cooldown_ms": 30000,   // ms between flags for the same player
+    "moderation_speed_limit": 25,      // blocks/sec that counts as suspicious
+                                        // (no legitimate movement is near this)
+
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
+    // Which profile JSON to load. She runs the FIRST entry. Point this at a
+    // different file to swap her whole script, model, modes and commands —
+    // e.g. ["./uwu.json", "./uwu-normal.json"] while you compare. Every path
+    // is checked at boot by tools/check-config.mjs.
+    // (standalone.js lets a PROFILES env var override this; the service does
+    // not set one, so this list is what actually runs.)
     "profiles": [
         "./uwu.json",
     ],

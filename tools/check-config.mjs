@@ -76,10 +76,11 @@ const NUMBER_KEYS = [
     'max_messages', 'reflection_interval', 'reflection_recall_count',
     'reflection_max_memories', 'learned_skills_max',
     'goal_check_cycles', 'goal_stuck_limit', 'self_prompt_no_command_strikes',
+    'moderation_cooldown_ms', 'moderation_speed_limit',
     'num_examples', 'max_commands', 'spawn_timeout', 'block_place_delay',
 ];
 // Nested objects get their own shape check below; they are not scalars.
-const OBJECT_KEYS = new Set(['mode_cooldowns', 'modes', 'only_chat_with', 'blocked_actions', 'profiles']);
+const OBJECT_KEYS = new Set(['mode_cooldowns', 'modes', 'only_chat_with', 'blocked_actions', 'profiles', 'persona_scripts']);
 console.log('\ntype checks:');
 for (const k of BOOLEAN_KEYS) {
     if (OBJECT_KEYS.has(k)) continue;
@@ -101,6 +102,33 @@ if (!('personality' in settings)) err('personality key is missing entirely');
 else if (!PERSONALITIES.includes(settings.personality)) {
     err(`personality must be one of ${PERSONALITIES.join(' | ')}, got ${JSON.stringify(settings.personality)}`);
 } else console.log(`  ok     personality = ${settings.personality}`);
+
+// --- 3b. profile list: every path must exist and parse ---------------------
+// She runs settings.profiles[0]. A typo there is a crash at boot with a
+// confusing readFileSync error, so name the file and the problem.
+if (!Array.isArray(settings.profiles)) {
+    err('profiles must be an array of paths', `got ${typeof settings.profiles}`);
+} else if (settings.profiles.length === 0) {
+    err('profiles is empty - there is no profile to load');
+} else {
+    for (const rel of settings.profiles) {
+        const fp = path.resolve(ROOT, rel);
+        if (!existsSync(fp)) {
+            err(`profile "${rel}" does not exist`, `   looked in ${fp}`);
+            continue;
+        }
+        try {
+            const pj = JSON.parse(readFileSync(fp, 'utf8'));
+            if (typeof pj.conversing !== 'string' || !pj.conversing.length) {
+                warn(`profile "${rel}" has no "conversing" prompt - she would have nothing to say`);
+            }
+        } catch (e) {
+            err(`profile "${rel}" is not valid JSON: ${e.message}`);
+        }
+    }
+    const active = settings.profiles[0];
+    console.log(`  ok     profile[0] = ${active} (${settings.profiles.length} configured)`);
+}
 
 // --- 4. ranges that matter -------------------------------------------------
 // mode_cooldowns: every value must be a non-negative integer number of ms.
@@ -130,6 +158,8 @@ if (settings.goal_stuck_limit < 1) err('goal_stuck_limit must be >= 1');
 if (settings.self_prompt_no_command_strikes < 1) err('self_prompt_no_command_strikes must be >= 1');
 if (settings.reflection_max_memories < 1) err('reflection_max_memories must be >= 1');
 if (settings.learned_skills_max < 1) err('learned_skills_max must be >= 1');
+if (settings.moderation_cooldown_ms < 0) err('moderation_cooldown_ms must be >= 0');
+if (!(settings.moderation_speed_limit > 0)) err('moderation_speed_limit must be > 0');
 if (settings.reflection_recall_count < 1) err('reflection_recall_count must be >= 1');
 if (settings.goal_check_cycles < 1) err('goal_check_cycles must be >= 1');
 if (settings.reflection_interval < 1) err('reflection_interval must be >= 1');
