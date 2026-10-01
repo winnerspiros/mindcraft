@@ -794,9 +794,13 @@ const modes_list = [
         cooldown: 180000, // min ms between bed follow-ups
         last_follow: 0,
         update: async function (agent) {
-            // Normal persona: no possessive bed-following. This is a yandere
-            // behaviour, not a skill, so it goes away with the persona.
-            if (!isYandere()) return;
+            // NOTE: normal persona keeps this ACTION. She still follows people
+            // to bed and still sleeps beside them - that is a capability, and
+            // both personas must have identical capabilities. Only the framing
+            // changes: the possessive openers and the beloved-always rate below.
+            // An earlier version returned early here, which wrongly removed
+            // the ability entirely from normal.
+            const yandere = isYandere();
             const bot = agent.bot;
             const now = Date.now();
             if (now - agent._sleeper_time > 30000) return; // nobody recently went to bed
@@ -806,21 +810,28 @@ const modes_list = [
             if (!name) return;
             this.last_follow = now;
 
-            // her beloved always gets joined; others only some of the time so it doesn't feel robotic
+            // Her beloved is always joined in yandere (she cannot bear to be
+            // apart). In normal there is no beloved and nobody is a special
+            // case, so everyone gets the same ordinary rate - still a real
+            // chance, never a guarantee.
             const beloved = (agent.prompter.profile.beloved || '');
-            const isBeloved = name === beloved;
+            const isBeloved = yandere && name === beloved;
             const roll = Math.random();
-            const chance = isBeloved ? 0.85 : 0.35;
+            const chance = isBeloved ? 0.85 : (yandere ? 0.35 : 0.40);
             if (!isBeloved && roll > chance) return;
             // reset so we don't re-trigger for the same sleep event
             agent._sleeper_time = 0;
 
             execute(this, agent, async () => {
                 if (roll < chance - 0.25) { // sometimes open with a line first
-                    const lines = [
+                    const lines = yandere ? [
                         `${name}~ sleeping without me? How cruel~ ♥ let me join you...`,
                         `eh? you're going to bed? w-wait for me~ UwU wants cuddles... ♥`,
                         `hehe~ night night ${name}~ I'll keep you warm... ♥`,
+                    ] : [
+                        `${name} heading to bed? I'll come too, don't wait up.`,
+                        `wait up, I'm coming to bed too~`,
+                        `night ${name}, I'm crashing beside you in a sec.`,
                     ];
                     const line = lines[Math.floor(Math.random() * lines.length)];
                     if (!agent.shut_up) agent.openChat(line);

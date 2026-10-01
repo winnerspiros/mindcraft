@@ -1,0 +1,7 @@
+{
+  "//": "PERSONA: yandere. Empty on purpose.",
+  "//reason": "Yandere IS the base profile. uwu.json's `conversing` prompt is already the full yandere script, so there is nothing to add and nothing to override. Keeping this file empty means one source of truth for that script instead of a 25k-character copy that could drift out of sync.",
+  "//effect": "When personality = yandere, the profile prompt is used exactly as written.",
+  "conversing": null,
+  "examples_from_profile": true
+}

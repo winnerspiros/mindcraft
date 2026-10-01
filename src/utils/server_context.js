@@ -181,6 +181,12 @@ export function isYandere() {
 // no console punishment. A real attack still gets a real (melee-only) answer.
 // It reads like a persona handoff because it IS: base prompt builds UwU,
 // this section drops the act — exactly the easter-egg mechanism.
+//
+// NOTE: personas/normal.json now holds a COMPLETE standalone script, so in
+// normal mode the yandere profile prompt is REPLACED rather than patched (see
+// personaPrompt()). This overlay is kept only as a safety net for the case
+// where normal.json is missing or unreadable - without it, a broken persona
+// file would silently leave her performing as yandere.
 export function personalityOverlay() {
     try {
         if (personality() === 'yandere') return '';
@@ -210,6 +216,71 @@ export function personalityPromptLine() {
         if (personality() === 'yandere') return '';
     } catch (_) { return ''; }
     return `\n(Note: you are in NORMAL persona right now — plain and warm, no yandere performance, no beloved, no jealousy, no possessiveness. Write and decide as yourself, not as a character.)\n`;
+}
+
+// ── Persona scripts ───────────────────────────────────────────────────────
+// personas/<name>.json holds a COMPLETE standalone chat script, so switching
+// persona REPLACES the prompt rather than appending an override to it.
+//
+// Why replace instead of append: the yandere script is ~25k chars of
+// imperative instruction ("hearts (♥♡)", "you are obsessively in love with
+// your beloved"). A normal script appended on top of that fights it — a stray
+// ♥ leaked through in testing precisely because the base instruction was
+// imperative and the appended note was only a preference. A standalone script
+// has nothing to fight.
+//
+// Yandere is the base profile, so personas/yandere.json is intentionally empty
+// and the profile prompt is used verbatim: one source of truth for that script
+// instead of a copy that could drift.
+
+const PERSONA_DIR = 'personas';
+const _personaCache = new Map();
+
+function _readPersonaFile(name) {
+    if (_personaCache.has(name)) return _personaCache.get(name);
+    let data = null;
+    try {
+        const fp = path.join(process.cwd(), PERSONA_DIR, `${name}.json`);
+        data = JSON.parse(fs.readFileSync(fp, 'utf8'));
+    } catch (e) {
+        if (e.code !== 'ENOENT') {
+            console.warn(`[persona] could not read personas/${name}.json: ${e.message}`);
+        }
+    }
+    _personaCache.set(name, data);
+    return data;
+}
+
+// The chat prompt for the active persona.
+//   yandere -> null  (use the profile prompt exactly as written)
+//   normal  -> the full standalone script from personas/normal.json
+// Returns null when there is nothing to substitute, so callers can fall back
+// to the profile prompt without special-casing.
+export function personaPrompt() {
+    const persona = personality();
+    if (persona === 'yandere') return null;
+    const data = _readPersonaFile(persona);
+    const script = data && typeof data.conversing === 'string' ? data.conversing : null;
+    if (!script) {
+        // Loud, because otherwise a broken persona file means she silently
+        // performs as yandere on a server configured for normal.
+        console.warn(
+            `[persona] personality="${persona}" but personas/${persona}.json has no usable ` +
+            '"conversing" script. Falling back to the profile prompt + drop-the-act overlay. ' +
+            'She may sound more yandere than intended.'
+        );
+        return null;
+    }
+    return script;
+}
+
+// Examples for the active persona, or null to use the profile's own.
+export function personaExamples() {
+    const persona = personality();
+    if (persona === 'yandere') return null;
+    const data = _readPersonaFile(persona);
+    const ex = data && Array.isArray(data.conversation_examples) ? data.conversation_examples : null;
+    return ex && ex.length ? ex : null;
 }
 
 export function teleportConfig() {

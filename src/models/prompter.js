@@ -575,15 +575,31 @@ export class Prompter {
                 return '';
             }
 
+            // Persona selection (settings.js "personality", overridable per
+            // server in servers.json):
+            //   yandere -> the profile prompt verbatim, nothing appended.
+            //   normal  -> personas/normal.json, a COMPLETE standalone script
+            //              that REPLACES the yandere prompt. Replacing rather
+            //              than appending matters: the yandere prompt gives
+            //              hearts and the beloved as standing imperative
+            //              instructions, and an appended "no hearts" note lost
+            //              to them in testing (a stray ♥ still came through).
+            // The overlay is applied only as a fallback, for when a persona
+            // file is missing or unreadable.
             let prompt = this.profile.conversing;
-            // Per-server personality overlay (servers.json "personality":
-            // yandere = base prompt, nothing to add; normal = Elena-style
-            // direct-drop persona section appended last, so it wins ties).
+            let personaExamples = null;
             try {
-                const { personalityOverlay } = await import('../utils/server_context.js');
-                if (typeof personalityOverlay === 'function') prompt += personalityOverlay();
+                const sc = await import('../utils/server_context.js');
+                const script = typeof sc.personaPrompt === 'function' ? sc.personaPrompt() : null;
+                if (script) {
+                    prompt = script;
+                    personaExamples = typeof sc.personaExamples === 'function' ? sc.personaExamples() : null;
+                } else if (typeof sc.personalityOverlay === 'function') {
+                    const overlay = sc.personalityOverlay();
+                    if (overlay) prompt += overlay;
+                }
             } catch (_) {}
-            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
+            prompt = await this.replaceStrings(prompt, messages, personaExamples || this.convo_examples);
             let generation;
 
             try {
