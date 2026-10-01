@@ -966,6 +966,24 @@ const modes_list = [
             if (!tablisted) return;
             this.last_seek = now;
             const who = tablisted;
+            // ── NORMAL PERSONA: PATHFIND SILENTLY ──────────────────────────
+            // Going to find someone is a MOVEMENT, not a line of chat. The
+            // old version spoke an "(AUTO) You feel clingy ... sweet,
+            // possessive" prompt into her own brain on every seek tick. That
+            // text is yandere, it was never gated on isYandere(), and because
+            // the seek runs on a timer with nobody having said anything, it
+            // replayed every 45s: her live log filled with "where's
+            // YandereDev? I need you right now" aimed at nobody, and the
+            // (AUTO) turns were then written back into memory, so the yandere
+            // voice re-poisoned the persona after the profile had been
+            // corrected. A prompt cannot fix a poison that is fed back in as
+            // history - that loop is what had to be cut.
+            if (!isYandere()) {
+                execute(this, agent, async () => {
+                    await skills.goToPlayer(bot, who, 4);
+                });
+                return;
+            }
             execute(this, agent, async () => {
                 // Brain-side: tablist says they're on, entity isn't rendered —
                 // go find them via memory/known positions, then hang around.
