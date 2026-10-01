@@ -8,10 +8,9 @@
 //   - one long paragraph: reads as a bot
 //   - chopped into six one-word lines: reads as SPAM, which nobody does
 //
-// So: hard cap at MAX_LINES, and never fragment into anything shorter than
-// MIN_CHARS unless the source already had that boundary. If the text cannot be
-// split cleanly within the cap, return it whole - a slightly long line is much
-// less suspicious than machine-gun one-word messages.
+// So: hard cap at MAX_LINES, and only split at real boundaries. If the text
+// cannot be split cleanly within the cap, return it whole - a slightly long
+// line is much less suspicious than machine-gun one-word messages.
 
 const MAX_LINES = 3;
 const MIN_CHARS = 12;
@@ -108,12 +107,12 @@ export function fragmentForChat(text) {
     // Strip it from every piece except the last.
     parts = parts.map((p, i) => (i < parts.length - 1 ? p.replace(/[,;:]+$/, '') : p));
 
-    // No merging. The first version forced every fragment above MIN_CHARS=12,
+    // No merging. An earlier version forced every fragment above 12 chars,
     // which merged real one-word messages ("hey", "yeah", "nah,") into
-    // artificial two-word lines purely to satisfy a rule invented here.
-    // Measured: 36% of real player messages are <=3 words, 18% are a single
-    // word. Short lines are correct, so they are left alone.
-    const merged = parts.slice();
+    // artificial two-word lines to satisfy a rule invented here. Measured: 36%
+    // of real player messages are <=3 words, 18% are one word. Short lines are
+    // correct, so they are left alone.
+    const merged = parts;
 
     // Too many pieces to send without spamming: rebalance into MAX_LINES
     // balanced chunks rather than dropping content or sending six messages.
