@@ -41,7 +41,8 @@ const MIN_SHARE_SAMPLE = 8;            // turns of context before share means an
 export class ChatBudget {
     constructor() {
         /** @type {number[]} */
-        this.sent = [];          // timestamps of her messages
+        this.sent = [];          // budget ledger: every ATTEMPT, sent or not
+        this.deliveredCount = 0; // what the room actually saw - share uses this
         this.consecutive = 0;    // her messages in a row with nothing from a human
         this.lastSentAt = 0;
     }
@@ -54,6 +55,14 @@ export class ChatBudget {
      * @param {number}  ctx.visible_humans
      */
     canSpeak(ctx) {
+        // ctx.checked: this turn already passed the pre-generation gate, so the
+        // rate limits were applied there. Asking again on the OUTPUT double-
+        // charges the turn (reserve() already counted it) and she burns her
+        // whole budget on discarded attempts - 8 generations, 0 sends.
+        //
+        // Rate limits are enforced in exactly one place: BEFORE generation. The
+        // output path only asks whether the TEXT is sendable.
+        if (ctx?.checked) return { ok: true, why: 'already_gated' };
         const now = ctx.now ?? Date.now();
         this.sent = this.sent.filter((t) => now - t < WINDOW_MS);
 
@@ -69,7 +78,11 @@ export class ChatBudget {
         // SHARE. If humans have barely spoken and she is on her own, her share
         // is already dominant; going higher is the talking-to-herself look.
         const humans = ctx.human_msgs_since_her_last ?? 0;
-        const hers = this.sent.length;
+        // DELIVERED count, not sent.length: a message she composed and dropped
+        // was not said to anyone, so it must not count as her dominating the room
+        // or talking to herself. Using sent.length here blocked her at attempt 3
+        // with 0 messages actually sent.
+        const hers = this.deliveredCount;
         if (humans === 0 && hers >= 3) {
             return { ok: false, why: 'monologue' };
         }
@@ -103,9 +116,24 @@ export class ChatBudget {
         // The clock is a PARAMETER, not Date.now() read here. Reading it inside
         // made the budget untestable at a synthetic time, and every test that
         // advanced its own clock was silently testing real wall time instead.
+        //
+        // It takes a BUDGET slot (10-minute cap, minimum gap) but deliberately
+        // does NOT touch `consecutive`. Live evidence: with reserve() advancing
+        // the run, 8 generations produced 0 sends - she spent her 2-message
+        // burst allowance on messages that were composed and discarded, and the
+        // room never saw any of them. `consecutive` is about what the ROOM saw;
+        // a thrown-away draft is not a turn.
         this.sent.push(now);
         this.lastSentAt = now;
+        this.pending = true;
+    }
+
+    /** A message actually went out. Now the run advances. */
+    delivered(now = Date.now()) {
+        this.lastSentAt = now;
         this.consecutive++;
+        this.deliveredCount++;
+        this.pending = false;
     }
 
     /** A human spoke, so her consecutive run is over. */

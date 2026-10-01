@@ -75,10 +75,10 @@ const check = (cond, good, bad) => {
     // a burst of 2 in a row is normal and allowed (corpus runs are 2-4)
     let t = 100000;
     check(b.canSpeak({ now: t, human_msgs_since_her_last: 0 }).ok, 'first message allowed', 'blocked immediately');
-    b.reserve(t);
+    b.reserve(t); b.delivered(t);
     t += MIN_GAP_MS + 10;
     check(b.canSpeak({ now: t, human_msgs_since_her_last: 0 }).ok, 'a 2nd in a row is allowed', 'no bursts at all');
-    b.reserve(t); b.note('yo', t);   // the gate reserves before generating
+    b.reserve(t); b.delivered(t); b.note('yo', t);   // reserved, then actually sent
     t += MIN_GAP_MS + 10;
     check(!b.canSpeak({ now: t, human_msgs_since_her_last: 0 }).ok,
         'a 3rd in a row with nothing from a human is stopped', 'she monologues');
@@ -87,7 +87,7 @@ const check = (cond, good, bad) => {
     // a human speaking resets the run
     const b = new ChatBudget();
     let t = 0;
-    for (let i = 0; i < 4; i++) { b.reserve(t); t += MIN_GAP_MS + 10; }
+    for (let i = 0; i < 4; i++) { b.reserve(t); b.delivered(t); t += MIN_GAP_MS + 10; }
     check(!b.canSpeak({ now: t, human_msgs_since_her_last: 0 }).ok, 'she is capped', 'not capped');
     b.humanSpoke();
     check(b.canSpeak({ now: t, human_msgs_since_her_last: 1 }).ok,
@@ -96,9 +96,46 @@ const check = (cond, good, bad) => {
 {
     // too fast is too fast
     const b = new ChatBudget();
-    b.reserve(50000);   // note() only records text now; reserve() is the gate
+    b.reserve(50000); b.delivered(50000);   // note() only records text now; reserve() is the gate
     check(!b.canSpeak({ now: 50000 + 100, human_msgs_since_her_last: 1 }).ok,
         'cannot send twice in the same instant', 'no minimum gap');
+}
+
+// ── REGRESSION: the live bug ───────────────────────────────────────────
+//
+// Deployed and observed: 8 x "[budget:too_many_in_a_row] holding back" and ZERO
+// actual sends. She composed 8 messages, sent none, and had exhausted her burst
+// allowance on attempts that were discarded.
+//
+// Two separate causes, both fixed:
+//   1. canSpeak() was called AGAIN on the output after reserve() had already
+//      charged the turn - a double charge. Fixed with ctx.checked.
+//   2. reserve() advanced `consecutive`, so messages that were composed and
+//      thrown away counted as turns to the room. reserve() now takes a budget
+//      slot only; delivered() advances the run.
+{
+    const b = new ChatBudget();
+    let t = 0;
+    // 8 attempts, every one discarded (too long) - the room sees nothing.
+    for (let i = 0; i < 8; i++) {
+        const gate = b.canSpeak({ now: t, human_msgs_since_her_last: 0 });
+        if (!gate.ok) { check(false, '8 discarded attempts never blocked', `blocked at attempt ${i}: ${gate.why}`); break; }
+        b.reserve(t);
+        b.note('a very long discarded message that never goes out');
+        t += MIN_GAP_MS + 10;
+    }
+    check(b.consecutive === 0, '8 discarded attempts advanced the run 0 times',
+        `discarded text advanced the run ${b.consecutive} times`);
+    // and the output path must not re-charge a turn
+    const before = b.sent.length;
+    const out = b.canSpeak({ now: t, human_msgs_since_her_last: 0, checked: true });
+    check(out.ok, 'the output path does not re-apply the rate limits', 'output path re-charged the turn');
+    check(b.sent.length === before, 'the output check does not consume budget',
+        'the output check consumed a budget slot');
+    // a real send still advances the run
+    b.delivered(t);
+    check(b.consecutive === 1, 'a delivered message advances the run once',
+        `consecutive is ${b.consecutive} after one real send`);
 }
 
 // ── and the window budget ──────────────────────────────────────────────
@@ -106,7 +143,7 @@ const check = (cond, good, bad) => {
     const b = new ChatBudget();
     let t = 0;
     for (let i = 0; i < MAX_MESSAGES_PER_WINDOW; i++) {
-        b.reserve(t);
+        b.reserve(t); b.delivered(t);
         b.humanSpoke();            // so the consecutive cap is not what stops her
         t += MIN_GAP_MS + 10;
     }
@@ -125,7 +162,7 @@ const check = (cond, good, bad) => {
     // is, and it has to be reachable on its own.
     const b = new ChatBudget();
     let t = 0;
-    for (let i = 0; i < 3; i++) { b.reserve(t); b.humanSpoke(); t += MIN_GAP_MS + 10; }
+    for (let i = 0; i < 3; i++) { b.reserve(t); b.delivered(t); b.humanSpoke(); t += MIN_GAP_MS + 10; }
     const v = b.canSpeak({ now: t, human_msgs_since_her_last: 0 });
     check(!v.ok, 'stops talking to herself', 'allowed a monologue');
     // With 3 messages in a row the consecutive cap fires before the monologue
