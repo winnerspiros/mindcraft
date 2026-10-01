@@ -10252,6 +10252,35 @@ async function fillWaterBottles(bot, want = 1) {
         return 0;
     }
 
+    // Prefer dipping into a cauldron. A cauldron is a solid full block, so a
+    // plain click lands on it; a water SOURCE needs an exact surface hit that
+    // eye-height aiming keeps missing, and the fill then silently no-ops while
+    // still costing the bottle. Do this BEFORE hunting for a source.
+    let dip = world.getNearestBlock(bot, 'water_cauldron', 16);
+    if (!dip) {
+        try {
+            log(bot, 'No cauldron with water — making one so I can dip bottles reliably.');
+            if (await fillCauldron(bot)) dip = world.getNearestBlock(bot, 'water_cauldron', 16);
+        } catch (e) { log(bot, `Cauldron route failed: ${e.message}`); }
+    }
+    if (dip) {
+        let n = 0;
+        for (let i = 0; i < want; i++) {
+            if ((inv()['glass_bottle'] || 0) < 1) break;
+            const before = filledCount();
+            try {
+                await goToPosition(bot, dip.position.x + 0.5, dip.position.y + 1, dip.position.z + 0.5, 2).catch(() => {});
+                await equip(bot, 'glass_bottle');
+                await useToolOnBlock(bot, 'glass_bottle', dip);
+                await wait(bot, 600);
+            } catch (e) { log(bot, `Dipping the bottle failed: ${e.message}`); break; }
+            if (process.env.DIP_DBG) console.log(`DIPDBG dip=${JSON.stringify(dip.position)} me=${JSON.stringify(bot.entity.position)} held=${bot.heldItem && bot.heldItem.name} filled=${filledCount()} gb=${(inv()['glass_bottle'] || 0)}`);
+            if (filledCount() <= before) { log(bot, 'The bottle did not fill from the cauldron.'); break; }
+            n++;
+        }
+        if (n > 0) return filledCount();
+    }
+
     // Only a still SOURCE (metadata 0) can be bottled; flowing water cannot, and
     // getNearestBlock happily returns the flowing kind.
     const src = world.getNearestBlock(bot, 'water', 32);
@@ -10309,6 +10338,14 @@ async function fillWaterBottles(bot, want = 1) {
         if ((inv()['glass_bottle'] || 0) < 1) break;
         const before = filledCount();
         try {
+            if (dip) {
+                await goToPosition(bot, dip.position.x + 0.5, dip.position.y + 1, dip.position.z + 0.5, 2).catch(() => {});
+                await equip(bot, 'glass_bottle');
+                await useToolOnBlock(bot, 'glass_bottle', dip);
+                await wait(bot, 600);
+                filled = filledCount();
+                if (filled > before) continue;
+            }
             // goToPosition() aims for the block ABOVE the source, which for a
             // water block is the water cell itself — she steps in, and from
             // inside it the bottle has no face to hit. Stand on a dry neighbour
@@ -10374,7 +10411,26 @@ export async function brewPotion(bot, ingredientName, count=1) {
     // opened. Walk right up, and re-read the block fresh rather than trusting a
     // stale reference from a previous step.
     await goToNearestBlock(bot, 'brewing_stand', 2, 16);
-    const freshStand = world.getNearestBlock(bot, 'brewing_stand', 16);
+    let freshStand = world.getNearestBlock(bot, 'brewing_stand', 16);
+    // openBlock needs her looking AT the stand from an orthogonally adjacent
+    // cell. Ending up on a diagonal leaves her facing a corner, the right-click
+    // misses, and the window never opens.
+    if (freshStand) {
+        const sp = freshStand.position;
+        const RING = [[1, 0], [-1, 0], [0, 1], [0, -1], [2, 0], [0, 2], [-2, 0], [0, -2], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+        for (const [dx, dz] of RING) {
+            await goToPosition(bot, sp.x + dx + 0.5, sp.y + 1, sp.z + dz + 0.5, 1).catch(() => {});
+            if (Math.abs(dx) + Math.abs(dz) === 1) {         // squarely beside it
+                const cur = world.getNearestBlock(bot, 'brewing_stand', 16);
+                if (cur && /brewing_stand/.test(cur.name)) {
+                    await bot.lookAt(cur.position.offset(0.5, 0.5, 0.5), true).catch(() => {});
+                    await wait(bot, 150);
+                    freshStand = cur;
+                    break;
+                }
+            }
+        }
+    }
     const useStand = (freshStand && freshStand.name === 'brewing_stand') ? freshStand : stand;
 
     try {
