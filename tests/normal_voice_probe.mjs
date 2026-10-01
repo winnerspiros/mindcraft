@@ -124,6 +124,15 @@ const tooClean = (r) => {
     return score >= 2;
 };
 
+// Dropped apostrophes / articles are WANTED - the owner types "im", "dont",
+// "whats". This is the positive half of the typography check: a reply that
+// spells every contraction out is the same tell as one that is over-punctuated.
+const overFormal = (r) => {
+    const b = String(r || '').trim();
+    const spelled = (b.match(/\b(i am|do not|did not|cannot|will not|it is|that is|there is|you are|we are|let us|i will|we will|he is|she is)\b/gi) || []).length;
+    return spelled >= 2;
+};
+
 // Too messy: 3+ shortened/abbreviated forms in one short line reads as a
 // caricature of a teenager rather than a person.
 const ABBREV = /\b(imo|ngl|fr|tbh|idk|rn|lol|lmao|brb|btw|smh|ikr|fyi|imo|ya|ye|nah|sup|ur|pls|thx|asap)\b/g;
@@ -228,10 +237,13 @@ for (const [label, q] of CASES) {
     if (EMOJI.test(body)) flags.push('EMOJI');
     if (ANYWAY_BRIDGE.test(body)) flags.push('ANYWAY-BRIDGE');
     if (endsWithQuestion(out) && !QUESTION_OK.has(label)) flags.push('Q-ENDING');
-    if (tooClean(out)) flags.push('TOO-CLEAN');
+    if (tooClean(out) || overFormal(out)) flags.push('TOO-CLEAN');
     if (tooMessy(out)) flags.push('TOO-MESSY');
     if (noPosition(body)) flags.push('NO-VIEW');
-    if (body.split(/\s+/).length > 45) flags.push('VERBOSE');
+    // The paragraph failure. Owner: "noone ... writes paragphs. usually ppl
+    // can be like hey, next message, whats up". 14 words is the script's own
+    // hard cap, so anything past that is her ignoring it.
+    if (body.split(/\s+/).filter(Boolean).length > 14) flags.push('VERBOSE');
     // Verbatim echo of an example line: recorded, not fatal. Strong examples
     // are a deliberate voice lever, and copying one is a real (watchable) risk.
     const verbatim = (globalThis.__uwuExampleLines || []).some(
