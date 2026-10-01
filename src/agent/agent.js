@@ -424,18 +424,50 @@ export class Agent {
                     this.relationship.onJealousyObserved(username);
                 }
 
-                // Relevance gate for public chat: don't answer unless she's addressed by name,
-                // the sender is nearby, or it's her beloved. Whispers are always addressed to her.
+                // Relevance gate for public chat.
+                //
+                // The owner: "still she doesnt respond to me unless i address her by
+                // name". This gate is why. It sat BEFORE shouldReplyTo, so all the
+                // dyad reasoning never ran: reply_trigger.js already classifies a
+                // plain statement in a two-person chat as dyad_default_open -> speak
+                // and only silences things that genuinely read as room talk. We
+                // were second-guessing it upstream.
+                //
+                // It was also wrong on its own terms:
+                //   - `called` is a literal substring test for her name, so you had
+                //     to type "uwu" to get a reply. That is not conversation.
+                //   - `nearby` needs this.bot.players[username].entity, which the
+                //     server only populates within a limited range. Past that it is
+                //     undefined and `nearby` is false for a player standing right
+                //     there - so she went deaf until you walked over AND said her
+                //     name.
+                //
+                // A GATE is still right for groups: in a busy room, chatter between
+                // other people genuinely is not addressed to her. It is wrong for a
+                // dyad, because a two-person chat has no ambient chatter - there is
+                // no room. Count the humans actually present and skip the gate when
+                // there is nobody else to be talking to.
                 if (!isWhisper && !isBeloved) {
-                    const called = msg_lc.includes(name_lc);
-                    let nearby = false;
+                    let other_humans = 0;
                     try {
-                        const p = this.bot.players[username] && this.bot.players[username].entity;
-                        if (p && this.bot.entity)
-                            nearby = p.position.distanceTo(this.bot.entity.position) <= 16;
+                        for (const _p of Object.values(this.bot?.players || {})) {
+                            if (_p && _p.username && _p.username !== this.name
+                                && _p.username !== username) other_humans++;
+                        }
                     } catch {}
-                    if (!called && !nearby)
-                        return; // ambient chatter not aimed at her — stay quiet
+                    if (other_humans === 0) {
+                        // nobody else here: whatever he said, it is for her
+                    } else {
+                        const called = msg_lc.includes(name_lc);
+                        let nearby = false;
+                        try {
+                            const p = this.bot.players[username] && this.bot.players[username].entity;
+                            if (p && this.bot.entity)
+                                nearby = p.position.distanceTo(this.bot.entity.position) <= 16;
+                        } catch {}
+                        if (!called && !nearby)
+                            return; // ambient chatter in a group, not aimed at her
+                    }
                 }
 
                 this.shut_up = false;
@@ -2323,11 +2355,37 @@ export class Agent {
             // note() ONLY on the transition into acting. Calling it every
             // permitted tick (update() runs at 300ms) pushed lastActionAt forward
             // forever and she never finished settling.
+            // Do NOT note() here. Settling is a steady state, not an edge, so
+            // "we were settling a moment ago" is true once per settle window -
+            // and note() stamps lastActionAt, which is precisely what re-arms the
+            // settle. That closed the gate again for another 90s and starved every
+            // mode, including the gaze, to one tick per settle window.
+            //
+            // Measured: [gatedbg] gate.ok=false why=settling isIdle=true on every
+            // tick, forever.
+            //
+            // The budget now learns about activity from _lastRealActionAt, which is
+            // stamped only after a command passes existence validation and actually
+            // executes. Being allowed to act is not an action.
             if (this._wasSettling) {
                 this._wasSettling = false;
-                this._idleBudget.note();
+                // Only a REAL executed action counts against the budget. On the
+                // very first pass _lastRealActionAt is unset, and stamping
+                // Date.now() would re-arm the settle from nothing - the exact bug
+                // this line used to have.
+                if (this._lastRealActionAt) this._idleBudget.note(this._lastRealActionAt);
             }
         } catch (e) { console.warn('[idle-budget] failed open:', e.message); }
+
+        // Feed the idle budget from real executed commands. This is the honest
+        // signal for "she is doing things": _lastRealActionAt is stamped only
+        // after a command passes existence validation and runs, so fidgeting that
+        // never executes cannot keep resetting the settle.
+        if (this._lastRealActionAt
+            && (this._budgetNotedRealAt || 0) !== this._lastRealActionAt) {
+            this._budgetNotedRealAt = this._lastRealActionAt;
+            try { this._idleBudget.note(this._lastRealActionAt); } catch (_) {}
+        }
 
         await this.bot.modes.update();
         this.self_prompter.update(delta);

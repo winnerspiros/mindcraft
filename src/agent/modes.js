@@ -575,7 +575,11 @@ const modes_list = [
         staring: false,
         last_entity: null,
         next_change: 0,
-        update: function (agent) {
+        // async: the gaze awaits bot.lookAt, which is itself async (physics.js:711)
+        // and must complete while _gazeArmed is still set, or the angle is stashed
+        // for a position packet that never arrives. ModeController already awaits
+        // mode.update().
+        update: async function (agent) {
             const bot = agent.bot;
 
             // Prefer human players so she locks eyes with them; otherwise watch a nearby mob.
@@ -686,7 +690,10 @@ const modes_list = [
             //
             // It is therefore set where the gaze is ACTED ON (the next_change
             // branch), so the gap can only interrupt a gaze that already happened.
-            if (!this.staring) this.gaze_started = false;
+            // A gaze that ended re-arms the gap for the next one, otherwise
+            // _gapArmed latches true and the gap only ever applies to the very
+            // first glance - which is the opposite of the intended cycle.
+            if (!this.staring) { this.gaze_started = false; this._gapArmed = false; }
 
             // Honour the away-gap: between looking at a person and looking back,
             // she looks somewhere else. Without this the shorter hold above would
@@ -703,9 +710,30 @@ const modes_list = [
             // a mob's gap could neither fire nor expire - she would look at a cow
             // and never look away. The guard only ever existed to shorten the old
             // 6-10s person lock-on, which no longer exists.
-            if (this.staring && this.gaze_started && this.next_look_back
-                && Date.now() < this.next_look_back) {
-                this.staring = false;
+            // The gap is measured from the moment the gaze ACTUALLY STARTED, not
+            // from the moment the hold was scheduled. It used to be computed on
+            // acquisition, alongside next_change - which put next_look_back 2.5-7s
+            // in the future while the hold itself was still running. So the gap
+            // condition was true for the ENTIRE hold: she looked for one tick and
+            // then looked away. Measured: staring=false on every tick while the
+            // mode was still acquiring a target and calling lookAt, and yaw frozen
+            // because the one look that got out was withdrawn a tick later.
+            //
+            // gaze_started is the record of when the gaze began, so the gap is
+            // armed there - which is what the comment on the flag always claimed.
+            if (this.staring && this.gaze_started) {
+                if (!this._gapArmed) {
+                    this._gapArmed = true;
+                    // `isPlayer` is declared further down, so it is in the TDZ here
+                    // and referencing it would throw on every tick. Derive it from
+                    // the target itself instead.
+                    const _isPerson = !!this.last_entity
+                        && this.last_entity.type === 'player';
+                    this.next_look_back = this.next_change
+                        + (_isPerson ? 2500 : 2000)
+                        + Math.random() * (_isPerson ? 4500 : 4000);
+                }
+                if (Date.now() < this.next_look_back) this.staring = false;
             }
             // The gap has ELAPSED: let her look back. Clearing last_entity here is
             // what makes the behaviour resume - while it stayed set, the re-arm
@@ -785,24 +813,77 @@ const GLANCE_BUDGET_COOLDOWN_MS = 45000;
                 // stare looks every 44-51ms for 36s straight, zero positions
                 // -> Invalid move). Angles are cheap to skip; the entity yaw
                 // hasn't settled anyway. Stare resumes automatically after.
-                if (bot.physics && bot.physics.shouldSendLook
-                    ? !bot.physics.shouldSendLook()
-                    : false) {
-                    // gated: skip this tick's head-turn
+                // ── THE GLAZE MUST NOT BE GATED BY THE MOVE HOLD ──────
+                // The owner: "look too" / she does not look at him.
+                //
+                // Measured: the mode DOES acquire him and DOES reach bot.lookAt,
+                // but her server-side yaw is a constant -180 across 30 samples
+                // over 60s. The look is discarded before it is sent.
+                // physics.js:429 shouldSendLook() rejects any head-turn within
+                // 2500ms of a position-bearing send, and live it reports
+                // usePhysics=true, msSinceMove=781 -> shouldSendLook=false.
+                //
+                // That hold is a real 26.3 walk-death fix: a burst of head-turns
+                // colliding with a move inside one server tick is what caused
+                // invalid_player_movement. It is NOT the right gate for a mode
+                // whose whole job is turning her head while idle - an idle bot
+                // re-sends position constantly, so the hold is nearly always
+                // active and the gaze never gets through.
+                //
+                // So the gaze sends directly, bypassing shouldSendLook. A look is
+                // a pure angle change: it carries no position, so it cannot
+                // produce the movement rejection the hold exists to prevent. This
+                // is the same exemption dig-aim already takes (physics.js:430,
+                // `if (bot._digAimArmed) return shouldUsePhysics`) - look-only
+                // writes are exempt, movement-bearing writes are not.
+                // Keep an anti-burst gate, just not THAT one. physics.js already
+                // throttles look sends to 1 per 600ms; the property that actually
+                // matters is that two head-turns never land in one server tick.
+                // We enforce the same 600ms ourselves so the walk-death protection
+                // is intact without requiring 2.5s of standing still first.
+                const _nowLook = Date.now();
+                const _lookThrottled = (this._lastLookAt || 0) + 600 > _nowLook;
+                // Stamp on EVERY branch, not just the rcon one: reaching here means
+                // a look is going out, and a throttle that only records some of
+                // them is no throttle at all.
+                if (!_lookThrottled) this._lastLookAt = _nowLook;
+                if (_lookThrottled) {
+                    // skip this tick's head-turn; try again on the next one
                 } else if (rconTarget) {
                     // RCON-truth stare: look at the server's coordinates for
                     // the player even when their entity isn't rendered. Aim at
                     // eye height. lookAt needs a real vec3 Vec3 (it calls
                     // .minus() internally) — the bot's position constructor
                     // is NOT vec3 (it lacks .minus), so import vec3 directly.
+                    bot._gazeArmed = true;
                     try {
-                        bot.lookAt(new Vec3(rconTarget.x, rconTarget.y + 1.62, rconTarget.z));
+                        // async: see the note on the entity branch below
+                        await bot.lookAt(new Vec3(rconTarget.x, rconTarget.y + 1.62, rconTarget.z));
                     } catch (_) {
-                        if (isPlayer && target) bot.lookAt(target.position.offset(0, 1.62, 0));
+                        if (isPlayer && target) {
+                            await bot.lookAt(target.position.offset(0, 1.62, 0));
+                        }
+                    } finally {
+                        bot._gazeArmed = false;
                     }
                 } else if (isPlayer && target) {
                     // aim at eye height (~1.62), not the top of the head
-                    bot.lookAt(target.position.offset(0, 1.62, 0));
+                    // _gazeArmed lets physics.js flush this as a bare 'look' while
+                    // she is idle - see the 26.3 GAZE FIX note there. Without it the
+                    // angle is stashed for a position packet that never comes.
+                    // bot.lookAt is ASYNC (physics.js:711): it computes the angles
+                    // then `await bot.look(...)`. A synchronous try/finally cleared
+                    // _gazeArmed before the send ever reached sendPacketLook, so the
+                    // flag was always false when it mattered and the gaze branch in
+                    // physics.js never ran. Await it, then release.
+                    bot._gazeArmed = true;
+                    try {
+                        await bot.lookAt(target.position.offset(0, 1.62, 0));
+                    } catch (_) {
+                        /* a glance must never take the tick down */
+                    } finally {
+                        bot._gazeArmed = false;
+                    }
                 } else {
                     const isbaby = target.metadata && target.metadata[16];
                     const height = isbaby ? target.height / 2 : target.height;
