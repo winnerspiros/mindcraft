@@ -93,6 +93,27 @@ export function scrubOutput(input) {
         // the caves..." reduced to "damn," and then to "damn". An interjection
         // with no predicate is not a message.
         .replace(/^\s*(?:damn|ugh|brh|bruh|seriously|great|fine|okay|ok|so|well|ah|oh|hey)\s*$/i, '')
+
+        // ── SEAMS ────────────────────────────────────────────────────
+        // Removing a narration sentence leaves debris welded onto whatever
+        // follows. Verified on her own live output:
+        //   "...time to mine for some stone. !mineBlock stone 0 0"
+        //       -> ".!mineBlock stone 0 0"
+        //   "ugh, fine! let's just deal with this pillager first. ... !attack ..."
+        //       -> "ugh, fine!. i should've seen that coming.!attack pillager 0 0"
+        //   "...fine, ... ugh. !breakBlock wood 0 0"
+        //       -> "omg this is ridiculous. i'll pick a block to break. ugh.!breakBlock wood 0 0"
+        // The commands still parsed - which is why the actions ran - but the text
+        // is junk, and "ugh, fine!." is not something a person types.
+        //
+        // So close the seam: an orphaned punctuation run before a command, and a
+        // dangling interjection that now has no predicate, both go. Only at the
+        // boundary - a mid-sentence "ugh" is fine and stays.
+        .replace(/[,;:.!]*\s*(?=[!][A-Za-z])/g, ' ')
+        .replace(/\s*[,;:.!]+(?=\s*[!][A-Za-z])/g, ' ')
+        .replace(/([.,!?:;])\s*([!][A-Za-z])/g, ' $2')
+        .replace(/\b(?:ugh|fine|omg|okay|ok|so|well|hey|ah|oh|great|bruh|damn)\b[.!]?\s*(?=[!][A-Za-z])/gi, ' ')
+        .replace(/\s{2,}/g, ' ')
         .trim()
     return m;
 }
