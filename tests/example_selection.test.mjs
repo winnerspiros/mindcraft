@@ -82,15 +82,26 @@ check(seen.size === pool.length,
         }
         return m / (A.length + B.length - m);
     };
-    const lines = pool.map(reply).filter(Boolean);
+    const all = pool.map(reply).filter(Boolean);
+    // The detector normalises to [a-z0-9 ], so a pure-punctuation reply (":(",
+    // ":)") and a single caps word ("AGAIN") normalise to the empty string and
+    // score 0 against THEMSELVES. Those are valid examples the measurement
+    // simply cannot see - the same trap as the "..." example. Separate them
+    // rather than deleting correct data.
+    const measurable = all.filter((l) => norm(l).length > 0);
+    const unmeasurable = all.filter((l) => norm(l).length === 0);
+    const lines = measurable;
     const scores = (s) => lines.map((l) => r(s, l));
 
     check(r(lines[0], lines[0]) === 1,
         'detector control scores 1.00 on an exact match',
         'detector cannot detect exact copying — its zeros are meaningless');
     check(Math.min(...lines.map((l) => r(l, l))) >= 0.99,
-        'every example self-matches',
+        `every measurable example self-matches (${measurable.length} of ${all.length})`,
         'detector is too strict to catch real copies');
+    check(unmeasurable.length < all.length * 0.1,
+        `${unmeasurable.length} examples are unmeasurable (emoticons/caps), kept but excluded from scoring`,
+        'too many examples are invisible to the leakage detector');
     const over = Math.max(...scores('ugh, great, i died! can someone grab my stuff?'));
     check(over < 0.7,
         `unrelated text peaks at only ${over.toFixed(2)}`,

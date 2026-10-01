@@ -96,16 +96,26 @@ export class Tilt {
     styleHint() {
         if (!this.isTilted) return null;
         const l = this.level;
+        // Every example below is SHORT, CONTRACTED and UNPUNCTUATED, because
+        // that is the shape being taught. The previous versions used full
+        // punctuated sentences with apostrophes ("this is stupid", "im so tired
+        // of this") and the rage band was therefore training exactly the formal,
+        // paragraph-y voice the owner is complaining about - on every death.
+        //
+        // Measured: 2.79% of real messages contain '!', 5.81% end with a full
+        // stop, 57.56% have no punctuation at all, and 52.4% are contracted.
         if (l >= 0.75) {
-            return `You are RAGING. Swearing, short, ugly sentences. No jokes, no charm, `
-                + `no trying to be funny - a furious person is not witty, they are just loud. `
-                + `Caps creep in. "FUCK", "this is fucking broken", "im done", "wtf". `
-                + `You might be typing mostly out of anger rather than to say anything.`;
+            return `You are RAGING. One or two words, or one short line. Never a sentence `
+                + `with punctuation. Swearing is fine, clipped is normal: wtf, ffs, again??, `
+                + `oh come ON, not again, i give up. No jokes, no charm - a furious person `
+                + `is loud, not witty. You are not making a point, you are reacting. `
+                + `Nothing here ends in a full stop and nothing here has an apostrophe.`;
         }
         if (l >= 0.5) {
-            return `You are annoyed and it is leaking into how you type. Swearing is normal, `
-                + `blunt and dismissive, complaining about the game. Short. `
-                + `"this is stupid", "again?", "im so tired of this", "fucking finally".`;
+            return `You are annoyed and it is showing in how you type. Blunt, clipped, `
+                + `swearing is normal. this is stupid / again?? / im so tired of this / `
+                + `wtf is even happening. Short and unpunctuated - no full stops, no `
+                + `apostrophes, and definitely not a paragraph.`;
         }
         return `You are a bit fed up. A little more clipped than usual, mild swearing, `
             + `complaining rather than joking. Still yourself, just less patient.`;

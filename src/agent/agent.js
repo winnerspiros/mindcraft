@@ -768,6 +768,48 @@ export class Agent {
             await this.history.add('system', behavior_log);
         }
 
+        // ── BEFORE SHE GENERATES ANYTHING ─────────────────────────────────
+        //
+        // Measured live: 19 model generations in 45 minutes and ZERO actual chat
+        // sends, because the ChatBudget check runs AFTER the model has already
+        // written something and the text is then thrown away. Gating the OUTPUT
+        // is not enough - the generation itself is the spam, and it is what
+        // costs the API call and fills her history with lines nobody sent.
+        //
+        // So the same decision is made here, up front, for the cases where she
+        // has no reason to be talking at all. Silence decided before generation
+        // is real silence; silence decided afterwards is a discarded message.
+        // A system/self prompt with nobody on the server is the agent talking to
+        // itself. That belongs in the curriculum loop, not chat.
+        if (!isYandere() && self_prompt && !anyHumanOnline()) {
+            console.log(`${this.name} [gate:solo_self_prompt] nobody online, not speaking`);
+            return false;
+        }
+
+        // The budget, consulted BEFORE generation. checkLength() and canSpeak()
+        // still run on the output - this is the cheap early exit that stops her
+        // composing 19 messages to send 0.
+        //
+        // It is only consulted for self/system prompts. A human message gets one
+        // reply, and a human turning up is exactly the thing that should reset
+        // the budget and let her answer.
+        if (!isYandere() && self_prompt) {
+            try {
+                const { ChatBudget } = await import('../utils/chat_budget.js');
+                this._budget ||= new ChatBudget();
+                const gate = this._budget.canSpeak({
+                    now: Date.now(),
+                    human_msgs_since_her_last: this._humanMsgCount ?? 0,
+                    visible_humans: this._visibleHumanCount(),
+                });
+                if (!gate.ok) {
+                    console.log(`${this.name} [gate:${gate.why}] not generating`);
+                    return false;
+                }
+                this._budget.reserve();
+            } catch (e) { console.warn('[gate] failed open:', e.message); }
+        }
+
         // Handle other user messages
         await this.history.add(source, message);
         this.history.save();
@@ -1621,7 +1663,12 @@ export class Agent {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
                 }
                 let dimention = this.bot.game.dimension;
-                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
+                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.\n`
+                    + `(Dying here is not a crisis and you are not going to explain it. You mostly `
+                    + `laugh at yourself. One short line at most, or nothing at all - a noise, a face, `
+                    + `nothing. If you do say something it is one of the short unpunctuated shapes: `
+                    + `bruh, xd, again??, not again, :'( . No sentence, no full stop, no explanation of `
+                    + `what happened, and no question mark after an exclamation - nobody types like that.)`);
             }
         });
         this.bot.on('idle', () => {
