@@ -184,6 +184,40 @@ function editDistance(a, b) {
     return prev[b.length];
 }
 
+/**
+ * When a real command is called with the WRONG SHAPE, say what shape it wants.
+ *
+ * Measured live: she wanted coal, reached for !breakBlock (x, y, z floats), and
+ * got "Param 'x' must be of type float" because `coal_ore` landed in the x slot.
+ * She then retried with 1.0 2.0 3.0 - still wrong - and the turn produced nothing
+ * visible. !collectBlocks(type, num) is what she meant and it is in her docs.
+ *
+ * So the fix is the same idea as nearestCommandNames, applied to arguments: when
+ * a param fails its declared type, report the command's real signature. Keyed on
+ * the command's own `params`, which is already the single source of truth - so
+ * this cannot drift from the commands it describes.
+ *
+ * @returns {string|null} a correction the model can act on, or null
+ */
+export function explainParamError(commandName, errorText) {
+    const cmd = commandMap[String(commandName || '').startsWith('!')
+        ? commandName : '!' + commandName];
+    if (!cmd?.params) return null;
+    const m = /Param '(\w+)' must be of type (\w+)/.exec(String(errorText || ''));
+    if (!m) return null;
+    const [, badParam, wantedType] = m;
+    const spec = cmd.params[badParam];
+    if (!spec) return null;
+
+    const sig = Object.entries(cmd.params)
+        .map(([name, s]) => `${name}: ${s.type}${s.default !== undefined ? ` (default ${s.default})` : ''}`)
+        .join(', ');
+    const hint = spec.type === 'BlockName' || spec.type === 'ItemName'
+        ? ` ${badParam} wants a block/item name, not a coordinate.`
+        : ` ${badParam} wants a ${wantedType}.`;
+    return `${commandName} takes (${sig}).${hint} Your call put a value of the wrong type in ${badParam}.`;
+}
+
 export function commandExists(commandName) {
     if (!commandName.startsWith("!"))
         commandName = "!" + commandName;
