@@ -78,17 +78,41 @@ export class ChatBudget {
 
         // A run expires: if nothing of hers has gone out for RUN_EXPIRES_MS, the
         // burst is over and the counter is no longer evidence of domination.
-        if (this.consecutive > 0 && this.lastSentAt && now - this.lastSentAt >= RUN_EXPIRES_MS) {
+        //
+        // Measured on the last DELIVERY, not on lastSentAt. reserve() sets
+        // lastSentAt on every turn, including turns that are then blocked or
+        // discarded, so keying the decay to it means the quiet period never
+        // happens: her own blocked attempts keep refreshing the clock that was
+        // supposed to prove she had been quiet. Live evidence - cadence down to
+        // 4-21s and still 12x too_many_in_a_row. A run is about what the room
+        // saw, so it expires on what the room actually received.
+        const lastHeard = this.deliveredAt.length
+            ? this.deliveredAt[this.deliveredAt.length - 1]
+            : 0;
+        if (this.consecutive > 0 && lastHeard && now - lastHeard >= RUN_EXPIRES_MS) {
             this.consecutive = 0;
         }
 
         if (this.consecutive >= MAX_CONSECUTIVE) {
             return { ok: false, why: 'too_many_in_a_row' };
         }
-        if (this.lastSentAt && now - this.lastSentAt < MIN_GAP_MS) {
+        // Same correction: the minimum gap is about how fast she is visibly
+        // talking, so it is measured from the last thing the room heard, not from
+        // a reservation that may never have become a message.
+        const lastMsg = this.deliveredAt.length
+            ? this.deliveredAt[this.deliveredAt.length - 1]
+            : this.lastSentAt;
+        if (lastMsg && now - lastMsg < MIN_GAP_MS) {
             return { ok: false, why: 'too_fast' };
         }
-        if (this.sent.length >= MAX_MESSAGES_PER_WINDOW) {
+        // The cap counts DELIVERIES, not attempts. `sent` is the reservation
+        // ledger, so twelve attempts whose text was thrown away by checkLength
+        // used to silence her for 10 minutes even though the room saw nothing -
+        // the same defect the monologue window had. Reserving a slot still costs
+        // her (otherwise she would compose forever); only the CEILING is measured
+        // against what people actually experienced.
+        this.deliveredAt = this.deliveredAt.filter((t2) => now - t2 < WINDOW_MS);
+        if (this.deliveredAt.length >= MAX_MESSAGES_PER_WINDOW) {
             return { ok: false, why: 'over_budget' };
         }
         // SHARE. If humans have barely spoken and she is on her own, her share
