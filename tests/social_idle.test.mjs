@@ -167,6 +167,43 @@ const modes = readFileSync('src/agent/modes.js', 'utf8');
         `the re-arm interval is ${ms}ms, which reads as standing around`);
 }
 
+// ── NO CROUCH SPAM ───────────────────────────────────────────────────
+// The owner: "shes crouching a lot".
+//
+// This was a feature, not a leak. idle_hopping was described in modes.js as
+// "Spam crouch, hop, and dart around energetically when idle", defaulted to on,
+// and toggled sneak every 180-400ms in a window that opened every 5-12s whenever a
+// player came within 12 blocks. The old comment said to "spam freely, cutely,
+// kick-free" - which is exactly why it looked like a tic rather than a bug.
+//
+// A subagent blamed mineflayer's physics.js sneak handler, reporting it as a
+// truncated comment that never notifies the server. That is our own deliberate
+// 26.3 patch: sneak rides the per-tick player_input stream, because a standalone
+// write collides with look/tick_end inside one server tick. The diagnosis was
+// wrong, though its CONSEQUENCE was real - toggles nobody sees is a tic - so the
+// fix belongs where the toggles are, not in a vendored library.
+{
+    const i = modes.indexOf("name: 'idle_hopping'");
+    const j = modes.indexOf("name: '", i + 10);
+    const block = modes.slice(i, j > i ? j : i + 9000);
+
+    check(!/description: 'Spam crouch/.test(modes),
+        'the mode no longer advertises itself as crouch spam', 'still described as spam');
+    check(!/setControlState\('sneak',\s*this\.sneaking\)/.test(block),
+        'and no longer toggles sneak on a timer', 'the crouch toggle is still there');
+    check(!/this\.next_toggle\s*=\s*now\s*\+\s*180/.test(block),
+        'no 180ms toggle timer', 'the 180ms toggle timer survives');
+    check(!/this\.spam_until\s*=\s*now\s*\+\s*800/.test(block),
+        'no crouch spam window', 'the spam window survives');
+
+    // hopping is legitimate fidgeting and stays
+    check(/setControlState\('jump',\s*true\)/.test(block),
+        'hopping stays - a player does fidget', 'hopping was removed too');
+    // and sneak is still explicitly released, never left stuck on
+    check(/setControlState\('sneak',\s*false\)/.test(block),
+        'sneak is still explicitly released', 'sneak may be left engaged');
+}
+
 console.log(failed
     ? `\nFAIL — ${pass} passed, ${failed} failed`
     : `\nPASS — ${pass} social-behaviour assertions green`);
