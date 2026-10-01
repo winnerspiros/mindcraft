@@ -585,14 +585,46 @@ export class Agent {
     _pickAck(source, confidence = 0.5) {
         const rel = this.relationship && this.relationship.get(source);
         const rank = (rel && rel.rank) || 'stranger';
-        const warm = ['mm-hm~', 'uh-huh~', 'i see~', 'yeah, mm~', 'mhm~'];
-        const cool = ['hm.', '...', 'sure.', 'mhm.', '.'];
+
+        // ── WHERE "mm~" CAME FROM, AND WHY IT WENT ────────────────────────
+        // It was not the persona and not the model. It was THIS hardcoded pool,
+        // added with the DuplexGen turn-taking work (e50336a) so a "backchannel"
+        // decision had something to say. The pool was written by picking what a
+        // kawaii yandere bot would say — hence the tildes and the mm-hm/mhm
+        // fillers — and then never revisited when the persona switched to
+        // normal. Nothing generated "mm~"; it was a constant.
+        //
+        // Measured against 57,394 real player messages (Minecraft Dialogue
+        // Corpus, ACL 2019):
+        //
+        //   backchannel at all     6.2% of messages  — REAL, keep the feature
+        //   'ok'                   1606
+        //   'okay'                  678
+        //   'yeah'                  416
+        //   'yep'                   228
+        //   'mm' / 'mhm'              2   ← our entire old pool, 2 times
+        //   '~' anywhere             2
+        //
+        // So the taxonomy was right and the vocabulary was fabricated. Real
+        // players backchannel constantly; they just say "ok" and "yeah". The
+        // tildes are pure yandere residue and are now gone from every pool.
+        const warm = ['ok', 'yeah', 'yep', 'sure', 'right', 'k'];
+        const cool = ['ok', 'nah', 'sure', 'mhm', 'k'];
         const pick = rank === 'enemy' ? cool : warm;
+        // Never repeat the previous ack, and never send three in a row: real
+        // backchanneling is intermittent, a machine that answers every single
+        // line with "ok" is as odd as one that never speaks.
+        if (this._ackStreak >= 2) {
+            this._ackStreak = 0;
+            this._lastAck = null;
+            return null; // let the floor stay with the human this turn
+        }
         const choices = this._lastAck && pick.length > 1
             ? pick.filter(a => a !== this._lastAck)
             : pick;
         const ack = choices[Math.floor(Math.random() * choices.length)];
         this._lastAck = ack;
+        this._ackStreak = (this._ackStreak || 0) + 1;
         console.log(`${this.name} backchannel (${rank}, ${(confidence * 100).toFixed(0)}%): ${ack}`);
         return ack;
     }
@@ -618,6 +650,22 @@ export class Agent {
 
         const self_prompt = source === 'system' || source === this.name;
         const from_other_bot = convoManager.isOtherAgent(source);
+
+        // Feed the human cadence tracker: a real player's message length is the
+        // only honest signal of how engaged the channel is. See
+        // self_prompter.js noteHumanMessage/_engagementGear.
+        if (!self_prompt && !from_other_bot && this.self_prompter) {
+            try { this.self_prompter.noteHumanMessage(message); } catch (_) {}
+        }
+
+        // last_sender is only cleared in conversation.js when a CONVERSATION
+        // ends - not when the human simply stops talking. So after YandereDev
+        // went quiet, last_sender stayed "YandereDev" for the rest of the
+        // session, and the speak gate's human_replied test
+        // (to_player === last_sender) was true for every self-prompt turn
+        // afterwards: her narration would have been reclassified as a reply.
+        // Stamp freshness here instead.
+        this._last_human_msg_at = (!self_prompt && !from_other_bot) ? Date.now() : this._last_human_msg_at;
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
@@ -691,9 +739,19 @@ export class Agent {
                         // Brief ack that yields the floor. No commands, no
                         // questions — a continuer, then she stops talking.
                         const ack = this._pickAck(source, _d.confidence);
-                        this.routeResponse(source, ack);
-                        await this.history.add(this.name, ack);
-                        this.history.save();
+                        // _pickAck returns null when she has already
+                        // backchanneled twice in a row - then she takes the
+                        // floor herself rather than saying "ok" a third time.
+                        // Without this the null reached bot.chat() literally.
+                        if (ack) {
+                            this.routeResponse(source, ack);
+                            await this.history.add(this.name, ack);
+                            this.history.save();
+                        }
+                        else {
+                            await this.history.add('system', `${source} said: ${message} (you did not acknowledge this one)`);
+                            this.history.save();
+                        }
                         return true;
                     }
                 }
@@ -811,7 +869,12 @@ export class Agent {
                     message,
                     to_player,
                     self_prompt,
-                    human_replied: !!this.last_sender && to_player === this.last_sender,
+                    // FRESH, not just present: last_sender outlives the
+                    // conversation. Without the age check, a human who spoke
+                    // an hour ago still "replied" and narration passed.
+                    human_replied: !!this.last_sender
+                        && to_player === this.last_sender
+                        && (Date.now() - (this._last_human_msg_at || 0)) < 120000,
                     any_human: this.anyHumanOnline(),
                 });
                 if (!verdict.ok) {
