@@ -34,3 +34,7 @@ tasks/construction_tasks/train/**
 server_data*
 **/.DS_Store
 src/mindcraft-py/__pycache__/
+
+# scratch debug scripts from ad-hoc world/inventory probes
+t_g.mjs
+t_v.mjs
