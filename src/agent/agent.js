@@ -23,6 +23,7 @@ import { log, validateNameFormat, handleDisconnection } from './connection_handl
 import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable, isYandere } from '../utils/server_context.js';
 import { ModerationWatcher } from './moderation.js';
 import { PlayerActivityWatcher } from './player_activity.js';
+import { InteractionTracker } from '../utils/interaction.js';
 import { RelationshipManager } from './relationship.js';
 import { PlayerProfiles } from './profiles.js';
 import { ReliabilityTracker } from './reliability.js';
@@ -1282,6 +1283,15 @@ export class Agent {
                     human_replied: !!this.last_sender
                         && to_player === this.last_sender
                         && (Date.now() - (this._last_human_msg_at || 0)) < 120000,
+                    // A bid is a move toward a person, not narration - but only
+                    // while it is FRESH and has a real nearby target. Without the
+                    // age check the last bid she ever made would grant a permanent
+                    // exemption from the narration gate, which is exactly the
+                    // staleness bug the human_replied guard above already had to
+                    // be fixed for.
+                    is_bid: !!this._pendingBid
+                        && (Date.now() - (this._pendingBid.at || 0)) < 60000,
+                    bid_has_target: !!this._pendingBid && this._visibleHumanCount() > 0,
                     // A real thing that just happened to her is a legitimate
                     // reason to speak even when nobody addressed her. She was
                     // killed by a phantom: "wtf is wrong with you?" is not
@@ -1735,6 +1745,42 @@ export class Agent {
             this.bot.emit('midnight');
         });
 
+        // ── PHYSICAL INTERACTION, from events already bound ────────────
+        // The owner: "interactions can be to help player also, fuck them up,
+        // grief them, give them items, help them build, destroy what they doing"
+        //
+        // These need no chat, so the message path never sees them. player_activity
+        // already binds blockBreakProgressEnd, blockUpdate, entitySwingArm and
+        // playerCollect, and this reads the same payloads - deliberately NOT adding
+        // new listeners, because the 26.3 notes flag handler cost on this 1-OCPU box.
+        //
+        // A single shared handler: more listeners is the thing being avoided.
+        this.bot.on('blockBreakProgressEnd', (block) => {
+            try {
+                this._interaction?.note({
+                    blockPos: [block.position?.x, block.position?.y, block.position?.z],
+                    herPos: this._herPos?.(),
+                    herWorkPos: this._herWorkPos?.(),
+                    was_her_block: !!this._herBlocks?.has(this._blockKey?.(block)),
+                    blockRemoved: true,
+                });
+            } catch (_) { /* classification must never break the bot */ }
+        });
+        this.bot.on('blockUpdate', (id, data) => {
+            // 3 = air, so a block appearing at a position means something was placed.
+            try {
+                if (data?.b === undefined) return;
+                const placed = data.b !== 0;
+                this._interaction?.note({
+                    blockPos: [data.position?.x, data.position?.y, data.position?.z],
+                    herPos: this._herPos?.(),
+                    herWorkPos: this._herWorkPos?.(),
+                    was_her_block: !!this._herBlocks?.has(this._blockKey?.(data)),
+                    blockRemoved: !placed,
+                });
+            } catch (_) { /* as above */ }
+        });
+
         this.bot.on('entityHurt', (entity, source) => {
             // track who is harming her so she can retaliate (verbal -> attack -> TNT)
             if (entity === this.bot.entity && source && source.type === 'player' && source.username !== this.name) {
@@ -2036,11 +2082,47 @@ export class Agent {
             // cannot reintroduce the 24/7 fidgeting.
             if (!this._hasActiveGoal() && !this._typing) {
                 try {
-                    const { chooseActivity } = await import('../utils/activity.js');
+                    const { chooseActivity, chooseBid } = await import('../utils/activity.js');
+                    const { InteractionTracker } = await import('../utils/interaction.js');
+
+                    // ── INTERACTION IS A RELATION, NOT ONLY A CONVERSATION ──
+                    // The owner: "interactions can be to help player also, fuck
+                    // them up, grief them, give them items, help them build,
+                    // destroy what they doing. whatever.. all these are
+                    // interactions"
+                    //
+                    // Griefing, helping and working alongside need no words, so
+                    // the message router cannot see them. These read the block and
+                    // combat events player_activity.js already binds - no new
+                    // listeners, which matters on 1 OCPU.
+                    this._interaction ??= new InteractionTracker();
+                    const _if = this._interaction.flags();
                     const _inv = {};
                     for (const it of (this.bot.inventory?.items?.() || [])) {
                         const k = String(it?.name || '').replace(/^minecraft:/, '');
                         if (k) _inv[k] = (_inv[k] || 0) + (it?.count || 1);
+                    }
+                    // and the bid, so she can OPEN rather than only answer. Placed
+                    // after _inv deliberately: my first version read _inv here,
+                    // eleven lines before its `const` binding, which is a TDZ
+                    // ReferenceError - and it sits inside a try/catch that fails
+                    // OPEN, so it would have silently killed all autonomous
+                    // activity every tick rather than raising an alert.
+                    const _bid = chooseBid({
+                        humans_present: this._visibleHumanCount(),
+                        blocked: !!this._goalBlocked,
+                        has_spare: Object.keys(_inv || {}).length > 0,
+                        needs_item: false,
+                        current_activity: this._lastActivity || null,
+                        spoke_recently: Date.now() - (this.lastSpoke || 0) < 20000,
+                    });
+                    if (_bid.bid) {
+                        // An OPEN, not a reply. Deliberately not a goal: it is a
+                        // remark, so it goes through the normal message path and
+                        // every outbound gate - rate, length, budget, trigger -
+                        // rather than around them, which is how fragments used to
+                        // bypass accounting entirely.
+                        this._pendingBid = { bid: _bid.bid, why: _bid.why, at: Date.now() };
                     }
                     const _pick = chooseActivity({
                         hunger: this.bot.food,

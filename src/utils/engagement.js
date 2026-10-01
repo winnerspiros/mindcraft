@@ -25,6 +25,52 @@
 // is he looking at her, has he just acted on her, is he the only one talking,
 // how long has it been.
 
+// ── INTERACTION IS A RELATION, NOT A CONVERSATION ─────────────────────
+//
+// The owner: "interactions can be to help player also, fuck them up, grief them,
+// give them items, help them build, destroy what they doing. whatever.. all these
+// are interactions"
+//
+// This is a correction, and an important one. I had reduced interaction to
+// TALKING. That is too narrow, and it made "she is self-centered" collapse into
+// "she ignores people" - when the owner means "she has her own agenda, and that
+// agenda may well involve them".
+//
+// A player building a wall while another player mines the same block is
+// INTERACTING, adversely. Griefing is engagement. Handing someone an item is
+// engagement. Knocking their scaffolding down is engagement. None of those need a
+// word to be said, and none of them are "not talking to her".
+//
+// So the signal is a RELATION between them, with a VALENCE. Valence changes HOW
+// she responds, never WHETHER she registers it: being sabotaged is at least as
+// involving as being helped, and treating it as less would make her oblivious to
+// the thing that should annoy her most.
+
+/** How a player is involving himself with her and her work. */
+export const INTERACTION = {
+    NONE: 'none',
+    /** talking to her, or acting on her directly */
+    DIRECT: 'direct',
+    /** working the same thing she is - shared building, shared digging */
+    COORDINATING: 'coordinating',
+    /** griefing, breaking, interfering - negative, and very much engaged */
+    INTERFERING: 'interfering',
+    /** giving, helping, handing over - positive */
+    HELPING: 'helping',
+};
+
+// Valence only shapes the RESPONSE. Interference is negative and help is
+// positive, but both count as engagement, and neither is worth more attention
+// than the other purely because of its sign: a player reacting to sabotage is not
+// less engaged than one reacting to a gift.
+const INTERACTION_VALENCE = {
+    [INTERACTION.NONE]: 0,
+    [INTERACTION.DIRECT]: 0,
+    [INTERACTION.COORDINATING]: 1,
+    [INTERACTION.INTERFERING]: -1,
+    [INTERACTION.HELPING]: 1,
+};
+
 /** How a player is engaging with her. Not what they said. */
 export const ENGAGEMENT = {
     /** Nobody is engaging her. Headcount may still be high. */
@@ -77,6 +123,25 @@ export function assessEngagement(w = {}) {
     //    exchange in progress and the strongest possible evidence.
     if (w.speaker_targeted_her || w.speaker_addressing) {
         return { engagement: ENGAGEMENT.WITH_HER, dyad_like: true, with_her: true };
+    }
+
+    // 1b. PHYSICAL INTERACTION - griefing, helping, sharing the same work. The
+    //     owner: "interactions can be to help player also, fuck them up, grief
+    //     them, give them items, help them build, destroy what they doing.
+    //     whatever.. all these are interactions"
+    //
+    //     These need no words, so the message router cannot see them at all. Rank
+    //     below being SPOKEN to - being talked to is unambiguous, whereas blocks
+    //     moving near her could be anything - but well above merely being nearby,
+    //     because someone dismantling her wall is not a bystander.
+    if (w.interfering) {
+        return { engagement: ENGAGEMENT.WITH_HER, dyad_like: true, with_her: true, interaction: INTERACTION.INTERFERING, valence: -1 };
+    }
+    if (w.helping) {
+        return { engagement: ENGAGEMENT.WITH_HER, dyad_like: true, with_her: true, interaction: INTERACTION.HELPING, valence: 1 };
+    }
+    if (w.coordinating) {
+        return { engagement: ENGAGEMENT.WITH_HER, dyad_like: true, with_her: true, interaction: INTERACTION.COORDINATING, valence: 1 };
     }
 
     // 2. Griefed recently, by someone who has not addressed her. Interaction -
