@@ -1033,6 +1033,30 @@ export class Agent {
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
         }
 
+        // ── MIRRORING OBSERVER ─────────────────────────────────────────────
+        // The owner: "when you talk you dont necessarily [need a response] for
+        // responses. you can continue on your saying, change subject etc." The
+        // structural half of that is this: a reply whose content words all come
+        // from the message it answers is handing the message back, which is the
+        // shape of a search engine, not a person.
+        //
+        // It WARNS and never suppresses. A gate that deleted replies would
+        // silence exactly the blunt one-word answers Elena is supposed to give,
+        // and deciding whether a reply is interesting is a judgement, not a
+        // shape. This only makes the rate visible so it can be measured.
+        if (!isYandere() && !self_prompt) {
+            try {
+                const { isMirroredReply } = await import('../utils/mirror_reply.js');
+                const m = isMirroredReply(message, this._last_human_msg_text);
+                this._mirrorCount = (this._mirrorCount || 0) + 1;
+                if (m.mirrored) {
+                    this._mirroredCount = (this._mirroredCount || 0) + 1;
+                    console.log(`${this.name} [mirror] ${this._mirroredCount}/${this._mirrorCount} ` +
+                        `adds nothing: ${String(message).slice(0, 60)}`);
+                }
+            } catch (e) { console.warn('[mirror] observer failed:', e.message); }
+        }
+
         // ── NORMAL PERSONA: VOICE DRIFT MONITOR ───────────────────────────
         // Observational only — nothing here changes what is sent. Feeds the
         // window that src/utils/voice_monitor.js scores. It sees SENT text, not
