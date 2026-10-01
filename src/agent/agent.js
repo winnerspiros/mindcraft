@@ -935,10 +935,61 @@ export class Agent {
                             && isAddressingMe(me.position, e.position, e.looking).addressed);
                     } catch (_) { return false; }
                 })();
+                // ── WHO IS ENGAGING HER, NOT HOW MANY ARE HERE ────────────
+                // The owner: "she should be able to understand if someone talks
+                // to her. maybe server has 5 ppl but noone talks except her and
+                // someone else. maybe someone just stares to her. or fucks her
+                // up she responds."
+                //
+                // Headcount is the wrong variable. Five players online, four
+                // building a wall in silence and one looking at her, is a
+                // two-person situation; five people all talking to each other
+                // and none to her is a group she should stay out of however many
+                // are online. This is selective participation (Duplex-MPE,
+                // arXiv 2609.31948; Clark's common-ground model) and it is a
+                // DIFFERENT judgement from the dyad one, so it is computed here
+                // rather than folded into shouldReplyTo.
+                const _engage = await (async () => {
+                    try {
+                        const { assessEngagement } = await import('../utils/engagement.js');
+                        const _ev = this._lastNotableEvent;
+                        const _hurtBySomeone = !!(_ev && _ev.kind === 'damage'
+                            && Date.now() - _ev.at < 15000);
+                        return assessEngagement({
+                            visible_humans: _n,
+                            someone_addressing: _physicallyAddressed,
+                            speaker_addressing: _physicallyAddressed,
+                            bothered_recently: _hurtBySomeone,
+                            speaker_targeted_her: addressedByName,
+                            last_speaker: this._last_speaker ?? '',
+                            same_speaker_as_last: this._last_speaker === source,
+                        });
+                    } catch (_) { return { with_her: false, dyad_like: false }; }
+                })();
+                // With someone engaging her, the room is effectively two-person:
+                // pass the dyad headcount, not the raw one.
+                const _nEff = _engage.with_her ? 1 : _n;
+
+                // Being looked at earns her the right to CONSIDER speaking, not
+                // the obligation to. shouldStartConversation() is the calibrated
+                // probabilistic gate - never a timer, never forced.
+                let _mayStart = false;
+                if (_engage.engagement === 'staring') {
+                    try {
+                        const { shouldStartConversation } = await import('../utils/reply_trigger.js');
+                        _mayStart = shouldStartConversation({
+                            visible_humans: _n,
+                            human_exchange: !!(this.self_prompter
+                                && this.self_prompter.humanExchangeInProgress()),
+                            spoke_recently: false,
+                        }).start;
+                    } catch (_) { _mayStart = false; }
+                }
+
                 const _verdict = shouldReplyTo({
                     message,
                     present: !this._life?.isAway,
-                    visible_humans: _n,
+                    visible_humans: _nEff,
                     has_real_sender: _hasRealSenderFlag,
                     addressed: addressedByName,
                     human_exchange: !!(this.self_prompter
@@ -946,6 +997,10 @@ export class Agent {
                     speaker: source,
                     last_speaker: this._last_speaker ?? '',
                     last_target: _lastTarget,
+                    // room-level engagement, consumed by applyEngagement below
+                    may_start: _mayStart,
+                    with_her: _engage.with_her,
+                    speaker_targeted_her: addressedByName,
                     // Physical addressing: close AND looking at her. Silence is
                     // the default when there is no data. Computed above, in the
                     // enclosing async try - my first version wrapped this in a
@@ -955,20 +1010,48 @@ export class Agent {
                     // test loads agent.js.
                     addressed_physically: _physicallyAddressed,
                 });
+                // ── ROOM ENGAGEMENT OVERRIDES THE HEADCOUNT VERDICT ───────
+                // shouldReplyTo judges the TEXT; this judges the ROOM. The owner:
+                // "she should be able to understand if someone talks to her. maybe
+                // server has 5 ppl but noone talks except her and someone else.
+                // maybe someone just stares to her. or fucks her up she responds."
+                //
+                // The one case that must not wait for the next inbound line is
+                // STARING: nobody said anything, so there is no message to route.
+                // She may open, once, and only through the calibrated initiative
+                // gate - being looked at is a reason to consider speaking, never
+                // an obligation to.
+                let _final = _verdict;
+                try {
+                    const { applyEngagement } = await import('../utils/engagement.js');
+                    const _roomVerdict = applyEngagement({
+                        visible_humans: _n,
+                        has_real_sender: _hasRealSenderFlag,
+                        addressed: addressedByName,
+                        addressed_physically: _physicallyAddressed,
+                        speaker_targeted_her: addressedByName,
+                        may_start: _mayStart,
+                    }, _verdict);
+                    if (_roomVerdict.reply && !_verdict.reply) {
+                        console.log(`${this.name} [trigger:${_roomVerdict.why}] room overrides headcount (${_n} here)`);
+                    }
+                    _final = _roomVerdict;
+                } catch (e) { console.warn('[engage] failed open:', e.message); }
+
                 // 'ignore' is the common case in a dyad and it is CORRECT: he
                 // is talking to the server or to himself, she reads it and says
                 // nothing. Before this, every non-addressed line in a dyad got a
                 // reply, which is exactly the "she cares about everything" look
                 // the owner is describing.
-                if (_verdict.mode === 'ignore') {
+                if (_final.mode === 'ignore') {
                     console.log(`${this.name} [trigger:ignore] heard it, not answering (${_n} human(s) here): ${String(message).slice(0, 70)}`);
                     await this.history.add('system',
                         `${source} said: ${message} (said to the room, not to you; you heard it)`);
                     this.history.save();
                     return true;
                 }
-                if (!_verdict.reply) {
-                    console.log(`${this.name} [trigger:${_verdict.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
+                if (!_final.reply) {
+                    console.log(`${this.name} [trigger:${_final.why}] not for me (${_n} human(s) here): ${String(message).slice(0, 70)}`);
                     // She still HEARD it and can bring it up later - the line goes
                     // into history as something she noticed, not as an omission.
                     await this.history.add('system',
@@ -976,7 +1059,7 @@ export class Agent {
                     this.history.save();
                     return true;
                 }
-                console.log(`${this.name} [trigger:${_verdict.why}/${_verdict.mode || 'speak'}] engaging (${_n} human(s) here)`);
+                console.log(`${this.name} [trigger:${_final.why}/${_final.mode || 'speak'}] engaging (${_n} human(s) here)`);
                 // 'react' reaches the model as INTENT, never as a word list. He
                 // said something funny or stupid; a reaction is the whole reply.
                 // The words are hers - the same words she would use anywhere.
@@ -987,7 +1070,7 @@ export class Agent {
                 // special category - which is exactly why it needs no phrase list.
                 // What it must not become is the default answer: a reaction to
                 // everything is as fake as answering everything.
-                if (_verdict.mode === 'react') {
+                if (_final.mode === 'react') {
                     this.history.add('system',
                         `${source} said: ${message}\n`
                         + `(He said something and you are not answering it - a reaction is the whole reply. `
