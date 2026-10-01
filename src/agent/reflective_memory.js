@@ -125,6 +125,21 @@ export class ReflectiveMemory {
     // keeps meaningful facts (promises, betrayals) above mundane chatter, and a
     // gentle recency decay favours fresher memories. Falls back to word overlap
     // when the embedding model is unavailable.
+    //
+    // Weighting note (HiGMem, ZeroLoss-Lab/HiGMem): importance used to be
+    // weighted 2, which made it a GATE rather than a tiebreak. A single generic
+    // high-importance memory ("The player loves nature and wants to keep their
+    // favorite places a secret", importance 0.85 => 1.70 points) had to be beaten
+    // on relevance alone at rel >= 0.57, but measured top relevance across real
+    // questions only reached 0.26-0.49. That memory therefore won almost every
+    // event-shaped question regardless of topic.
+    //
+    // Measured over her 192 real memories with real query embeddings
+    // (tests/memory_ab.mjs), on-topic winners went 1/5 -> 3/5 by dropping
+    // importance to a tiebreak weight. Relevance now decides; importance only
+    // separates memories that are equally relevant. Recency is a tiebreak too,
+    // since with a 7-day half-life it is near-identical across a few days of
+    // memories and adds noise rather than signal.
     async recall(query, k = this.recall_count) {
         if (!this.enabled || this.memories.length === 0) return '';
         const q = String(query || '').trim();
@@ -140,7 +155,7 @@ export class ReflectiveMemory {
             else if (q) rel = wordOverlapScore(q, m.text);
             const imp = m.importance ?? _importance(m.text);
             const rec = Math.exp(-(now - (m.created ?? now)) / RECENCY_HALF_LIFE);
-            return { m, s: rel * 3 + imp * 2 + rec * 0.5 };
+            return { m, s: rel * 3 + imp * 0.6 + rec * 0.4 };
         });
         scored.sort((a, b) => b.s - a.s);
         return scored.slice(0, k).map(x => x.m.text).join('\n');
