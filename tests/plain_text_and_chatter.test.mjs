@@ -1826,5 +1826,50 @@ const check = (cond, good, bad) => {
         'a renamed command would silently produce an impossible goal again');
 }
 
+// ── 33. A HUNGER GOAL MUST NOT REACH THE REAL-WORLD GEOCODER ───────────
+//
+// Live, on the activity list: the goal "find something to eat" produced
+//   !findPlace food
+//   !findPlace cafe
+//   !findPlace Food
+// !findPlace is a REAL-WORLD geocoder - "a bar in Berlin", "Eiffel Tower".
+// It matched on the verb "find" and outranked !getFood, the command that
+// actually feeds her. A real-world search cannot produce a meal, however many
+// times she asks it.
+//
+// And the first fix over-corrected: with the geocoder penalised, the goal
+// ranked !findShelter and !findCave and did NOT surface !getFood at all.
+// Two places to hide, no way to eat. The object has to beat the verb.
+{
+    const { SelfPrompter } = await import('../src/agent/self_prompter.js');
+    const bare = Object.create(SelfPrompter.prototype);
+    const list = async (g) => {
+        const out = await bare._realCommandsFor(g);
+        return (out.match(/fit this goal: ([^.]+)\./) || [, ''])[1];
+    };
+
+    const hungry = await list('find something to eat');
+    check(!/!findPlace/.test(hungry),
+        'a hunger goal never offers the real-world geocoder',
+        `she will search the real world for a meal: ${hungry}`);
+    check(/!getFood/.test(hungry),
+        'a hunger goal DOES offer !getFood',
+        `nowhere to eat in: ${hungry}`);
+    check(!/!findShelter|!findCave/.test(hungry),
+        'a hunger goal is not answered with a place to hide',
+        `"find something to eat" ranks hiding commands: ${hungry}`);
+
+    // and the geocoder still works when it is genuinely what was asked
+    const geo = await list('find a bar in Berlin');
+    check(!/!getFood/.test(geo),
+        'a geography goal is not answered with eat',
+        `a bar in Berlin is not a meal: ${geo}`);
+
+    // the ordinary food goal must be unharmed
+    check(/!getFood/.test(await list('gather food')),
+        'the plain food goal still resolves to !getFood',
+        'the fix cost us the normal case');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
