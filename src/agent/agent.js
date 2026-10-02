@@ -1489,28 +1489,35 @@ export class Agent {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
 
-        // ── SYSTEM-TEXT LEAK: SHE IS REPEATING THE PROMPT BACK ───────────
-        // Live, she spoke her own action output as chat:
-        //   SYSTEM: Action output:
-        //   Found oak_log nearby.
-        //   You harvested oak_log.
-        //   You now have 1 oak_log.
-        //   SYSTEM: Warning: something is approaching!
-        //
-        // strictFormat() rewrites system turns into user turns prefixed
-        // "SYSTEM: " (utils/text.js). The model sometimes echoes that frame
-        // verbatim instead of answering, and every line of it reaches players.
-        // Nothing downstream caught it: looksLikeCommand() sees no bang, the
-        // plain-text scrub only removes emoji, the speak gate is about
-        // register not about leaking internals.
-        //
-        // Dropped whole-message. A partial filter is wrong here - the leaked
-        // text is multi-line action output, so trimming one line still ships
-        // "You now have 1 oak_log." as if she had said it.
+        // ── PROMPT LEAKS: SHE IS RECITING HER OWN INSTRUCTIONS ────────
+        // Two shapes, both reaching players as chat, both the model echoing
+        // prompt scaffolding instead of obeying it. Both arrive here because
+        // handleMessage routes every send through this one function.
+        // Whole-message: each is multi-line or interleaved with real speech,
+        // so trimming a line still ships scaffolding.
         {
             const raw = String(message ?? '');
-            if (/^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im.test(raw)) {
-                console.log(`${this.name} [leak:system-text] suppressed: ${raw.slice(0, 90)}`);
+            const leak =
+                // Meta-instruction. Live, to YandereDev, replying to "hey":
+                //   guess I need to get a little creative. let's just gather
+                //   some dirt manually instead. no commands this time!
+                // self_prompter injects "Your next response MUST contain a
+                // command with this syntax: !commandName" (self_prompter.js
+                // :338). When that turn's reply carried no command - normal,
+                // it happens - the model described the instruction instead.
+                /\b(?:no|none\s+of\s+the|without|skip|skipping)\s+(?:a\s+)?!?commands?\b/i.test(raw)
+                || /\bthis\s+time\s+i\s+(?:won'?t|will not|didn'?t|did not)\s+use\s+a\s+command\b/i.test(raw)
+                || /\b(?:i\s+)?must\s+contain\s+a\s+command\b/i.test(raw)
+                // Raw system frames. strictFormat rewrites system turns into
+                // user turns prefixed "SYSTEM: " (text.js:54) and she echoes
+                // the frame back:
+                //   SYSTEM: Action output:
+                //   Found oak_log nearby.
+                //   You harvested oak_log.
+                //   SYSTEM: Warning: something is approaching!
+                || /^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im.test(raw);
+            if (leak) {
+                console.log(`${this.name} [leak:prompt] suppressed: ${raw.slice(0, 90)}`);
                 return;
             }
         }
