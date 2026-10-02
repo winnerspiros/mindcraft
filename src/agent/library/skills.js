@@ -2576,7 +2576,32 @@ export async function requestItems(bot, itemName, count = 1) {
      * @example
      * await skills.requestItems(bot, 'oak_planks', 10);
      **/
-    bot.chat(`I need ${count} ${itemName} — could someone bring me some? ♥`);
+    // The ♥ was a hardcoded Unicode heart in the send line, and this is the
+    // one player-facing message in the codebase that never passed through
+    // routeResponse - so it dodged every normal-persona filter by
+    // construction. Live proof, 06:09-06:10:
+    //
+    //   Requested 3 bread from players.   (x3, inside two minutes)
+    //   UwU full response to system: "no food? ugh, i guess i gotta start a
+    //    farm or something. anyone got a plan?"
+    //
+    // That is the same request twice more, from the same shortage, twenty
+    // seconds apart - the exact "she spams more than i want" report - and the
+    // heart went out in every copy because the string is a template literal,
+    // not something she wrote.
+    //
+    // Routing through routeResponse fixes both at once: the plain-text scrub,
+    // the identity guard, the length check and the speak gate all apply to
+    // this line like any other, and the model gets to phrase the ask in her
+    // own voice instead of reciting a fixed sentence. If there is no agent
+    // attached (a bare bot in a test), fall back to plain chat with no heart.
+    const ask = `i need ${count} ${itemName}, could someone bring me some?`;
+    const agent = bot.agent;
+    if (agent && typeof agent.routeResponse === 'function') {
+        await agent.routeResponse(agent.name, ask);
+    } else {
+        bot.chat(ask);
+    }
     log(bot, `Requested ${count} ${itemName} from players.`);
     return true;
 }
