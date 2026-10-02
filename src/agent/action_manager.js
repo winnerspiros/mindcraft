@@ -169,6 +169,25 @@ export class ActionManager {
                     // already designed to be interrupted (see the stop() comment
                     // about not calling stopDigging from here).
                     await this._preempt();
+                } else if (actionLabel === 'action:attack') {
+                    // COMBAT PREEMPT (measured 2026-10-02). The threat scan now
+                    // dispatches action:attack directly, and it was being killed
+                    // by ordinary housekeeping:
+                    //   action "action:collectBlocks" trying to interrupt
+                    //   current action "action:attack"
+                    //   [threat] scan fight result: done=false
+                    // The zombie stood next to her and she was mid-dig; collect
+                    // interrupts action:attack, not the reverse, so the swing
+                    // phase of attackEntity saw interrupt_code and bailed with
+                    // the mob untouched.
+                    //
+                    // Same reasoning as the mode: branch above - a fight is a
+                    // life-or-death reflex (drowning, a Pillager at 3 blocks),
+                    // and the generic stop() gives the running action 700ms plus
+                    // up to 10s of "waiting for code to finish". A mob kills her
+                    // well inside 10s, so the swing fires, gets announced, and
+                    // lands on nothing. Never wait out a fight.
+                    await this._preempt();
                 } else await this.stop();
             } else await this.stop();
 

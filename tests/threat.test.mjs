@@ -129,8 +129,13 @@ const botWith = (items) => ({ entity: { position: HER }, health: 20, inventory: 
 // ── it is wired in, and the agent no longer holds a dead copy ────────
 {
     const agent = readFileSync('src/agent/agent.js', 'utf8');
-    check(/import \{ reactToHurt, assessThreats \}/.test(agent),
-        'the agent imports the threat module', 'the threat module is not imported');
+    // Do NOT pin the exact import list - it breaks every time a symbol is added
+    // to the module, and then someone "fixes" it by removing the new symbol.
+    // Assert the import exists and carries the names it is called for.
+    const threatImport = agent.match(/import \{([^}]*)\} from '\.\.\/utils\/threat\.js'/)
+    check(!!threatImport, 'the agent imports the threat module', 'the threat module is not imported')
+    check(threatImport ? /reactToHurt/.test(threatImport[1]) && /assessThreats/.test(threatImport[1]) : false,
+        'the import carries reactToHurt and assessThreats', `import = ${threatImport && threatImport[1]}`)
     check(/reactToHurt\(\{/.test(agent),
         'and calls it when she is hurt', 'reactToHurt is never called');
     check(/assessThreats\(\{/.test(agent),

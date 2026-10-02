@@ -8,7 +8,7 @@ import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { scrubOutput } from '../utils/scrub.js';
-import { reactToHurt, assessThreats } from '../utils/threat.js';
+import { reactToHurt, assessThreats, respawnKitNeeds, equippedArmorNames } from '../utils/threat.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -2299,6 +2299,15 @@ export class Agent {
         this._threatScan = setInterval(() => {
             try {
                 if (!this.bot?.entity) return;
+                // interrupt_code is STICKY: requestInterrupt() sets it and only
+                // action_manager clears it (clearBotLogs). This scan calls
+                // attackEntity DIRECTLY, bypassing the manager, so any interrupt
+                // raised by another action left the flag set forever and every
+                // subsequent fight bailed on its first poll with done=false.
+                // Measured: one zombie 3 blocks away, full diamond, and she never
+                // swung because of a flag raised by an unrelated dig minutes
+                // earlier. Consume it here — the scan owns the body right now.
+                this.bot.interrupt_code = false;
                 const r = assessThreats({
                     bot: this.bot,
                     entities: Object.values(this.bot.entities || {}),
@@ -2874,21 +2883,42 @@ export class Agent {
         // survived (e.g. player gifted her some).
         // Survival server: op=false — no re-/give, ever. Equip what she (or a
         // kind player) actually has, then back to honest play.
-        const armorPieces = ['diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots'];
-        const hasArmor = armorPieces.some(p => this.bot.inventory.items().some(i => i.name === p));
-        if (!hasArmor) {
+        //
+        // 26.3/combat: the gate was ARMOR ONLY. She respawned holding a helmet
+        // but no sword, took the "armor survived" branch, and stayed unarmed
+        // forever — isArmed() false meant assessThreats resolved every threat to
+        // "flee", so she ran from every mob and could never fight back. That is
+        // the gear gap, and it was never about the /give path (rconEnsureKit
+        // grants diamond_sword); it was about never checking for a weapon.
+        const items = () => { try { return this.bot.inventory.items(); } catch (_) { return []; } };
+        // One pure predicate decides the re-kit, so the regression can exercise
+        // the real rule instead of grepping this call site's shape.
+        // Armor is worn, not carried: inventory.items() never reports it.
+        const equipped = equippedArmorNames(this.bot);
+        const { hasArmor, hasWeapon, hasFood } = respawnKitNeeds(items(), equipped);
+        // A weapon is a SEPARATE requirement from armor. Fighting needs a sword
+        // or axe; armor alone does not make her able to fight, and being unable
+        // to fight means assessThreats resolves EVERY threat to "flee" — she runs
+        // from every mob and can never fight back.
+        const needsKit = !hasArmor || !hasWeapon || !hasFood;
+        if (needsKit) {
             if (!canOp()) {
-                console.log(`${this.name} survival server: respawned naked, no re-kit — honest rebuild.`);
+                console.log(`${this.name} survival server: respawned without armor/weapon/food, no re-kit — honest rebuild.`);
+                // Even on a survival server, equip what she HAS. Respawning with a
+                // sword in the pack but bare hands is the same bug, smaller.
                 try { this.bot.armorManager.equipAll(); } catch (_) {}
+                const sw = items().find(i => /sword$/.test(i.name) || /_axe$/.test(i.name));
+                if (sw) { try { await this.bot.equip(sw, 'hand'); } catch (_) {} }
                 return;
             }
-            console.log(`${this.name} kit missing after respawn — full gear-up.`);
+            const missing = [!hasArmor && 'armor', !hasWeapon && 'weapon', !hasFood && 'food'].filter(Boolean);
+            console.log(`${this.name} kit incomplete after respawn (missing ${missing.join('+')}) — full gear-up.`);
             return this._gearUp();
         }
-        this.bot.armorManager.equipAll();
-        const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
+        try { this.bot.armorManager.equipAll(); } catch (_) {}
+        const sword = items().find(i => /sword$/.test(i.name));
         if (sword) await this.bot.equip(sword, 'hand');
-        const shield = this.bot.inventory.items().find(i => i.name === 'shield');
+        const shield = items().find(i => i.name === 'shield');
         if (shield) await this.bot.equip(shield, 'off-hand');
         console.log(`${this.name} re-armored after respawn.`);
     }

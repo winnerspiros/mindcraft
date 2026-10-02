@@ -6,6 +6,7 @@ import * as K from '../../utils/mcknowledge.js';
 import * as L from './furnace_ledger.js';
 import * as SL from './station_ledger.js';
 import * as ENC from '../../utils/mcenchant.js';
+import { isArmed } from '../../utils/threat.js';
 
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
@@ -1791,10 +1792,12 @@ export async function tidyUp(bot, what = 'all', arg = null) {
                 const hp = pick.health || pick.metadata?.[8] || null;
                 const scary = /wither|ender_dragon|warden|ravager/i.test(pick.name || '');
                 if (scary) {
-                    const gear = equipHighestAttack ? true : true;
                     try { await equipHighestAttack(bot); } catch (_) {}
-                    const sword = bot.inventory.items().some(i => /sword|axe/i.test(i.name));
-                    if (!sword) { log(bot, `${pick.name} nearby and I have no real weapon — refusing suicide. Gear up (!gearUp) first, then I clear it.`); }
+                    // Anchor the name: /sword|axe/i also matches "iron_pickaxe",
+                    // so she read "no real weapon" while holding a pickaxe and
+                    // refused a winder it could have fought. isArmed() already
+                    // learned this - reuse it instead of re-deriving.
+                    if (!isArmed(bot)) { log(bot, `${pick.name} nearby and I have no real weapon — refusing suicide. Gear up (!gearUp) first, then I clear it.`); }
                     else { log(bot, `${pick.name} pest at home — engaging (best weapon on, clutch ready).`); await attackEntity(bot, pick, true); done.push(`cleared:${pick.name}`); }
                 } else { await attackEntity(bot, pick, true); done.push(`cleared:${pick.name}`); }
             }

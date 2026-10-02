@@ -93,6 +93,42 @@ const MOB_TYPES = new Set([
     'creature', 'axolotl', 'villager',
 ]);
 
+// What does she need before she can fight her way out of a respawn?
+// Pure and exported so the regression can actually exercise it - checking the
+// call site's shape passed even with the weapon test deleted outright, because
+// "hasWeapon = true" still looks like a weapon check to a regex.
+export function respawnKitNeeds(items = [], equipped = []) {
+    const list = Array.isArray(items) ? items : [];
+    const worn = Array.isArray(equipped) ? equipped : [];
+    const has = (re) => list.some(i => re.test(String(i?.name || '')));
+    const wornHas = (re) => worn.some(i => re.test(String(i?.name || '')));
+    return {
+        // Armor lives in the EQUIPPED slots, never in inventory.items(). Verified
+        // over RCON on a fully-armored her: `data get entity UwU Inventory` has
+        // ZERO armor pieces, `data get entity UwU equipment` has all four. Reading
+        // armor from items() therefore reports hasArmor=false on a completely
+        // kitted player, and _reArmor re-kitted on EVERY respawn. Check both.
+        hasArmor: has(/^diamond_(helmet|chestplate|leggings|boots)$/) ||
+            wornHas(/^diamond_(helmet|chestplate|leggings|boots)$/),
+        // Anchored: /sword|axe/i also matches "diamond_pickaxe" (pickaxe ends in
+        // "axe"), which made her refuse a winder while holding a pickaxe.
+        hasWeapon: has(/sword$|_axe$/),
+        hasFood: has(/cooked_beef$|cooked_porkchop$|^bread$|cooked_chicken$/),
+    };
+}
+
+/** Names of the armor pieces she is actually wearing, as mineflayer reports them. */
+export function equippedArmorNames(bot) {
+    const out = [];
+    try {
+        const slots = bot?.inventory?.slots || [];
+        for (const s of slots) {
+            if (s && s.name && /_(helmet|chestplate|leggings|boots)$/.test(s.name)) out.push(s.name);
+        }
+    } catch (_) { /* unreadable inventory is handled by the caller's fallback */ }
+    return out;
+}
+
 export function mobName(entity) {
     if (!entity) return null;
     const type = String(entity.type || '').toLowerCase();
