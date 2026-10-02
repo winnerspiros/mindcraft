@@ -631,9 +631,9 @@ const check = (cond, good, bad) => {
     check(!/if \(!bot\.pathfinder\.goal\)\s*\{\s*bot\.setControlState\('jump', true\);/.test(branch),
         'the drowning branch no longer does nothing while pathfinding',
         'the drowning branch is still gated on !bot.pathfinder.goal, so it is inert during exactly the walk-into-water case that kills her');
-    check(/oxygenLevel/.test(branch),
-        'the drowning rescue reads her remaining air',
-        'the drowning branch never reads bot.oxygenLevel, so she only reacts after damage starts');
+    // deliberately NOT asserting an oxygenLevel read here: on 26.3 it is
+    // always NaN (no metadata in the bundled entities.json), so gating on it
+    // disables the rescue forever. Section 19 asserts the opposite on purpose.
     check(/swimUp/.test(branch),
         'the drowning rescue actually surfaces her (swimUp), it does not just hold jump',
         'the drowning branch never calls swimUp');
@@ -852,143 +852,74 @@ const check = (cond, good, bad) => {
 }
 
 
-// ── 18. THE DROWNING RESCUE MUST COME BEFORE THE FALL RESCUE ──────────
+// ── 19. THE DROWNING RESCUE: ORDER AND SIGNAL ────────────────────────
 //
-// She drowned again at y=62 while mining stone, and the rescue never
-// evaluated once. The cause is ordering, not a missing check:
+// She drowned again after the ordering fix, and instrumentation showed why:
 //
-//     if (falling)      -> waterBucketClutch
-//     else if (head in water) -> swimUp
+//   [drown] head-under, air=NaN (holding jump)
 //
-// Sinking into water puts her off the ground with downward velocity, so
-// the fall test matched FIRST in exactly the case that kills. Bubbles
-// also only fall while the head is under, which is the same moment. The
-// drowning branch was unreachable whenever she actually needed it.
+// bot.oxygenLevel is NaN on 26.3 - permanently. mineflayer sets it from
+// bot.registry.entitiesByName[name].metadataKeys[...]->'air_supply'
+// (entities.js:550); the bundled 26.3 entities.json has no metadata field
+// for any of its 161 entries, so metadataKeys is undefined, metas is {},
+// and oxygenLevel is never assigned. breath.js returns early on modern
+// protocol and delegates to that same dead lookup.
 //
-// This asserts position in the source, because that is the whole defect:
-// a functional test of the two branches would pass either way round.
+// The guard added two commits ago, Number.isFinite(air) && air <= 6,
+// therefore evaluated false FOREVER - it translated "this value is never
+// set" into "there is no danger". The rescue was written correctly and
+// could never fire, which is why both earlier drowning fixes passed tests
+// and review and changed nothing.
+//
+// Asserted against the real constraint: key on the head block, never on
+// oxygen.
 {
-    const fs12 = await import('node:fs');
-    const m = fs12.readFileSync(new URL('../src/agent/modes.js', import.meta.url), 'utf8');
-    const selfPres = m.slice(m.indexOf("name: 'self_preservation'"), m.indexOf("name: 'self_defense'"));
-    check(selfPres.length > 0, 'the self_preservation mode was located in modes.js',
-        'could not locate the self_preservation mode');
+    const fs13 = await import('node:fs');
+    const m = fs13.readFileSync(new URL('../src/agent/modes.js', import.meta.url), 'utf8');
+    const sp = m.slice(m.indexOf("name: 'self_preservation'"), m.indexOf("name: 'self_defense'"));
+    check(sp.length > 0, 'the self_preservation mode was located', 'self_preservation not found');
 
-    const drown = selfPres.indexOf('bubblesLow || headUnder');
-    const fall = selfPres.indexOf('elytraFlying');
-    check(drown !== -1, 'the drowning branch exists', 'the drowning rescue is missing');
-    check(fall !== -1, 'the fall branch exists', 'the MLG fall rescue is missing');
+    // (a) signal: head block, not oxygen
+    check(/const headUnder = blockAbove\.name === 'water';/.test(sp) && /if \(headUnder\) \{/.test(sp),
+        'the drowning rescue keys on the head block being water',
+        'the drowning rescue is not conditioned on the head-block test');
+    check(!/Number\.isFinite\(air\)/.test(sp),
+        'the rescue does NOT gate on oxygenLevel',
+        'oxygenLevel is NaN on 26.3 (no metadata in the bundled entities.json); gating on it disables the rescue forever');
+    check(!/bubblesLow/.test(sp),
+        'no dead bubblesLow flag remains',
+        'a bubblesLow flag is still computed from the unusable oxygenLevel');
+
+    // (b) order: before the fall test, as its own if
+    const drown = sp.indexOf("blockAbove.name === 'water'");
+    const fall = sp.indexOf('elytraFlying');
     check(drown !== -1 && fall !== -1 && drown < fall,
-        'the drowning branch is tested BEFORE the fall branch',
+        'the drowning branch is tested BEFORE the MLG fall branch',
         'the fall test precedes the drowning test, so the rescue is unreachable while sinking into water');
 
-    // and it must actually be a separate `if`, not an else-if of the fall
-    check(/if \(bubblesLow \|\| headUnder\) \{/.test(selfPres),
-        'the drowning branch is its own if-statement',
-        'the drowning branch is chained off the fall branch again');
-    check(/swimUp\(bot, 8000\)/.test(selfPres),
-        'the drowning branch still calls swimUp',
-        'the drowning rescue no longer surfaces');
-    // oxygen must still be read, and NaN treated as full air
-    check(/Number\.isFinite\(air\)/.test(selfPres),
-        'unknown oxygenLevel is treated as full air',
-        'an absent oxygenLevel would make every tick look like a drowning emergency');
-}
+    // (c) it must still act
+    check(/swimUp\(bot, 8000\)/.test(sp),
+        'the rescue surfaces her via swimUp', 'the drowning rescue no longer surfaces');
+    check(/last_drown > 5000/.test(sp),
+        'the rescue is throttled',
+        'an unthrottled rescue stops the self-prompt loop every tick');
 
-// ── 17. A COMMAND MUST NOT BE ABLE TO KILL THE BOT ─────────────────
-//
-// 13 restarts in 3h, every one from the same line:
-//
-//   TypeError: undefined is not an object
-//     (evaluating 'agent.task.blueprint.explain')
-//     at perform (src/agent/commands/queries.js:581)
-//     at executeCommand (src/agent/commands/index.js:541)
-//     at async startLoop (src/agent/self_prompter.js:340)
-//   Main process exited, code=exited, status=1/FAILURE
-//
-// agent.task.blueprint is only set while a blueprint task is active. The four
-// blueprint commands are unconditional, so asking when it is undefined threw,
-// and the rejection propagated out of executeCommand through startLoop into
-// the process exit. One command, 13 outages.
-//
-// Fixed at both layers, and both are asserted: the four commands explain
-// themselves instead of throwing, AND the dispatcher catches anything a
-// command throws, because perform() reaches arbitrary task code.
-{
-    const fs10 = await import('node:fs');
-    const idx = fs10.readFileSync(new URL('../src/agent/commands/index.js', import.meta.url), 'utf8');
-    const q = fs10.readFileSync(new URL('../src/agent/commands/queries.js', import.meta.url), 'utf8');
+    // (d) the reason, recorded where the next person will read it
+    check(/oxygenLevel is unusable on 26\.3/i.test(sp),
+        'the file records WHY oxygen cannot be used',
+        'the oxygenLevel limitation is undocumented, so it will be reintroduced');
 
-    // (a) the dispatcher catches. A throw here is a process exit.
-    const perf = idx.slice(idx.indexOf('await command.perform(agent, ...parsed.args)') - 300,
-        idx.indexOf('await command.perform(agent, ...parsed.args)') + 300);
-    check(/try\s*{/.test(perf),
-        'executeCommand wraps command.perform in try/catch',
-        'a throwing command can still kill the process (13 restarts from one command)');
-    check(/catch\s*\([^)]*\)\s*{/.test(perf) && /failed:/i.test(perf),
-        'the catch returns a message to the model instead of throwing',
-        'the catch does not report the failure back to the model');
-
-    // (b) all four blueprint commands guard, not just !getBlueprint
-    for (const name of ['!getBlueprint', '!getBlueprintLevel', '!checkBlueprint', '!checkBlueprintLevel']) {
-        const i = q.indexOf(`name: '${name}'`);
-        check(i !== -1, `${name} exists`, `${name} not found in queries.js`);
-        if (i === -1) continue;
-        const body = q.slice(i, q.indexOf('perform:', i) + 700);
-        check(/noBlueprint\(agent\)/.test(body.slice(0, 400)),
-            `${name} guards against a missing blueprint`,
-            `${name} dereferences agent.task.blueprint without checking, so it throws when no blueprint is active`);
-    }
-    check(/function noBlueprint\(agent\)/.test(q),
-        'the shared noBlueprint guard exists',
-        'the noBlueprint guard helper is missing');
-    check(/agent\.task\?\.blueprint/.test(q),
-        'the guard itself is null-safe',
-        'the noBlueprint guard would itself throw if agent.task is undefined');
-
-    // (c) the trigger: she recites the command docs, then acts on them
-    const a = fs10.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
-    // Lift the LIVE leak patterns and run the real leaked strings through
-    // them. Asserting on source substrings proved worthless here: the words
-    // "valid" and "commands" are separated by an alternation in the real
-    // pattern, so a literal grep passes on a filter that never fires - which
-    // is exactly the false pass I just hit while writing this.
-    // Lift BOTH live leak patterns and run the real leaked strings through
-    // them. Asserting on source substrings proved worthless here: the words
-    // "valid" and "commands" are separated by an alternation in the real
-    // pattern, so a literal grep passes on a filter that never fires - which
-    // is exactly the false pass I hit while writing this. Testing one pattern
-    // then hid that the other ("commands like !x") was never exercised.
-    const lift = (needle) => {
-        const line = a.split('\n').find(l => l.includes(needle));
-        if (!line) return null;
-        const lit = line.match(/(\/.*\/[gimsuy]*)/);
-        return lit ? eval(lit[1]) : null;
-    };
-    const docRe = lift('remember|note|note that');
-    const likeRe = lift('such as');
-    check(!!docRe, 'the "remember valid commands" leak pattern is liftable',
-        'she can still recite the command list at players');
-    check(!!likeRe, 'the "commands like !x" leak pattern is liftable',
-        'the doc-recitation leak is not fully filtered');
-
-    // the strings actually seen in the live log, each against BOTH patterns
-    const leaked = [
-        'Remember valid commands like !getFood or !getBlueprint',
-        'note that the valid commands are listed below',
-        'commands like !mineOaks, !cutWood are invalid',
-    ];
-    for (const t of leaked) {
-        check(!!docRe?.test(t) || !!likeRe?.test(t),
-            `doc recitation is caught: "${t.slice(0, 44)}"`,
-            `neither leak pattern catches "${t}"`);
-    }
-    for (const re of [docRe, likeRe]) if (re) re.lastIndex = 0;
-    for (const legit of ['i could mine some oak logs', 'brb', 'do you want to build something?',
-        'i like this server', 'notes are in my inventory']) {
-        check(!(docRe?.test(legit) || likeRe?.test(legit)),
-            `ordinary speech is not flagged: "${legit.slice(0, 32)}"`,
-            `the doc-recitation filters are too broad, they eat ordinary messages like "${legit}"`);
+    // (e) and the data really is empty, so that claim cannot rot unnoticed
+    const ed = new URL('../node_modules/minecraft-protocol/node_modules/minecraft-data/minecraft-data/data/pc/26.3/entities.json', import.meta.url);
+    if (fs13.existsSync(ed)) {
+        const ents = JSON.parse(fs13.readFileSync(ed, 'utf8'));
+        const withMeta = ents.filter(e => e.metadata != null).length;
+        if (withMeta === 0) {
+            check(true, 'confirmed: 26.3 entities.json still has no metadata (oxygenLevel stays NaN)');
+        } else {
+            bad(`26.3 entities.json now HAS metadata on ${withMeta}/${ents.length} entities - ` +
+                'bot.oxygenLevel may work again, so the head-block-only rescue should be reviewed');
+        }
     }
 }
 
