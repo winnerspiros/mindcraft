@@ -115,5 +115,65 @@ for (const ser of protodefCands) {
 if (!checkedSerializer) fail('could not find any protodef/src/serializer.js under node_modules',
     'checked: ' + protodefCands.map(rel).join(', '));
 
+// ── The stock digging flow must SURVIVE postinstall ──────────────────
+//
+// fix-26.2-protocol.py runs on every `bun install` (postinstall) and SIX of its
+// installers write to mineflayer/lib/plugins/digging.js: seqtruth, digaim,
+// digaimc, ghostbreak, deathtruth, toolproof, stopproof. That script grew the
+// file to 519 lines of interlocking workarounds (stock is 267) and those fixes
+// did not work anyway - 594 stone digs, 0 blocks broken.
+//
+// digging.js is now stock + the one field 26.3 requires, so the installers
+// must all decline to touch it. Verified by running every ensure_* from the
+// script against a copy: 310 lines before, 310 after, byte-identical.
+//
+// This check exists because the opposite would be silent. The installers bail
+// out on missing anchors with a WARNING rather than an error, so a future
+// stock-file change that happens to match an anchor would silently reinstate
+// the 519-line version on the next install.
+{
+    const digPath = path.join(ROOT, 'node_modules', 'mineflayer', 'lib', 'plugins', 'digging.js');
+    if (existsSync(digPath)) {
+        // Strip comments first. Stock digging.js carries comments that NAME the
+        // removed workarounds ("...RESTOP, GHOST-BREAK, NOSWING..."), and a
+        // plain includes() over the whole file flags its own explanation of the
+        // bug. That is the same comment-vs-code trap this repo has now hit three
+        // times; make it structurally impossible here.
+        const raw = readFileSync(digPath, 'utf8');
+        const code = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+        const lines = code.split('\n').length;
+        // Unique to the removed rewrite; none appear in stock. (bot.targetDigBlock
+        // is genuine stock and was the first wrong marker tried here.)
+        const rewritten = ['26.3 SEQ-TRUTH', 'ANIM-SUMMARY', '26.3 RESTOP-SCHED',
+                           'STOPWAIT-UPDATE', 'SEQ-SKIP', '_schedRestop',
+                           '_digStartClientTool', 'dig-trace', 'dig-effects',
+                           '_serverAckSeq']
+            .filter(m => code.includes(m));
+        if (rewritten.length) {
+            fail(`digging.js carries ${rewritten.length} reinstated 26.3 dig workaround(s): ${rewritten.join(', ')}`,
+                'postinstall re-applied fix-26.2-protocol.py over the stock file');
+        }
+        if (lines > 400) {
+            fail(`digging.js is ${lines} lines (stock is ~288); the hand-rewrite is back`,
+                'the six-workaround version is what broke digging');
+        }
+        // Count sequence fields INSIDE block_dig writes specifically. A bare
+        // /sequence:/ test passed even with the START's sequence deleted, because
+        // the FINISH and CANCEL writes still had one - and START is the packet
+        // that actually begins the dig. Counted per-write, as mutation-tested.
+        const digWrites = code.match(/write\('block_dig',\s*\{[\s\S]*?\}\s*\)/g) || [];
+        const withSeq = digWrites.filter(w => /sequence:/.test(w)).length;
+        if (digWrites.length < 3) {
+            fail(`digging.js has ${digWrites.length} block_dig writes; expected 3 (start/finish/cancel)`,
+                'stock mineflayer sends all three');
+        }
+        if (withSeq !== digWrites.length) {
+            fail(`${digWrites.length - withSeq} of ${digWrites.length} block_dig writes send no sequence; 26.3 requires it`,
+                'see 26.3/protocol.json packet_block_dig');
+        console.log(`   digging.js: stock flow, ${lines} code lines, sequence present`);
+    }
+}
+
 console.log('OK — 26.3 support intact (protocol data, chunk mapping, section header)');
 console.log(`   minecraft-data: ${rel(resolved)}`);
+        }
