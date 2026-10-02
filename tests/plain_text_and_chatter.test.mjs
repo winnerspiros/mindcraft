@@ -1545,5 +1545,52 @@ const check = (cond, good, bad) => {
     }
 }
 
+// ── 28. THE DROWNING RESCUE MUST SCOOP, NOT JUST SWIM ─────────────────
+//
+// She drowned. On the current build the rescue never fired at all: zero swim
+// attempts around the death, while an earlier build logged 8 failures of
+// "Still underwater - swim failed (blocked above? dig up or pearl out)".
+//
+// In a one-deep pocket she mined herself, swimming up is the wrong primitive -
+// there is no column to rise through. She is RCON-kitted with a bucket on
+// every respawn, so the escape is to scoop the source block she is standing
+// in, turning that cell into air she can breathe.
+{
+    const fs28 = await import('node:fs');
+    const src = fs28.readFileSync(new URL('../src/agent/modes.js', import.meta.url), 'utf8');
+    const hi = src.indexOf('const headUnder = blockAbove.name');
+    check(hi > 0, 'the drowning signal was located', 'head-under detection is missing');
+    // brace-match the rescue branch
+    let _bs = src.indexOf('if (headUnder) {', hi), _bd = 0, _be = _bs;
+    for (let _k = _bs; _k < src.length; _k++) {
+        if (src[_k] === '{') _bd++;
+        else if (src[_k] === '}') { _bd--; if (_bd === 0) { _be = _k + 1; break; } }
+    }
+    const blk = src.slice(hi, _be);
+
+    check(/findInventoryItem\('bucket'\)/.test(blk),
+        'the rescue reaches for the empty bucket',
+        'she drowns holding a bucket she never uses');
+    check(/activateBlock\(feet\)/.test(blk),
+        'the rescue scoops the block she is standing in',
+        'she only tries to swim, which cannot open an air pocket in a mined pocket');
+    check(/getBlockAtPosition/.test(blk),
+        'success is confirmed against the world, not the inventory',
+        'she already had a water_bucket, so an inventory check is not evidence');
+    // Only real CODE, not comments: the branch contains a comment naming
+    // getBlockName precisely because that helper does not exist, and matching
+    // it is a false positive.
+    const code = blk.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    check(!/getBlockName/.test(code),
+        'no invented world helper in executable code',
+        'world.getBlockName does not exist; the check silently compared undefined');
+    check(/swimUp/.test(blk),
+        'swimming remains as the fallback when scooping is impossible',
+        'the fallback path was removed');
+    check(!/placeBlock\(bot,\s*'water_bucket'/.test(blk),
+        'the rescue does not try to place a bucket underwater',
+        'placeBlock does hand-placement, which mostly cannot find a face underwater');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

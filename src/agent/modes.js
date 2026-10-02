@@ -85,6 +85,55 @@ const modes_list = [
                 if (Date.now() - this.last_drown > 5000) {
                     this.last_drown = Date.now();
                     execute(this, agent, async () => {
+                        // BUCKET FIRST. She is RCON-kitted with a water_bucket on
+                        // every respawn, and swimming up failed 8/8 times on
+                        // 2134481 ("Still underwater - swim failed (blocked
+                        // above?)") - she drowns inside a 1-deep pocket she
+                        // mined herself, where jump does nothing. Placing the
+                        // bucket under her and rising on the column is the
+                        // mechanic that works when swimming does not.
+                        // SCOOP THE BLOCK SHE IS STANDING IN. This is the only
+                        // escape that works in a mined pocket: use the empty
+                        // bucket on the source block under her feet, which turns
+                        // that cell into air, and she can breathe there. Then
+                        // swim up through the column she just made.
+                        //
+                        // Measured failure of the alternatives: swimUp failed 8/8
+                        // ("Still underwater - swim failed (blocked above?)") and
+                        // placeBlock does real hand-placement, which underwater
+                        // mostly cannot find a face. Both are worse than removing
+                        // the water she is already in.
+                        let breathed = false;
+                        try {
+                            const bucket = bot.inventory.findInventoryItem('bucket');
+                            if (bucket) {
+                                const feet = bot.entity.position.floored();
+                                try {
+                                    await bot.equip(bucket, 'hand');
+                                    await bot.lookAt(feet.offset(0.5, 0, 0.5), true);
+                                    await bot.activateBlock(feet);
+                                    await new Promise(r => setTimeout(r, 350));
+                                    // Confirm by the WORLD, not by the bucket:
+                                    // the block under her feet becoming non-water
+                                    // is the actual outcome that matters. She may
+                                    // already have had a water_bucket (so that
+                                    // check is not evidence) - world is.
+                                    // NOTE: world.getBlockName does not exist;
+                                    // the real helper is getBlockAtPosition.
+                                    const after = world.getBlockAtPosition
+                                        ? world.getBlockAtPosition(bot, feet.x, feet.y, feet.z)
+                                        : null;
+                                    const name = after?.name;
+                                    breathed = name != null && name !== 'water';
+                                } catch (_) {}
+                            }
+                        } catch (_) {}
+                        if (breathed) {
+                            // air pocket made: surface, then swim out
+                            await new Promise(r => setTimeout(r, 300));
+                            await skills.swimUp(bot, 3000);
+                            return;
+                        }
                         const ok = await skills.swimUp(bot, 8000);
                         if (!ok) say(agent, 'stuck underwater, this is not great');
                     });
