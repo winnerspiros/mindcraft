@@ -203,7 +203,36 @@ export function explainParamError(commandName, errorText) {
     const cmd = commandMap[String(commandName || '').startsWith('!')
         ? commandName : '!' + commandName];
     if (!cmd?.params) return null;
-    const m = /Param '(\w+)' must be of type (\w+)/.exec(String(errorText || ''));
+    const err = String(errorText || '');
+
+    // A wrong ARG COUNT is the same failure and was left unexplained, which is
+    // why the log is full of it. Live, 07:0x, in six minutes:
+    //
+    //   Agent executed: !breakBlock and got: given 1 args, but requires 3
+    //   Agent executed: !tps and got: given 3 args, but it only accepts 0
+    //   Agent executed: !collectBlocks and got: given 0 args, but requires 1
+    //   Agent executed: !craftRecipe and got: given 1 args, but requires 2
+    //
+    // Four different commands, all of them recoverable by one sentence. The
+    // model kept guessing because the error never said what it wanted. The
+    // type-error branch below was already written for exactly this reason; it
+    // just did not match this message shape.
+    const arity = /(?:was given|requires?)\s+.*?(\d+)\s+args?.*?(?:but it only accepts|but requires? at least)\s*(\d+)/.exec(err);
+    if (arity) {
+        const got = Number(arity[1]);
+        const want = Number(arity[2]);
+        const sig = Object.entries(cmd.params)
+            .map(([name, s]) => `${name}: ${s.type}${s.default !== undefined ? ` (default ${s.default})` : ''}`)
+            .join(', ');
+        const optional = Object.keys(cmd.params).length < want;
+        return `${commandName} takes (${sig})${optional ? ' — some params are optional.' : '.'} `
+            + `You passed ${got} arg(s); it wants ${want}. `
+            + (got > want
+                ? 'Drop the extra ones and keep only what is listed above.'
+                : 'Supply every listed param, in the order shown.');
+    }
+
+    const m = /Param '(\w+)' must be of type (\w+)/.exec(err);
     if (!m) return null;
     const [, badParam, wantedType] = m;
     const spec = cmd.params[badParam];
