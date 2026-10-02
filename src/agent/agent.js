@@ -986,19 +986,15 @@ export class Agent {
             return false;
         }
 
-        // ChatBudget is read here so a slot is reserved, but it no longer
-        // BLOCKS. It returned false before generation, which meant a
-        // self-prompt turn could not produce a command at all: 72 monologue
-        // blocks in 45min feeding 20 "did not use command" pauses. A
-        // self-prompt turn is not talking to anyone, it is the thing that
-        // makes her act. The cap is enforced on the OUTPUT below, which is
-        // where a chat rule belongs.
+        // Reserve a chat slot if one is free, but do NOT block on it. This
+        // used to return false before generation, so a self-prompt turn could
+        // not produce a command at all: 72 monologue blocks in 45min feeding
+        // 20 "did not use command" pauses. A self-prompt turn is not talking
+        // to anyone, it is the thing that makes her act. The cap is enforced
+        // on the output (_budgetBlocks) where a chat rule belongs.
         if (!isYandere() && self_prompt) {
-            try {
-                const { ChatBudget } = await import('../utils/chat_budget.js');
-                this._budget ||= new ChatBudget();
-                if (this._budget.canSpeak({ now: Date.now() }).ok) this._budget.reserve();
-            } catch (e) { console.warn('[gate] failed open:', e.message); }
+            const g = await this._budgetGate();
+            if (g?.ok) this._budget.reserve();
         }
 
         // Handle other user messages
@@ -1480,6 +1476,19 @@ export class Agent {
         return true;
     }
 
+    // Lazy ChatBudget, null on import failure. Fails open: a broken chat budget
+    // must never stop her acting.
+    async _budgetGate() {
+        try {
+            const { ChatBudget } = await import('../utils/chat_budget.js');
+            this._budget ||= new ChatBudget();
+            return this._budget.canSpeak({ now: Date.now() });
+        } catch (e) {
+            console.warn('[gate] budget failed open:', e.message);
+            return null;   // null = no opinion, never a veto
+        }
+    }
+
     async routeResponse(to_player, message) {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
@@ -1709,17 +1718,13 @@ export class Agent {
                 // The cap itself, on the output. A command is not talk, so
                 // command-bearing replies are exempt; re-checked with a fresh
                 // clock because the window may have closed since above.
-                if (!isYandere() && self_prompt && !containsCommand(message)) {
-                    try {
-                        const { ChatBudget } = await import('../utils/chat_budget.js');
-                        this._budget ||= new ChatBudget();
-                        const gate = this._budget.canSpeak({ now: Date.now() });
-                        if (!gate.ok) {
-                            console.log(`${this.name} [gate:${gate.why}] dropped output (budget)`);
-                            return;   // no delivered() - the room never saw this
-                        }
-                        this._budget.reserve();
-                    } catch (e) { console.warn('[gate] failed open:', e.message); }
+                // NOTE the awaits on both _budgetGate() call sites: it is async,
+                // and an un-awaited Promise is always truthy, so `!gate?.ok` was
+                // silently always false and the cap never fired.
+                if (!isYandere() && self_prompt && !containsCommand(message)
+                    && !(await this._budgetGate())?.ok) {
+                    console.log(`${this.name} [gate:over_budget] dropped output (budget)`);
+                    return;   // no delivered() - the room never saw this
                 }
 
                 let len = checkLength(message);

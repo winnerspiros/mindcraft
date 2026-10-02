@@ -802,7 +802,7 @@ const check = (cond, good, bad) => {
     // (a) the pre-generation gate must not return false any more
     const preStart = src.indexOf('if (!isYandere() && self_prompt) {');
     const pre = preStart === -1 ? '' : src.slice(preStart, src.indexOf('// Handle other user messages'));
-    check(preStart !== -1 && /ChatBudget/.test(pre),
+    check(preStart !== -1 && /_budgetGate/.test(pre),
         'the pre-generation budget block was found',
         'could not locate the pre-generation ChatBudget block');
     check(!/return false;/.test(pre),
@@ -818,10 +818,29 @@ const check = (cond, good, bad) => {
         'the budget no longer drops over-budget output, so the cap is gone entirely');
 
     // (c) and it must exempt commands - that is the whole point
-    const out = src.slice(src.indexOf('dropped output (budget)') - 700, src.indexOf('dropped output (budget)'));
+    const out = src.slice(src.indexOf('dropped output (budget)') - 400, src.indexOf('dropped output (budget)'));
     check(/!containsCommand\(message\)/.test(out),
         'the output cap exempts replies that carry a command',
         'the output cap judges command-bearing replies too, so acting can still be blocked');
+
+    // (d) both call sites go through one helper, and it fails OPEN
+    check((src.match(/await this\._budgetGate\(\)/g) || []).length >= 2,
+        'both budget sites share one _budgetGate helper',
+        'the lazy import/init is duplicated across the two budget call sites');
+    // ...and AWAITED. _budgetGate is async; an un-awaited Promise is always
+    // truthy, so `!gate?.ok` is always false and the cap silently never fires.
+    // A string grep for the method name passed on both broken call sites -
+    // this checks the await specifically.
+    // 2 call sites + 1 definition; the prose mention in the comment above is
+    // excluded by counting only lines that invoke it.
+    const invoked = (src.match(/(?:await )?this\._budgetGate\(\)/g) || []).length;
+    const awaited = (src.match(/await this\._budgetGate\(\)/g) || []).length;
+    check(awaited === 2 && invoked === 2,
+        'every _budgetGate call site awaits (2 sites; the definition is separate)',
+        `${awaited} of ${invoked} _budgetGate call sites are awaited - an un-awaited Promise is always truthy, so the cap is inert`);
+    check(/_budgetGate[\s\S]{0,400}return null/.test(src),
+        '_budgetGate fails open (null = no opinion), never vetoes',
+        '_budgetGate can return a veto on import failure, which would silence her entirely');
 
     // (d) ChatBudget's own monotone-share guards must not regress - those are
     // what stop her talking to an empty room forever
