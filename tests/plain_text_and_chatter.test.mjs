@@ -506,5 +506,93 @@ const check = (cond, good, bad) => {
         'explainParamError fabricated a signature for a command that does not exist');
 }
 
+// ── 12. NO LITERAL $EXAMPLES REACHES ANY PROMPT ──────────────────────
+//
+// Live, 27 times in ten minutes:
+//   Unknown prompt placeholders: $EXAMPLES, $EXAMPLES
+//
+// That warning was a lie. personas/normal.json `conversing` contains
+// $EXAMPLES twice, and on a self-prompt turn promptConversation
+// deliberately withholds chat exemplars, so it blanked the placeholder
+// itself immediately after replaceStrings returned. The residual check
+// lived at the END of replaceStrings and therefore fired on work that was
+// about to be undone - reporting a leak one line before it was fixed.
+//
+// The model never saw it. The real defect was narrower and worse: FOUR
+// other callers pass examples=null and never blank it at all
+// (reflection_memory, saving_memory, reply_to_decide, image_analysis), so
+// a persona script mentioning $EXAMPLES would reach those models as the
+// literal string. Fixing it inside replaceStrings closes all five at once.
+//
+// Assertions run against the source of replaceStrings and the real persona.
+{
+    const fs4 = await import('node:fs');
+    const src = fs4.readFileSync(new URL('../src/models/prompter.js', import.meta.url), 'utf8');
+
+    // the conditional that used to skip blanking: `&& examples !== null`
+    check(!/includes\('\$EXAMPLES'\)\s*&&\s*examples\s*!==\s*null/.test(src),
+        'replaceStrings no longer guards $EXAMPLES behind `examples !== null`',
+        'the $EXAMPLES branch is still conditional on examples being non-null, so null-example prompts leak the literal');
+
+    // The residual check must not be inline in replaceStrings any more.
+    // Comments are stripped first: the fix documents the old behaviour and
+    // names the old warning verbatim, so a naive substring search matches the
+    // explanation instead of the code - and a test that fires on its own
+    // rationale is worse than no test.
+    const body = src.slice(src.indexOf('async replaceStrings('), src.indexOf('warnUnknownPlaceholders(prompt) {'));
+    const bodyCode = body.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    check(!/warnUnknownPlaceholders/.test(bodyCode),
+        'the residual placeholder check is out of replaceStrings',
+        'the residual check is still inside replaceStrings and fires before the caller has blanked $EXAMPLES');
+    check(!/console\.warn/.test(bodyCode),
+        'replaceStrings itself no longer logs',
+        'replaceStrings still logs placeholders itself, before the caller has resolved them');
+
+    // and it must exist as a reusable method
+    check(/warnUnknownPlaceholders\(prompt\)\s*\{/.test(src),
+        'warnUnknownPlaceholders exists as a method',
+        'warnUnknownPlaceholders method is missing');
+
+    // Every call site must reach a residual check before its prompt is sent,
+    // or a real leak goes unreported. Checked structurally, per site, with a
+    // 10-line lookahead: a bare count comparison is wrong here because the
+    // conversing prompt has TWO replaceStrings calls (the if/else arms at
+    // `if (examplesSource) ... else ...`) sharing ONE check after the merge.
+    // Counting sites against checks flagged that correct shape as a bug.
+    // 12 lines, not 10: the widest gap is that if/else pair, and the check
+    // sits on the 11th line below the first arm.
+    const lns = src.split('\n');
+    let uncovered = 0;
+    const uncoveredDetail = [];
+    for (let i = 0; i < lns.length; i++) {
+        if (!lns[i].includes('await this.replaceStrings(')) continue;
+        const window = lns.slice(i, i + 12).join('\n');
+        if (!window.includes('warnUnknownPlaceholders')) {
+            uncovered++;
+            uncoveredDetail.push(`line ${i + 1}: ${lns[i].trim().slice(0, 60)}`);
+        }
+    }
+    check(uncovered === 0,
+        `every replaceStrings call site is followed by a residual check (${uncovered} uncovered)`,
+        `${uncovered} call site(s) reach the model unchecked:\n      ${uncoveredDetail.join('\n      ')}`);
+
+    // A lookahead can be satisfied by the NEXT function's check, so pin the
+    // conversing case explicitly - it is the one that produced all 27
+    // spurious warnings.
+    const conv = src.slice(src.indexOf('let prompt = this.profile.conversing;'));
+    const convIf = conv.indexOf('await this.replaceStrings(prompt, messages, examplesSource)');
+    const convChk = conv.indexOf('this.warnUnknownPlaceholders(prompt);');
+    check(convIf !== -1 && convChk !== -1 && convChk > convIf,
+        'the conversing prompt checks for residue after its substitutions, not before',
+        'the conversing prompt does not check after its substitutions - the exact shape that fired 27 spurious warnings');
+
+    // the persona does still mention $EXAMPLES, so this is not a passing
+    // vacuously - it is the exact input that used to trigger the warning
+    const persona = JSON.parse(fs4.readFileSync(new URL('../personas/normal.json', import.meta.url), 'utf8'));
+    check((String(persona.conversing).match(/\$EXAMPLES/g) || []).length > 0,
+        'the persona still uses $EXAMPLES (the test input is real)',
+        'the persona no longer mentions $EXAMPLES, so this whole test is vacuous');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

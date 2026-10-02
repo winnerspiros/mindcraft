@@ -516,8 +516,18 @@ export class Prompter {
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES') && examples !== null)
-            prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
+        if (prompt.includes('$EXAMPLES')) {
+            // Resolve it HERE, for both cases, instead of only when examples
+            // were supplied. Several callers pass examples=null and never blank
+            // it themselves (reflection_memory, saving_memory, image_analysis,
+            // reply_to_decide) - so a persona script mentioning $EXAMPLES would
+            // reach the model as the literal text "$EXAMPLES" on every one of
+            // those prompts. The conversing caller already blanked it by hand
+            // after this call; doing it here makes that hand-blanking redundant
+            // rather than load-bearing.
+            prompt = prompt.replaceAll('$EXAMPLES',
+                examples !== null ? await examples.createExampleMessage(messages) : '');
+        }
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$LAST_OUTCOME')) {
@@ -620,12 +630,43 @@ export class Prompter {
             }
         }
 
-        // check if there are any remaining placeholders with syntax $<word>
-        let remaining = prompt.match(/\$[A-Z_]+/g);
+        // Warn about unresolved $<PLACEHOLDER>s. NOT here.
+        //
+        // This used to sit at the end of replaceStrings, and it fired on every
+        // self-prompt turn - 27 times in ten minutes in the live log, always
+        // "Unknown prompt placeholders: $EXAMPLES, $EXAMPLES". That was a lie
+        // in three separate ways:
+        //
+        // 1. The model never saw them. The conversing caller blanks $EXAMPLES
+        //    immediately after this returns (promptConversation: `if
+        //    (prompt.includes('$EXAMPLES')) prompt = prompt.replaceAll('$EXAMPLES', '')`),
+        //    because chat exemplars are deliberately withheld from synthetic
+        //    turns. So the placeholder was resolved, one line too late to be
+        //    seen by this check.
+        // 2. "$EXAMPLES" is not unknown. It is a documented placeholder in the
+        //    persona's own script (personas/normal.json `conversing`, twice);
+        //    the branch above resolves it on every real chat turn.
+        // 3. It was actively harmful. A per-turn unconditional warning is
+        //    noise that trains the reader to skip the line, and it looks like
+        //    a real leak during incident triage - I chased it as the cause of
+        //    the "she doesnt respond" bug.
+        //
+        // The check belongs at the true last stage, after the caller has had
+        // its say. promptConversation now calls warnUnknownPlaceholders() on
+        // the final prompt it is about to send.
+        return prompt;
+    }
+
+    // Residual-placeholder check. Deliberately separate from replaceStrings
+    // so it can run AFTER the caller has done its own placeholder handling,
+    // rather than reporting work that is about to be undone.
+    warnUnknownPlaceholders(prompt) {
+        const remaining = String(prompt || '').match(/\$[A-Z_]+/g);
         if (remaining !== null) {
             console.warn('Unknown prompt placeholders:', remaining.join(', '));
+            return remaining;
         }
-        return prompt;
+        return null;
     }
 
     async checkCooldown() {
@@ -714,11 +755,15 @@ export class Prompter {
             }
             if (examplesSource) prompt = await this.replaceStrings(prompt, messages, examplesSource);
             else {
-                // No exemplars: still resolve everything else, and blank
-                // $EXAMPLES so no literal placeholder leaks into the prompt.
+                // No exemplars: still resolve everything else. replaceStrings
+                // now blanks $EXAMPLES itself when examples is null, so there
+                // is nothing left to hand-blank here.
                 prompt = await this.replaceStrings(prompt, messages, null);
-                if (prompt.includes('$EXAMPLES')) prompt = prompt.replaceAll('$EXAMPLES', '');
             }
+            // Residual check, HERE rather than inside replaceStrings: this is
+            // the final prompt, after every caller-side substitution has run,
+            // so a hit is a genuine leak and not work about to be undone.
+            this.warnUnknownPlaceholders(prompt);
             let generation;
 
             try {
@@ -850,6 +895,7 @@ export class Prompter {
         let prompt = this.profile.reflection_memory || DEFAULT_REFLECTION_PROMPT;
         prompt += await personalityPromptLine();
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        this.warnUnknownPlaceholders(prompt);
         let resp = await this.chat_model.sendRequest([], prompt);
         if (resp && resp.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>');
@@ -877,6 +923,7 @@ export class Prompter {
         // resolve $GOAL_HISTORY BEFORE replaceStrings so it isn't flagged unknown
         prompt = prompt.replaceAll('$GOAL_HISTORY', goalHistoryText || '(nothing yet)');
         prompt = await this.replaceStrings(prompt, []);
+        this.warnUnknownPlaceholders(prompt);
         let resp = await this.chat_model.sendRequest([], prompt);
         if (resp && resp.includes('</think>')) resp = resp.split('</think>')[1];
         let goal = String(resp || '').trim().split('\n')[0].trim();
@@ -1002,6 +1049,7 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+        this.warnUnknownPlaceholders(prompt);
 
         // Inject relevant previously-written code so she reuses proven skills
         // instead of re-deriving them (growing skill library).
@@ -1027,6 +1075,7 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        this.warnUnknownPlaceholders(prompt);
         let resp = await this.chat_model.sendRequest([], prompt);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
         if (resp?.includes('</think>')) {
@@ -1042,6 +1091,7 @@ export class Prompter {
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, null, messages);
+        this.warnUnknownPlaceholders(prompt);
         let res = await this.chat_model.sendRequest([], prompt);
         return res.trim().toLowerCase() === 'respond';
     }
@@ -1050,6 +1100,7 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
+        this.warnUnknownPlaceholders(prompt);
         return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
     }
 
@@ -1057,10 +1108,12 @@ export class Prompter {
         // deprecated
         let system_message = this.profile.goal_setting;
         system_message = await this.replaceStrings(system_message, messages);
+        this.warnUnknownPlaceholders(system_message);
 
         let user_message = 'Use the below info to determine what goal to target next\n\n';
         user_message += '$LAST_GOALS\n$STATS\n$INVENTORY\n$CONVO'
         user_message = await this.replaceStrings(user_message, messages, null, null, last_goals);
+        this.warnUnknownPlaceholders(user_message);
         let user_messages = [{role: 'user', content: user_message}];
 
         let res = await this.chat_model.sendRequest(user_messages, system_message);
