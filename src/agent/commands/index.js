@@ -23,6 +23,32 @@ const commandList = queryList.concat(actionsList);
 // real command either. Every name she is shown must come from here, so this list
 // cannot drift from what the bot can actually do.
 export const allCommandNames = () => commandList.map(c => c.name);
+
+/**
+ * Name -> required/optional arg count and what a valid arg looks like.
+ *
+ * Measured 2026-10-02: she emitted a bare `!collectBlocks` and it failed with
+ * "was given 0 args, but requires at least 1 args". She was told the command
+ * NAME and nothing about its SHAPE, so she guessed. The self-prompt now shows
+ * `!collectBlocks <block>` inline, taken from the registry, so this cannot
+ * drift from the real arity.
+ */
+export const allCommandArity = () => {
+    const out = {};
+    for (const c of commandList) {
+        // params is an OBJECT keyed by arg name, not an array. A param with a
+        // `default` is optional; everything else is required. (First attempt
+        // assumed an array and threw "ps.filter is not a function".)
+        const ps = (c.params && typeof c.params === 'object') ? Object.entries(c.params) : [];
+        const req = ps.filter(([, d]) => d && d.default === undefined);
+        out[c.name] = {
+            required: req.length,
+            optional: ps.length - req.length,
+            takes: ps.map(([k, d]) => (d && d.type) || k),
+        };
+    }
+    return out;
+};
 const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;

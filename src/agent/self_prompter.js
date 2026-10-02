@@ -639,10 +639,17 @@ export class SelfPrompter {
      */
     async _realCommandsFor(goal) {
         let names = [];
+        // Show the SHAPE of each command, not just its name. Measured: a bare
+        // `!collectBlocks` failed with "was given 0 args, but requires at least
+        // 1 args" - she was told the name and nothing about its arguments.
+        // Declared here, NOT inside the try: the formatting .map() below is
+        // outside that block and threw "_arity is not defined".
+        let _arity = {};
         try {
             // lazy: keeps the undici chain out of this module's import graph
             const mod = await import('./commands/index.js');
             names = (typeof mod.allCommandNames === 'function' ? mod.allCommandNames() : []) || [];
+            _arity = (typeof mod.allCommandArity === 'function') ? mod.allCommandArity() : {};
         } catch (_) { return ''; }
         if (!names.length) return '';
         const g = String(goal || '').toLowerCase();
@@ -706,7 +713,14 @@ export class SelfPrompter {
             else if (/(collect|mine|dig|get|gather|find|search)/i.test(n)) s += scoreArgs(n);
             return { n, s };
         }).filter(x => x.s > 0)
-            .sort((a, b) => b.s - a.s).slice(0, 12).map(x => x.n);
+            .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {
+                const a2 = _arity[x.n];
+                if (!a2 || !a2.required) return x.n;
+                // !collectBlocks -> !collectBlocks <BlockName> [int]
+                const need = a2.takes.slice(0, a2.required).map(t => `<${t}>`).join(' ');
+                const opt = a2.optional ? ' [' + a2.takes.slice(a2.required).join(' ') + ']' : '';
+                return `${x.n} ${need}${opt}`;
+            });
         if (!ranked.length) return '';
         return `Commands that exist and fit this goal: ${ranked.join(', ')}. ` +
             `Use one of these - do not invent a name. If none of them does what the goal needs, ` +

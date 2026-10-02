@@ -1502,11 +1502,14 @@ const check = (cond, good, bad) => {
     };
     const rank = namesOf;
 
+    // Entries now carry their ARGUMENT SHAPE (section 30), e.g.
+    // "!collectBlocks <BlockName> [int]", so match on the name prefix.
     const food = await rank('gather food from nearby');
-    check(food.length > 0 && food.includes('!getFood'),
+    const has = (list, n) => list.some(x => x === n || x.startsWith(n + ' '));
+    check(food.length > 0 && has(food, '!getFood'),
         'a food goal ranks !getFood first',
         `expected !getFood in ${JSON.stringify(food)}`);
-    check((await rank('gather food')).includes('!getFood'),
+    check(has(await rank('gather food'), '!getFood'),
         'the bare "gather food" goal also resolves',
         'the shortest goal matched nothing, which is the common case');
 
@@ -1516,13 +1519,13 @@ const check = (cond, good, bad) => {
     // Stopwords must not score, and the bang must be stripped before prefix
     // matching - names arrive as "!collectBlocks" so /^collect/ never fired.
     const coal = await rank('mine some coal ore for torches');
-    check(coal.includes('!collectBlocks'),
+    check(has(coal, '!collectBlocks'),
         'a coal-ore goal offers !collectBlocks',
         `expected !collectBlocks in ${JSON.stringify(coal)}`);
-    check(coal.indexOf('!collectBlocks') < 6,
+    check(coal.findIndex(x => x.startsWith('!collectBlocks')) < 6,
         '!collectBlocks is near the TOP for a coal goal, not 11th',
         `it ranked #${coal.indexOf('!collectBlocks') + 1} of ${coal.length}: ${JSON.stringify(coal)}`);
-    check(coal.includes('!craftRecipe'),
+    check(has(coal, '!craftRecipe'),
         'a torch goal also offers !craftRecipe',
         'she needs coal AND sticks/planks to make torches');
 
@@ -1641,6 +1644,69 @@ const check = (cond, good, bad) => {
     check(/const myGen = \+\+this\._actionGen/.test(src),
         'the generation counter is taken per action',
         'without it there is nothing to compare against');
+}
+
+// ── 30. THE COMMAND LIST MUST SHOW ARGUMENT SHAPE ─────────────────────
+//
+// Measured 2026-10-02, live: she emitted a bare `!collectBlocks` and it failed
+// with "Command !collectBlocks was given 0 args, but requires at least 1
+// args". She had been told the command NAME and nothing about its SHAPE, so
+// she guessed - and guessed wrong. toolGapNote() tells her what she is holding;
+// nothing told her the arity.
+{
+    const { allCommandArity, allCommandNames } = await import('../src/agent/commands/index.js');
+    const ar = allCommandArity();
+
+    check(typeof allCommandArity === 'function',
+        'the registry exports its arity',
+        'she is shown names with no indication of what they need');
+
+    // params is an OBJECT keyed by arg name, and `default` marks optional.
+    // An early attempt assumed an array and threw "ps.filter is not a function".
+    check(ar['!collectBlocks'] && ar['!collectBlocks'].required === 1,
+        '!collectBlocks is known to need an argument',
+        `got ${JSON.stringify(ar['!collectBlocks'])}`);
+    check(ar['!collectBlocks'] && ar['!collectBlocks'].optional === 1,
+        '!collectBlocks num is correctly seen as OPTIONAL (it has a default)',
+        'an optional arg is being demanded, so she will always supply it');
+    check(ar['!getFood'] && ar['!getFood'].required === 0,
+        '!getFood is known to need nothing',
+        `got ${JSON.stringify(ar['!getFood'])}`);
+    check(ar['!collectBlocks'].takes[0] === 'BlockName',
+        'the arg TYPE is carried through, so she knows to name a block',
+        `got ${JSON.stringify(ar['!collectBlocks'].takes)}`);
+
+    // every command must be represented, with no crash on odd shapes
+    let bad = [];
+    for (const n of allCommandNames()) {
+        const a = ar[n];
+        if (!a || !Number.isInteger(a.required) || a.required < 0) bad.push(n);
+    }
+    check(bad.length === 0,
+        'every registered command has valid arity',
+        `broken for: ${bad.slice(0, 5).join(', ')}`);
+
+    // and the self-prompt must render the shape
+    const { SelfPrompter } = await import('../src/agent/self_prompter.js');
+    const bare = Object.create(SelfPrompter.prototype);
+    const out = await bare._realCommandsFor('collect flowers as a gift');
+    check(/!collectBlocks\s+<BlockName>/.test(out),
+        'the rendered list shows !collectBlocks <BlockName>',
+        `she is shown the bare name and will emit a bare name: ${out.slice(0, 160)}`);
+    check(!/(^|[\s,])!collectBlocks(?![\s<])/.test(out),
+        'no bare !collectBlocks without its argument',
+        'the exact call that failed in production is still being suggested');
+
+    // _arity must be declared OUTSIDE the try: the formatting map() is outside
+    // that block and threw "_arity is not defined" when it was not.
+    const fs30 = await import('node:fs');
+    const sp = fs30.readFileSync(new URL('../src/agent/self_prompter.js', import.meta.url), 'utf8');
+    const bi = sp.indexOf('async _realCommandsFor(');
+    const mi = sp.indexOf('let _arity', bi);
+    const ti = sp.indexOf('try {', mi);
+    check(mi > 0 && mi < ti,
+        '_arity is declared before the try that fills it',
+        'it is declared inside, so the formatting below the try cannot see it');
 }
 
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
