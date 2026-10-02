@@ -66,7 +66,44 @@ const bare = (list) => new RegExp(
 const NO_PROPOSITION = new RegExp(
     '^(hi+|hey|yo|sup|hello|hiya|howdy|gm|gn|good (morning|evening|night)|'
     + 'thanks?|ty|thx|np|nice|cool|wow|oh|ah|eh|hey uwu|hi uwu|uwu|'
+    // Presence checks. "you there" / "anyone" ask whether she is present, not
+    // for any position to agree with - "right" to "you there" is the same
+    // non-sequitur as "right" to "nothing much you?", and the live dyad suite
+    // already lists "you there" as an ordinary opener that must be answered
+    // with content.
+    + 'you (there|here|online)|anyone( there| here| online)?|'
     + '!\\w+\\([^)]*\\)|\\s*)+$', 'i');
+
+// A QUESTION IS NOT SOMETHING YOU CAN AGREE WITH. It asks for information, and
+// every ack in the table is an assertion of belief, so an ack to a question
+// asserts agreement with a position the player never took. This is the case
+// that produced the owner's own words: asked "nothing much you?" she said
+// "right", and the reply was "right to what? what right?".
+//
+// The distinction from the comment above is deliberate and it is the whole
+// point: "mob farms go at y=30" is a CLAIM, so "yeah" to it is assent and "no"
+// is disagreement, and the persona work needs both. A question is neither -
+// there is no proposition in it to hold, so there is nothing for an ack to do.
+// Assent to a question is only ever a non-sequitur, and the fix is to answer
+// the question instead of acknowledging it.
+//
+// A QUESTION MARK IS THE SIGNAL, and the wh-words only count as a fallback at
+// the START of a clause. Matching wh-words anywhere bit "thats what i said",
+// which is a claim - it holds a position - and an existing test protects "right"
+// answering exactly that. "what" inside a sentence is a relative pronoun
+// describing something already asserted; a question word that is genuinely
+// interrogative opens the clause it is in.
+const ASKS_SOMETHING = /\?/;
+const ASKS_AT_START = /(^|[.!?]\s+)\b(what|where|when|why|how|who|which)\b/i;
+
+export function asksSomething(playerText) {
+    const t = String(playerText || '')
+        .replace(/![A-Za-z_][A-Za-z_0-9]*\([^)]*\)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!t) return false;
+    return ASKS_SOMETHING.test(t) || ASKS_AT_START.test(t);
+}
 
 export function hasProposition(playerText) {
     const t = String(playerText || '')
@@ -92,11 +129,19 @@ export function isEmptyAck(text, playerText) {
     if (!body) return false;
     // Backchannel filler is empty whatever the context.
     if (bare(ALWAYS_EMPTY).test(body)) return true;
+    // Is this word even a CANDIDATE for being empty? Checked first, so the
+    // question case below does not have to re-derive the ack table.
+    if (!bare(ACKS_NO_PROPOSITION).test(body)) return false;
     // Everything else only empties a reply to a message with no proposition.
     // Without this, "no" and "yeah" get suppressed mid-argument and she cannot
     // disagree with anybody about anything.
-    if (playerText === undefined) return bare(ACKS_NO_PROPOSITION).test(body);
-    return !hasProposition(playerText) && bare(ACKS_NO_PROPOSITION).test(body);
+    if (playerText === undefined) return true;
+    // A QUESTION is never answered by an ack, whatever else it is. Checked
+    // before hasProposition() because a question is not a NO_PROPOSITION
+    // string, so it reads as having a proposition to agree with and the ack
+    // sailed straight through. Live: "nothing much you?" -> "right".
+    if (asksSomething(playerText)) return true;
+    return !hasProposition(playerText);
 }
 
 // Extra punctuation-stripped form: "yeah." / "yeah!" / "ok :)" still count.
