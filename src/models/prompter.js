@@ -516,18 +516,14 @@ export class Prompter {
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES')) {
-            // Resolve it HERE, for both cases, instead of only when examples
-            // were supplied. Several callers pass examples=null and never blank
-            // it themselves (reflection_memory, saving_memory, image_analysis,
-            // reply_to_decide) - so a persona script mentioning $EXAMPLES would
-            // reach the model as the literal text "$EXAMPLES" on every one of
-            // those prompts. The conversing caller already blanked it by hand
-            // after this call; doing it here makes that hand-blanking redundant
-            // rather than load-bearing.
+        // Resolve $EXAMPLES for BOTH cases. Guarding this on
+        // `examples !== null` left the four callers that pass null and never
+        // blank it themselves (reflection_memory, saving_memory,
+        // reply_to_decide, image_analysis) sending the literal "$EXAMPLES"
+        // to their model whenever a persona script mentioned it.
+        if (prompt.includes('$EXAMPLES'))
             prompt = prompt.replaceAll('$EXAMPLES',
                 examples !== null ? await examples.createExampleMessage(messages) : '');
-        }
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$LAST_OUTCOME')) {
@@ -630,36 +626,14 @@ export class Prompter {
             }
         }
 
-        // Warn about unresolved $<PLACEHOLDER>s. NOT here.
-        //
-        // This used to sit at the end of replaceStrings, and it fired on every
-        // self-prompt turn - 27 times in ten minutes in the live log, always
-        // "Unknown prompt placeholders: $EXAMPLES, $EXAMPLES". That was a lie
-        // in three separate ways:
-        //
-        // 1. The model never saw them. The conversing caller blanks $EXAMPLES
-        //    immediately after this returns (promptConversation: `if
-        //    (prompt.includes('$EXAMPLES')) prompt = prompt.replaceAll('$EXAMPLES', '')`),
-        //    because chat exemplars are deliberately withheld from synthetic
-        //    turns. So the placeholder was resolved, one line too late to be
-        //    seen by this check.
-        // 2. "$EXAMPLES" is not unknown. It is a documented placeholder in the
-        //    persona's own script (personas/normal.json `conversing`, twice);
-        //    the branch above resolves it on every real chat turn.
-        // 3. It was actively harmful. A per-turn unconditional warning is
-        //    noise that trains the reader to skip the line, and it looks like
-        //    a real leak during incident triage - I chased it as the cause of
-        //    the "she doesnt respond" bug.
-        //
-        // The check belongs at the true last stage, after the caller has had
-        // its say. promptConversation now calls warnUnknownPlaceholders() on
-        // the final prompt it is about to send.
         return prompt;
     }
 
-    // Residual-placeholder check. Deliberately separate from replaceStrings
-    // so it can run AFTER the caller has done its own placeholder handling,
-    // rather than reporting work that is about to be undone.
+    // Residual $<PLACEHOLDER> check, called by each send site AFTER its own
+    // substitutions - never from inside replaceStrings. From in there it
+    // fired on every self-prompt turn (27x per 10min live) reporting
+    // "$EXAMPLES" as unknown, one line before the caller blanked it. The
+    // model never saw those; it was noise that looked like a real leak.
     warnUnknownPlaceholders(prompt) {
         const remaining = String(prompt || '').match(/\$[A-Z_]+/g);
         if (remaining !== null) {
@@ -754,15 +728,8 @@ export class Prompter {
                 examplesSource = this._personaExamplesObj;
             }
             if (examplesSource) prompt = await this.replaceStrings(prompt, messages, examplesSource);
-            else {
-                // No exemplars: still resolve everything else. replaceStrings
-                // now blanks $EXAMPLES itself when examples is null, so there
-                // is nothing left to hand-blank here.
-                prompt = await this.replaceStrings(prompt, messages, null);
-            }
-            // Residual check, HERE rather than inside replaceStrings: this is
-            // the final prompt, after every caller-side substitution has run,
-            // so a hit is a genuine leak and not work about to be undone.
+            else prompt = await this.replaceStrings(prompt, messages, null);
+            // final prompt, every substitution done: a hit here is a real leak
             this.warnUnknownPlaceholders(prompt);
             let generation;
 
