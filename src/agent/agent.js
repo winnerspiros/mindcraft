@@ -1216,44 +1216,44 @@ export class Agent {
                 // where the research actually puts it (Hastrdlová 2011: most
                 // join signals go unanswered because nobody has spoken yet).
                 const _returning = this._humanGapMs ?? Infinity;
-                if (_returning >= RETURNING_PLAYER_MS) {
+                if (_returning < RETURNING_PLAYER_MS) {
+                    const _dist = await this.turn_taker.score(source, message);
+                    if (_dist) {
+                        const _d = this.turn_taker.decide(_dist);
+                        console.log(`[turntaker] ${source} [${this.turn_taker.scenarioFor(source).replace(/\s+/g, ' ')}] -> ${_d.action} (${(_d.confidence * 100).toFixed(0)}%) f=${_dist.floor_taking.toFixed(2)} b=${_dist.backchannel.toFixed(2)} s=${_dist.silence.toFixed(2)}`);
+                        if (_d.action === 'silence') {
+                            // Deliberate silence. She still HEARD him — the message is
+                            // in history, so she can refer to it later, she just
+                            // doesn't answer now. The system note is never sent to
+                            // the player; it exists so she can refer to the line later.
+                            await this.history.add('system', `${source} said: ${message} (you chose not to answer this one)`);
+                            this.history.save();
+                            return true;
+                        }
+                        if (_d.action === 'backchannel') {
+                            // Brief ack that yields the floor. No commands, no
+                            // questions — a continuer, then she stops talking.
+                            const ack = this._pickAck(source, _d.confidence);
+                            // _pickAck returns null when she has already
+                            // backchanneled twice in a row - then she takes the
+                            // floor herself rather than saying "ok" a third time.
+                            // Without this the null reached bot.chat() literally.
+                            if (ack) {
+                                this.routeResponse(source, ack);
+                                await this.history.add(this.name, ack);
+                                this.history.save();
+                            }
+                            else {
+                                await this.history.add('system', `${source} said: ${message} (you did not acknowledge this one)`);
+                                this.history.save();
+                            }
+                            return true;
+                        }
+                    }
+                } else {
                     console.log(`${this.name} [turntaker] skipped: ${source} speaking after `
                         + `${Math.round(_returning / 60000)}min - an opening is not a `
                         + 'mid-conversation turn, so it is answered');
-                } else {
-                const _dist = await this.turn_taker.score(source, message);
-                if (_dist) {
-                    const _d = this.turn_taker.decide(_dist);
-                    console.log(`[turntaker] ${source} [${this.turn_taker.scenarioFor(source).replace(/\s+/g, ' ')}] -> ${_d.action} (${(_d.confidence * 100).toFixed(0)}%) f=${_dist.floor_taking.toFixed(2)} b=${_dist.backchannel.toFixed(2)} s=${_dist.silence.toFixed(2)}`);
-                    if (_d.action === 'silence') {
-                        // Deliberate silence. She still HEARD him — the message is
-                        // in history, so she can refer to it later, she just
-                        // doesn't answer now. The system note is never sent to
-                        // the player; it exists so she can refer to the line later.
-                        await this.history.add('system', `${source} said: ${message} (you chose not to answer this one)`);
-                        this.history.save();
-                        return true;
-                    }
-                    if (_d.action === 'backchannel') {
-                        // Brief ack that yields the floor. No commands, no
-                        // questions — a continuer, then she stops talking.
-                        const ack = this._pickAck(source, _d.confidence);
-                        // _pickAck returns null when she has already
-                        // backchanneled twice in a row - then she takes the
-                        // floor herself rather than saying "ok" a third time.
-                        // Without this the null reached bot.chat() literally.
-                        if (ack) {
-                            this.routeResponse(source, ack);
-                            await this.history.add(this.name, ack);
-                            this.history.save();
-                        }
-                        else {
-                            await this.history.add('system', `${source} said: ${message} (you did not acknowledge this one)`);
-                            this.history.save();
-                        }
-                        return true;
-                    }
-                }
                 }
             } catch (e) {
                 console.warn('[turntaker] gate failed, replying normally:', e.message);
