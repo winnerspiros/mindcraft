@@ -819,10 +819,11 @@ export class Agent {
             this._attention.answered();
         }
         if (!self_prompt && !from_other_bot) {
-            // A human talking is what ends her run and what her share is measured
-            // against - without this she is permanently one message ahead of
-            // everyone and the budget reads her as monologuing.
-            this._humanMsgCount = (this._humanMsgCount ?? 0) + 1;
+            // A human talking is what ends her run, and the STAMP of when it
+            // happened is what her share is measured against - without it she is
+            // permanently one message ahead of everyone and the budget reads her
+            // as monologuing. The budget keeps the timestamps, so there is no
+            // counter here to drift out of sync with them.
             if (this._budget) this._budget.humanSpoke();
             this._last_human_msg_text = String(message || '');
             this._last_speaker = source;
@@ -953,11 +954,7 @@ export class Agent {
             try {
                 const { ChatBudget } = await import('../utils/chat_budget.js');
                 this._budget ||= new ChatBudget();
-                const gate = this._budget.canSpeak({
-                    now: Date.now(),
-                    human_msgs_since_her_last: this._humanMsgCount ?? 0,
-                    visible_humans: this._visibleHumanCount(),
-                });
+                const gate = this._budget.canSpeak({ now: Date.now() });
                 if (!gate.ok) {
                     console.log(`${this.name} [gate:${gate.why}] not generating`);
                     return false;
