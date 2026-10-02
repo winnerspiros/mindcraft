@@ -1519,7 +1519,16 @@ export class Agent {
                 //   Found oak_log nearby.
                 //   You harvested oak_log.
                 //   SYSTEM: Warning: something is approaching!
-                || /^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im.test(raw);
+                || /^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im.test(raw)
+                // Reciting the command docs back at the room, e.g.
+                //   "commands like !mineOaks are invalid. Remember valid
+                //    commands like !getFood or !getBlueprint"
+                // She has no reason to tell a player which commands exist,
+                // and doing it repeatedly is what drove her to keep emitting
+                // !getBlueprint (which crashed the process 13 times).
+                || /\b(?:remember|note|note that)\s+(?:the\s+)?(?:valid|real|correct|available)\s+commands?\b/i.test(raw)
+                || /\bcommands? (?:like|such as) !\w+/i.test(raw)
+                || /\bis not a command\.?\s*did you mean/i.test(raw);
             if (leak) {
                 console.log(`${this.name} [leak:prompt] suppressed: ${raw.slice(0, 90)}`);
                 return;

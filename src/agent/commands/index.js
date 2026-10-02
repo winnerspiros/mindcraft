@@ -538,8 +538,18 @@ export async function executeCommand(agent, message) {
         if (numArgs !== params.length)
             return `Command ${command.name} was given ${numArgs} args, but requires at least ${required} args.`;
         else {
-            const result = await command.perform(agent, ...parsed.args);
-            return result;
+            // A throwing command must never kill the bot. perform() reaches
+            // arbitrary task code, and an uncaught rejection here propagates
+            // through self_prompter.startLoop into the process exit - 13
+            // restarts in 3h, all from one command. A command that fails is a
+            // message back to the model, which is how every other failure
+            // already reports itself; it is not an outage.
+            try {
+                return await command.perform(agent, ...parsed.args);
+            } catch (err) {
+                console.log(`${command.name} threw: ${err.message}`);
+                return `Command ${command.name} failed: ${err.message}. Something is wrong with the world state it needed - do not retry it, pick a different command.`;
+            }
         }
     }
 }
