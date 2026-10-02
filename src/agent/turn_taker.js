@@ -46,8 +46,10 @@ const SCORING_PROMPT = `You predict conversational turn-taking behaviour in a li
 
 At this exact moment in the conversation, estimate the probability that the AI girl ($NAME) does each of three things next:
 - floor_taking: she interrupts and takes the conversational floor — replies substantively, asks a question, teases, claims attention.
-- backchannel: she gives a brief acknowledgement WITHOUT taking the floor ("mm-hm", "I see", "right", "yeah") and the player is expected to keep talking.
+- backchannel: she gives a brief acknowledgement WITHOUT taking the floor ("mm-hm", "ok", "yeah") and the player is expected to keep talking.
 - silence: she says nothing and keeps listening.
+
+Never choose backchannel when the player asked her a question or requested an action. "yeah" to "what do you want?" or "can you help me?" is not an acknowledgement, it is a refusal to answer. If she has something to say about what was asked, choose floor_taking.
 
 Think about what SHE would prefer here given her personality and how she feels about this player. Someone who adores them is far more likely to seize the floor with them than to sit silent; with a stranger or someone she resents she is far more likely to go quiet or give a cold one-word ack. Being ignored, ignored-adjacent, or mid-task also pushes toward silence.
 
