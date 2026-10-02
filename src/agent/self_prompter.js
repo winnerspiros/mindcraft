@@ -1,4 +1,11 @@
 import settings from './settings.js';
+// Deliberately NOT imported at module scope. commands/index.js transitively
+// pulls undici, which needs a global File that Node 19 does not define - and
+// six test files import this module (room_awareness among them), so a top-level
+// import made `bun run test` die with "ReferenceError: File is not defined"
+// after 264 checks, in a file that has nothing to do with commands. Resolved
+// lazily below, inside the function that needs it, and swallowed if unavailable.
+
 
 const STOPPED = 0
 const ACTIVE = 1
@@ -340,7 +347,9 @@ export class SelfPrompter {
             // has no command for, and plans digs she cannot physically do.
             let _gap = '';
             try { _gap = this.toolGapNote(); } catch (_) {}
-            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''} Respond:`;
+            let _cmds = '';
+            try { _cmds = await this._realCommandsFor(this.prompt); } catch (_) {}
+            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''}${_cmds ? ' ' + _cmds : ''} Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
             if (!used_command) {
@@ -604,6 +613,63 @@ export class SelfPrompter {
             : `Gather the raw blocks with !collectBlocks <block>, then !craftRecipe <item> <n> (it finds the table itself).`;
         return `Your pack right now: ${names.length ? names.join(', ') : 'EMPTY'}. ` +
             `Note before you plan: ${missing.join('; ')}. ${next}`;
+    }
+
+    /**
+     * The REAL command names, from the registry, for the goal she was given.
+     *
+     * The self-prompt used to say only "your response MUST contain a command
+     * with this syntax: !commandName". !commandName is a PLACEHOLDER, so she
+     * was free to invent one - and did, 15 times in ten minutes, against
+     * goals that name no real command either ("gather food", "mine some coal
+     * ore for torches"; there is no !mine or !getCoal at all):
+     *
+     *   hallucinated: !gather x3, !mine x3, !dig x3, !eat, !find,
+     *                  !searchCoal, !usePickaxe, !checkNearbyBiomes
+     *
+     * Only 3 of 60 self-prompt responses contained a command, so she spent her
+     * turns complaining ("are you kidding me? this is getting ridiculous") and
+     * stood still. The speak gate then correctly suppressed 10 of those as
+     * unprompted self-narration - the gate is working; she simply had nothing
+     * to say that counted.
+     *
+     * So name the actual commands. Keyword-matched against the goal so the
+     * list stays short enough to be useful, and every name comes from the
+     * registry, so it cannot drift.
+     */
+    async _realCommandsFor(goal) {
+        let names = [];
+        try {
+            // lazy: keeps the undici chain out of this module's import graph
+            const mod = await import('./commands/index.js');
+            names = (typeof mod.allCommandNames === 'function' ? mod.allCommandNames() : []) || [];
+        } catch (_) { return ''; }
+        if (!names.length) return '';
+        const g = String(goal || '').toLowerCase();
+        // Split camelCase AND snake_case. The first attempt used
+        // split(/(?=[A-Z])|_/) which emits an empty leading segment and, worse,
+        // lowercased BEFORE splitting - so !getFood became "getfood" and never
+        // matched the word "food". Every goal scored 0 and she was told nothing,
+        // which is worse than the placeholder it replaced.
+        const wordsOf = (n) => String(n).replace(/^!/, '')
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        const score = (n) => {
+            const ws = wordsOf(n);
+            let hit = 0;
+            for (const w of ws) {
+                if (w.length <= 2) continue;
+                if (g.includes(w)) { hit += w.length * 2; continue; }      // exact word
+                if (w.length > 3 && w.includes(g.split(' ')[0])) hit += 3; // partial
+            }
+            return hit;
+        };
+        const ranked = names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
+            .sort((a, b) => b.s - a.s).slice(0, 12).map(x => x.n);
+        if (!ranked.length) return '';
+        return `Commands that exist and fit this goal: ${ranked.join(', ')}. ` +
+            `Use one of these - do not invent a name. If none of them does what the goal needs, ` +
+            `say so in one plain sentence instead of guessing.`;
     }
 
     _guessSuccess(goal) {

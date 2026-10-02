@@ -16,6 +16,13 @@ function powerRefusedFor(agent, playerName, what) {
 let suppressNoDomainWarning = true;
 
 const commandList = queryList.concat(actionsList);
+// Exported so the self-prompter can name REAL commands. It used to be told only
+// "your response MUST contain a command with this syntax: !commandName" - and
+// !commandName is a PLACEHOLDER, so she invented 15 of them in ten minutes
+// (!gather, !mine, !dig, !usePickaxe, !searchCoal) against goals that name no
+// real command either. Every name she is shown must come from here, so this list
+// cannot drift from what the bot can actually do.
+export const allCommandNames = () => commandList.map(c => c.name);
 const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;
