@@ -3245,13 +3245,20 @@ export async function attackNearest(bot, mobType, kill=true) {
      **/
     bot.modes.pause('cowardice');
     if (mobType === 'drowned' || mobType === 'cod' || mobType === 'salmon' || mobType === 'tropical_fish' || mobType === 'squid')
-        bot.modes.pause('self_preservation'); // so it can go underwater. TODO: have an drowning mode so we don't turn off all self_preservation
-    const mob = world.getNearbyEntities(bot, 24).find(entity => entity.name === mobType);
-    if (mob) {
-        return await attackEntity(bot, mob, kill);
+        bot.modes.pause('self_preservation'); // so it can go underwater
+    // ...and this never unpaused it, so attacking one fish permanently killed
+    // the drowning rescue. Resume on exit: she has surfaced by then anyway.
+    try {
+        const mob = world.getNearbyEntities(bot, 24).find(entity => entity.name === mobType);
+        if (mob) {
+            return await attackEntity(bot, mob, kill);
+        }
+        log(bot, 'Could not find any '+mobType+' to attack.');
+        return false;
+    } finally {
+        if (mobType === 'drowned' || mobType === 'cod' || mobType === 'salmon' || mobType === 'tropical_fish' || mobType === 'squid')
+            bot.modes.unpause('self_preservation');
     }
-    log(bot, 'Could not find any '+mobType+' to attack.');
-    return false;
 }
 
 export async function critAttack(bot, entity) {
@@ -8496,6 +8503,11 @@ export async function avoidEnemies(bot, distance=16, mode='walk') {
      * await skills.avoidEnemies(bot, 16, 'sprint'); // run for it
      **/
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
+    // ...but it also disables the drowning rescue in that mode's update, and
+    // this function is exactly how she walks into water. It never unpaused, so
+    // once it ran, every later rescue was dead and she drowned with the mode
+    // switched off. Surfacing is cheap and un-interruptible; restore on exit.
+    try {
     if (mode === 'sprint' && bot.food > 6) log(bot, `Sprinting clear of enemies.`);
     else if (mode === 'sprint') { log(bot, `Too hungry to sprint (food ${bot.food}) — walking clear instead.`); mode = 'walk'; }
     let enemy = world.getNearestEntityWhere(bot, entity => mc.isHostile(entity), distance);
@@ -8518,6 +8530,7 @@ export async function avoidEnemies(bot, distance=16, mode='walk') {
     bot.pathfinder.stop();
     log(bot, `Moved ${distance} away from enemies.`);
     return true;
+    } finally { bot.modes.unpause('self_preservation'); }
 }
 
 export async function stay(bot, seconds=30) {
@@ -8536,12 +8549,24 @@ export async function stay(bot, seconds=30) {
     bot.modes.pause('hunting');
     bot.modes.pause('torch_placing');
     bot.modes.pause('item_collecting');
-    let start = Date.now();
-    while (!bot.interrupt_code && (seconds === -1 || Date.now() - start < seconds*1000)) {
-        await new Promise(resolve => setTimeout(resolve, 500));
+    try {
+        let start = Date.now();
+        while (!bot.interrupt_code && (seconds === -1 || Date.now() - start < seconds*1000)) {
+            await new Promise(resolve => setTimeout(resolve, 500));
+        }
+        log(bot, `Stayed for ${(Date.now() - start)/1000} seconds.`);
+        return true;
+    } finally {
+        // self_preservation holds the drowning rescue; leaving it paused after
+        // a stay() makes every later underwater moment unprotected.
+        bot.modes.unpause('self_preservation');
+        bot.modes.unpause('unstuck');
+        bot.modes.unpause('cowardice');
+        bot.modes.unpause('self_defense');
+        bot.modes.unpause('hunting');
+        bot.modes.unpause('torch_placing');
+        bot.modes.unpause('item_collecting');
     }
-    log(bot, `Stayed for ${(Date.now() - start)/1000} seconds.`);
-    return true;
 }
 
 export async function useDoor(bot, door_pos=null) {

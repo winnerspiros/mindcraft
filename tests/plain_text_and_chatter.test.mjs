@@ -647,43 +647,106 @@ const check = (cond, good, bad) => {
         'swimUp is not exported, so the mode cannot call it');
 }
 
-// ── 14. SHE DOES NOT SPEAK HER OWN ACTION OUTPUT ──────────────────────
+// ── 14. SHE DOES NOT RECITE HER OWN PROMPT ──────────────────────────
 //
-// Live, verbatim, to players:
+// Two live shapes, both reaching players, both the model echoing prompt
+// scaffolding instead of obeying it. Both route through routeResponse.
 //
-//   SYSTEM: Action output:
-//   Found oak_log nearby.
-//   You harvested oak_log.
-//   You now have 1 oak_log.
-//   SYSTEM: Warning: something is approaching!
+// (a) Meta-instruction. Owner pasted, in reply to "hey":
+//     guess I need to get a little creative. let's just gather some dirt
+//     manually instead. no commands this time!
+//   self_prompter injects "Your next response MUST contain a command with
+//   this syntax: !commandName" (self_prompter.js:338). When that turn's
+//   reply carried no command - normal, it happens - the model described
+//   the instruction instead of following it.
 //
-// strictFormat() rewrites system turns into user turns prefixed "SYSTEM: "
-// (utils/text.js:54). The model sometimes echoes that frame back instead
-// of answering. Nothing caught it - looksLikeCommand() sees no bang, the
-// emoji scrub only strips emoji, and the speak gate judges register, not
-// internal leakage.
+// (b) Raw system frames, verbatim to players:
+//     SYSTEM: Action output:
+//     Found oak_log nearby.
+//     You harvested oak_log.
+//     You now have 1 oak_log.
+//     SYSTEM: Warning: something is approaching!
+//   strictFormat() rewrites system turns into user turns prefixed "SYSTEM: "
+//   (utils/text.js:54). Nothing downstream caught it - no bang for
+//   looksLikeCommand, no emoji for the scrub, and the speak gate judges
+//   register, not internal leakage.
 {
     const fs6 = await import('node:fs');
     const src = fs6.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
     const rr = src.slice(src.indexOf('async routeResponse('));
-    check(/leak:system-text/.test(rr.slice(0, 3000)),
-        'routeResponse rejects a message that opens with SYSTEM:/Action output:',
-        'routeResponse does not filter echoed SYSTEM: frames, so action output reaches chat verbatim');
-    check(/^\s*return;\s*$/m.test(rr.slice(0, 3000)),
-        'the system-text leak drops the whole message',
+    const leakBlock = rr.slice(0, 4000);
+    check(/leak:prompt/.test(leakBlock),
+        'routeResponse rejects both prompt-leak shapes',
+        'routeResponse does not filter prompt echoes');
+    check(/^\s*return;\s*$/m.test(leakBlock),
+        'a prompt leak drops the whole message',
         'the leak filter does not return early');
+    check(!/leak:meta-instruction/.test(src) && !/leak:system-text/.test(src),
+        'the two leak shapes share one guard (not two near-identical blocks)',
+        'the leak checks are split across duplicate blocks');
 
-    // and the prefix really is what strictFormat writes
+    // The meta pattern must catch the live string and its variants. Lift it
+    // out of agent.js by line rather than restating it: a copied pattern
+    // passed all five of these while "none of the commands" was missing from
+    // the source, so the test was validating itself.
+    const metaLine = leakBlock.split('\n').find(l => l.includes('|skip|skipping)'));
+    check(!!metaLine, 'the meta-leak pattern is present in routeResponse',
+        'the meta-leak pattern was not found in routeResponse');
+    const metaRe = new RegExp(metaLine?.match(/\/(.+)\/i\.test/)?.[1] ?? '(?!)');
+    for (const m of ['no commands this time!', 'no command this turn', 'without a command',
+        'skipping commands', 'none of the commands']) {
+        check(metaRe.test(m), `meta pattern catches "${m}"`, `meta pattern misses "${m}"`);
+    }
+    // ...without eating ordinary speech
+    for (const ok of ['those commands worked', 'i ran the command', 'no idea what happened',
+        'commands are weird here', 'command not found']) {
+        check(!metaRe.test(ok), `not over-filtered: "${ok}"`, `over-filters ordinary chat: "${ok}"`);
+    }
+
+    // the SYSTEM pattern must match the prefix strictFormat actually writes
     const txt = fs6.readFileSync(new URL('../src/utils/text.js', import.meta.url), 'utf8');
     check(/'SYSTEM: ' \+ msg\.content/.test(txt),
-        'the leak filter matches the prefix strictFormat actually writes',
+        'the leak filter targets the prefix strictFormat actually writes',
         'strictFormat no longer writes a SYSTEM: prefix, so the filter targets a string that cannot occur');
-
-    // regression: a real chat line that merely mentions the word system is
-    // not a leak and must survive
-    check(!/^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/i.test('the whole system is down again'),
+    const sysRe = /^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im;
+    check(sysRe.test('SYSTEM: Action output:\nFound oak_log nearby.'),
+        'SYSTEM pattern catches the multi-line action output',
+        'SYSTEM pattern misses the real multi-line leak');
+    check(!sysRe.test('the whole system is down again'),
         'a normal sentence containing the word system is not filtered',
-        'the leak filter is over-broad and would drop legitimate chat');
+        'the SYSTEM filter is over-broad and would drop legitimate chat');
+}
+
+// ── 15. NOTHING LEAVES self_preservation PAUSED ─────────────────────
+//
+// After the drowning fix she went from 19 drownings per 40min to 4 per 45
+// - better, not fixed. The cause was here, not in the rescue itself:
+//
+//   skills.js:3248  attackNearest  pause('self_preservation')  no unpause
+//   skills.js:8498  avoidEnemies   pause('self_preservation')  no unpause
+//   skills.js:8532  stay           pause x7                    no unpause
+//
+// The rescue lives in self_preservation.update, so a paused mode means no
+// rescue. avoidEnemies and stay are both how she ends up walking into water
+// in the first place, so the pause suppressed exactly the protection that
+// moment needed. Once one of them ran, the mode stayed off for the rest of
+// the session.
+{
+    const fs8 = await import('node:fs');
+    const sk = fs8.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+    const lines = sk.split('\n');
+    const leaks = [];
+    for (let i = 0; i < lines.length; i++) {
+        if (!/modes\.pause\('self_preservation'\)/.test(lines[i])) continue;
+        const fn = lines.slice(i, i + 80).join('\n');
+        if (!/finally[\s\S]{0,200}unpause\('self_preservation'\)/.test(fn)
+            && !/unpause\('self_preservation'\)/.test(fn)) {
+            leaks.push(`line ${i + 1}`);
+        }
+    }
+    check(leaks.length === 0,
+        'every self_preservation pause is released (try/finally or explicit)',
+        `self_preservation stays paused after: ${leaks.join(', ')} - the drowning rescue cannot run while the mode is off`);
 }
 
 // ── 15. SHE DOES NOT ASK WHAT ALREADY TOLD HER ───────────────────────
