@@ -60,6 +60,24 @@ export function gateNormalChat(ctx) {
     // human_replied. What actually separates them is whether she just DID
     // something: a turn following a real command is a reaction to a real event,
     // the same category as notable_event. That is state, not a phrase table.
+    //
+    // BUT NOT EVERY POST-ACTION TURN IS A REACTION, AND THAT WAS THE SPAM. The
+    // exemption is unbounded in TIME as well as in state, so a self-prompt turn
+    // 4-22s after a command could narrate freely, forever, and it did - the
+    // owner sees "constant one-liners in chat" and confirmed it. Live at 05:47,
+    // unprompted and with nobody spoken to:
+    //   "great, now I'm just starving couldn't even get a slice of bread xD"
+    //   "i'm about to pass out here somebody help me out plz:("
+    //
+    // A real reaction is a REACTION - it reports something that happened to her
+    // that the players can see or care about: died, got hurt, completed a build,
+    // found something. "I'm still hungry" is not a reaction to anything, it is
+    // a state she keeps announcing on a 13-second median cadence, and the fix
+    // cannot be a phrase table. The state is already here: just_acted is true
+    // for 8 seconds after a command, and the loop's own gear is 4-22s, so a
+    // second self-prompt in the same burst inherits the exemption and talks
+    // again. The reaction window is therefore ONE turn, and the caller marks
+    // the event that earns it.
     if (ctx.self_prompt && !ctx.human_replied && !ctx.notable_event && !ctx.just_acted) {
         // ── A BID IS NOT NARRATION ─────────────────────────────────────
         // The owner: "she can ask ppl to help or ask if they want help or maybe
