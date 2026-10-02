@@ -744,8 +744,31 @@ export class Agent {
         // So the taxonomy was right and the vocabulary was fabricated. Real
         // players backchannel constantly; they just say "ok" and "yeah". The
         // tildes are pure yandere residue and are now gone from every pool.
-        const warm = ['ok', 'yeah', 'yep', 'sure', 'right', 'k'];
-        const cool = ['ok', 'nah', 'sure', 'mhm', 'k'];
+        //
+        // AND THE VOCABULARY IS NOW ACTUALLY THE VOCABULARY. The comment above
+        // cites the corpus to justify the pool, then lists three words the
+        // corpus did not produce: 'sure', 'right' and 'k' appear nowhere in the
+        // measured counts, and neither does 'nah'. Those were smuggled in on
+        // plausibility - which is the exact failure this file's own header
+        // describes ('nothing generated "mm~"; it was a constant'), committed a
+        // second time, in a different costume.
+        //
+        // 'right' is the one that bit, and it is the worst of them because it
+        // is not filler, it is a RESPONSE TOKEN. Live, 05:55:43, to the owner
+        // saying "nothing much you?" - a real question with a real answer
+        // expected:
+        //   [turntaker] -> backchannel (50%)
+        //   UwU backchannel (darling, 50%): right
+        // and the owner's own reaction, which is the whole argument:
+        //   "right to what? what right?"
+        //
+        // 'ok' and 'yeah' are the two overwhelming real backchannels (1606 and
+        // 416) and both are safe in context - the empty-ack gate judges them
+        // against the player's actual words. 'k' and 'nah' are omitted rather
+        // than kept: a one-letter ack and a bare negation are both reads that
+        // need the context gate, and it is not on this path (see below).
+        const warm = ['ok', 'yeah', 'yep', 'okay'];
+        const cool = ['yeah', 'okay'];
         const pick = rank === 'enemy' ? cool : warm;
         // Never repeat the previous ack, and never send three in a row: real
         // backchanneling is intermittent, a machine that answers every single
@@ -1238,9 +1261,33 @@ export class Agent {
                             // backchanneled twice in a row - then she takes the
                             // floor herself rather than saying "ok" a third time.
                             // Without this the null reached bot.chat() literally.
+                            //
+                            // AND AN ACK THAT ANSWERS NOTHING IS NOT A REPLY. The
+                            // empty-ack gate below was only ever wired into the
+                            // main generation path, so this one spoke without it.
+                            // Live, 05:55:43: the owner asked "nothing much you?"
+                            // - an actual question expecting an actual answer -
+                            // and she said "right", which asserts agreement with a
+                            // proposition he never made. The owner's reply is the
+                            // diagnosis: "right to what? what right?"
+                            //
+                            // Checked here with the player's own words, exactly
+                            // like the main path, so "ok" to a claim still passes
+                            // and "yeah" to a bare greeting still does not.
+                            let ackOk = ack;
                             if (ack) {
-                                this.routeResponse(source, ack);
-                                await this.history.add(this.name, ack);
+                                try {
+                                    const { isEmptyAck } = await import('../utils/empty_ack.js');
+                                    if (isEmptyAck(ack, this._last_human_msg_text)) {
+                                        console.log(`${this.name} [empty-ack] backchannel dropped: `
+                                            + `${ack} - answers nothing he said`);
+                                        ackOk = null;
+                                    }
+                                } catch (e) { console.warn('[empty-ack] ack failed open:', e.message); }
+                            }
+                            if (ackOk) {
+                                this.routeResponse(source, ackOk);
+                                await this.history.add(this.name, ackOk);
                                 this.history.save();
                             }
                             else {
