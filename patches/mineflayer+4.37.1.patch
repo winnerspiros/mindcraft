@@ -67,3 +67,135 @@ diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/minef
 diff --git a/node_modules/mineflayer/lib/plugins/digging.js b/node_modules/mineflayer/lib/plugins/digging.js
 --- a/node_modules/mineflayer/lib/plugins/digging.js
 +++ b/node_modules/mineflayer/lib/plugins/digging.js
+@@ -3,11 +3,49 @@
+ const BlockFaces = require('prismarine-world').iterators.BlockFace
+ const { Vec3 } = require('vec3')
+ 
++// 26.3 PLAYER-ACTION ORDINALS. Mineflayer's bare 0/1/2 literals were correct
++// for vanilla, but 26.3 inserts CHANGE_DESTROY_DIRECTION at index 1, which
++// shifts ABORT and STOP. Verified against the server jar we actually run,
++// /home/ubuntu/kenoi-fabric/versions/26.3/server-26.3.jar, by decompiling
++// ServerboundPlayerActionPacket$Action.<clinit>:
++//     0 START_DESTROY_BLOCK    1 CHANGE_DESTROY_DIRECTION
++//     2 ABORT_DESTROY_BLOCK    3 STOP_DESTROY_BLOCK
++// Mineflayer's `status: 2` "finish digging" was therefore sending
++// ABORT_DESTROY_BLOCK on 26.3. The server accepted START, then received
++// ABORT, and cancelled every dig - which is why its verdict log read
++// "actual start of destroying" immediately followed by "aborted destroying"
++// and no block ever broke. `status: 1` "cancel digging" was likewise landing
++// on CHANGE_DESTROY_DIRECTION, which does nothing.
++//
++// Named constants, not literals, so this cannot silently drift again.
++const DIG_STATUS = Object.freeze({
++  START: 0,
++  ABORT: 2,
++  STOP: 3
++})
++
+ module.exports = inject
+ 
+ function inject (bot) {
+   let swingInterval = null
+   let waitTimeout = null
++  // 26.3 REQUIRED FIELD. Verified against the protocol data shipped in
++  // node_modules/minecraft-data/data/pc/26.3/protocol.json:
++  //   packet_block_dig = container [ status:varint, location:position,
++  //                                 face:i8, sequence:varint ]
++  // `sequence` is NOT optional in 26.2 or 26.3. Stock mineflayer 4.37.1 omits
++  // it from all three writes (start / finish / cancel), so the packet stream
++  // desynchronises and the server silently ignores the dig.
++  //
++  // This replaces a hand-rewrite of this file that had grown to 519 lines
++  // (stock is 267) with six interlocking 26.3 workarounds - STOP-TIME, SEQ-
++  // TRUTH, FACE-SYNC, RESTOP, GHOST-BREAK, NOSWING - each added in response to
++  // a symptom. That version DID send a sequence and the server DID ack it, and
++  // still broke nothing: 594 stone digs, 0 blocks broken, "Collected 0" seven
++  // times. Only zero-hardness blocks ever fell. So the extra machinery was
++  // the problem, not the fix. Stock flow, plus the one field 26.3 requires.
++  let _digSeq = 0
++  const nextDigSeq = () => ++_digSeq
+ 
+   let diggingTask = createDoneTask()
+ 
+@@ -127,10 +165,12 @@
+     if (bot.targetDigBlock) bot.stopDigging()
+ 
+     diggingTask = createTask()
++    bot._digStartSeq = nextDigSeq()
+     bot._client.write('block_dig', {
+-      status: 0, // start digging
++      status: DIG_STATUS.START,
+       location: block.position,
+-      face: bot.targetDigFace // default face is 1 (top)
++      face: bot.targetDigFace, // default face is 1 (top)
++      sequence: bot._digStartSeq // 26.3 required (captured above)
+     })
+     waitTimeout = setTimeout(finishDigging, waitTime)
+     bot.targetDigBlock = block
+@@ -147,15 +187,21 @@
+       waitTimeout = null
+       if (bot.targetDigBlock) {
+         bot._client.write('block_dig', {
+-          status: 2, // finish digging
++          status: DIG_STATUS.STOP,
+           location: bot.targetDigBlock.position,
+-          face: bot.targetDigFace // always the same as the start face
++          face: bot.targetDigFace, // always the same as the start face
++          sequence: bot._digStartSeq // SAME value the START used
+         })
+       }
+       bot.targetDigBlock = null
+       bot.targetDigFace = null
+       bot.lastDigTime = performance.now()
+-      bot._updateBlockState(block.position, 0)
++      // 26.3 GHOST-BREAK FIX: _updateBlockState(block, 0) fabricated a local
++      // air block the server never confirmed. That ghost then (a) fired
++      // onBlockUpdate -> diggingCompleted -> skills claimed success, and
++      // (b) poisoned findBlocks/safeToBreak/world truth for that spot until a
++      // real chunk update arrived. STOP painting air: wait for the server's
++      // own block_change (or treat silence as failure at verify time).
+     }
+ 
+     const eventName = `blockUpdate:${block.position}`
+@@ -176,9 +222,10 @@
+       swingInterval = null
+       waitTimeout = null
+       bot._client.write('block_dig', {
+-        status: 1, // cancel digging
++        status: DIG_STATUS.ABORT,
+         location: bot.targetDigBlock.position,
+-        face: cancellationDiggingFace
++        face: cancellationDiggingFace,
++        sequence: nextDigSeq() // 26.3 required
+       })
+       const block = bot.targetDigBlock
+       bot.targetDigBlock = null
+@@ -211,9 +258,25 @@
+ 
+   bot.on('death', () => {
+     try {
+-      bot.removeAllListeners('diggingAborted')
+-      bot.removeAllListeners('diggingCompleted')
+-      bot.stopDigging()
++      // 26.3 DEATH-TRUTH: a death mid-dig used to abort via 3 paths at once —
++      // removeAllListeners('diggingCompleted') orphaned onBlockUpdate (its
++      // clearInterval/clearTimeout never ran -> swing spam forever, ghost
++      // targetDigBlock), stopDigging() then fired ABORT on a corpse (Panda
++      // logs 'packets after death'), and diggingTask.promise never settled
++      // -> every pending bot.dig() hangs to its cap, surfacing as
++      // 'dig-timeout' / 'still there' one block later. Full local reset
++      // only, no wire; wake waiters via diggingAborted + cancel.
++      try {
++        clearInterval(swingInterval)
++        clearTimeout(waitTimeout)
++      } catch (_) {}
++      swingInterval = null
++      waitTimeout = null
++      bot.targetDigBlock = null
++      bot.targetDigFace = null
++      try { bot.removeListener('diggingAborted', bot.stopDigging) } catch (_) {}
++      try { bot.emit('diggingAborted', null) } catch (_) {}
++      try { diggingTask.cancel(new Error('Digging aborted (death)')) } catch (_) {}
+     } catch (_) {}
+   })
+ 
