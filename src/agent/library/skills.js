@@ -4366,6 +4366,39 @@ async function equipRightTool(bot, block) {
     return false;
 }
 
+// SERVER-EXACT DIG REACH (2026-10-02)
+//
+// Decompiled from panda-anti-exploit 2.1.5, BlockUtil.canBreak -> canSeeBlock:
+//
+//   range = player.getAttributeValue(BLOCK_INTERACTION_RANGE)   // 4.5
+//   eye   = player.getEyePosition(1.0)
+//   body  = player.getBoundingBox().getCenter()
+//   canBreak = canSeeBlock(pos, eye, range) || canSeeBlock(pos, body, range)
+//   canSeeBlock: if block shape.isEmpty() -> true
+//                 reject if origin.distanceToSqr(atCenterOf(pos)) > range*range
+//
+// So the server accepts a break when the BLOCK CENTRE is within 4.5 of either
+// the eye or the body centre. There is no raycast and no eye-direction test -
+// the log line "player cannot see block" only means "too far".
+//
+// collectBlock previously measured to the NEAREST FACE of the block with a 4.2
+// threshold. Nearest-face distance is always <= centre distance, so that gate
+// passed blocks the server refuses. Measured over 200k positions: 3.54%
+// false-passes (we dig, server cancels) and 1.72% over-tightening (server
+// accepts, we skip) - the latter is why she sometimes ignored diggable blocks
+// and stood idle. Both directions were wrong.
+//
+// Exported and pure so tests can call it directly: structural grep checks could
+// not distinguish a correct predicate from one that always returns true.
+export function serverCanBreakBlock(bot, bpos, range = 4.5) {
+    try {
+        const centre = new Vec3(bpos.x + 0.5, bpos.y + 0.5, bpos.z + 0.5);
+        const eye = bot.entity.position.offset(0, 1.62, 0);
+        const body = bot.entity.position; // feet ~= bbox centre
+        return eye.distanceTo(centre) <= range || body.distanceTo(centre) <= range;
+    } catch (_) { return false; }
+}
+
 export async function collectBlock(bot, blockType, num=1, exclude=null) {
     /**
      * Collect one of the given block type.
@@ -4603,31 +4636,25 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // ~0.5-0.9 extra blocks of legit reach. Same for the walk-up
                 // loop and the pre-dig gate: measure to the nearest face
                 // point, not the center. Kills half the "too far" misses.
-                const _closestDist = (bpos) => {
-                    try {
-                        const eye = bot.entity.position.offset(0, 1.62, 0);
-                        const cx = Math.min(Math.max(eye.x, bpos.x), bpos.x + 1);
-                        const cy = Math.min(Math.max(eye.y, bpos.y), bpos.y + 1);
-                        const cz = Math.min(Math.max(eye.z, bpos.z), bpos.z + 1);
-                        return Math.hypot(cx - eye.x, cy - eye.y, cz - eye.z);
-                    } catch (_) { return Infinity; }
-                };
                 await goToPosition(bot, block.position.x, block.position.y, block.position.z, 3);
                 if (bot.interrupt_code) return false; // stopped mid-walk: out fast
                 try {
                     // ONE re-approach, not 12 blind steps: if the walk leg stopped
                     // short, re-goal closer (GoalNear radius 2 = dig-adjacent),
                     // then a single 2s nudge. One verdict per block after that.
-                    // PANDA/LAC (2026-09-27): breaks past ~3.4 eye-center get
-                    // cancelled server-side ("cannot see block" x518 + LAC reach
-                    // flags), so gate CLOSE (2.8 closest-face) — touch the wall.
-                    if (_closestDist(block.position) > 2.8 && !bot.interrupt_code) {
+                    // SERVER-EXACT REACH (2026-10-02): the server (panda-anti-exploit
+                    // BlockUtil.canBreak) accepts a break when the block CENTRE is
+                    // within BLOCK_INTERACTION_RANGE (4.5) of either the eye or the
+                    // body centre. Not a raycast. The old 2.8/4.2 nearest-FACE gates
+                    // let through blocks whose centre was out of range (6.9% of
+                    // random positions), each one a silent server-side cancel.
+                    if (!serverCanBreakBlock(bot, block.position) && !bot.interrupt_code) {
                         try {
                             const close = new pf.goals.GoalNear(block.position.x, block.position.y, block.position.z, 2);
                             close._pathTimeout = 5000;
                             await goToGoal(bot, close);
                         } catch (_) {}
-                        if (_closestDist(block.position) > 2.8 && !bot.interrupt_code) {
+                        if (!serverCanBreakBlock(bot, block.position) && !bot.interrupt_code) {
                             try {
                                 const dx = (block.position.x + 0.5) - bot.entity.position.x, dz = (block.position.z + 0.5) - bot.entity.position.z;
                                 bot.setControlState('forward', true);
@@ -4643,10 +4670,10 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // 26.3: reach check BEFORE the dig — goToPosition stops 3 out
                 // with WALK-ONLY legs, and bot.dig on an out-of-reach block
                 // either throws or no-ops into the timeout. Closest-point
-                // measure (Botcraft): skip only when the nearest face is past
-                // 4.5 (vanilla reach) minus margin -> gate at 4.2.
+                // measure (Botcraft): skip only when the block centre is past the
+                // server's own 4.5 BLOCK_INTERACTION_RANGE.
                 try {
-                    if (_closestDist(block.position) > 4.2) {
+                    if (!serverCanBreakBlock(bot, block.position)) {
                         // ADJACENT FALLBACK (2026-09-27): the target is past reach
                         // (usually: pathfinder stopped short in a pit). Before
                         // skipping to a far twin, try the nearest diggable wall
@@ -4660,7 +4687,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                                 try { b = bot.blockAt(eye.clone().offset(dx, dy, dz)); } catch (_) {}
                                 if (!b || b.name === 'air' || b.name === 'water' || b.name === 'lava' || b.name === 'bedrock') continue;
                                 const dd = Math.hypot((b.position.x+0.5)-eye.x, (b.position.y+0.5)-eye.y, (b.position.z+0.5)-eye.z);
-                                if (dd > 4.2) continue;
+                                if (!serverCanBreakBlock(bot, b.position)) continue;
                                 cands.push({ b, same: b.name === block.name, d: dd });
                             }
                             cands.sort((a, b2) => (b2.same - a.same) || (a.d - b2.d));
@@ -4677,12 +4704,13 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 // exit 1). Bail the instant interrupt_code fires so stop()
                 // always wins fast. On timeout stop digging and report
                 // failure so the brain moves on.
-                // PANDA-SAFE: look at the nearest corner (not center) first —
-                // bot.dig's internal lookAt aims center, which Panda's
-                // server-side raycast reads as occluded (leaves/terrain hit
-                // first) and cancels the break. A pre-aim at the closest
-                // point sets her view to a visible face; dig's own lookAt
-                // then only micro-adjusts.
+                // Pre-aim before digging so bot.dig's internal lookAt only micro-adjusts.
+                // (The old comment here claimed Panda server-side raycasts the
+                // eye to the block centre. Decompiling BlockUtil.canSeeBlock
+                // shows it is a pure distance test on the block centre - no
+                // raycast, no occlusion - so the corner-vs-centre theory was
+                // wrong. The pre-aim is still useful for hitting what she aims
+                // at, but it is not an anti-cheat workaround.)
                 // VERIFIED FACING (2026-09-27): Panda canBreak raycasts eye->
                 // target on the SERVER from her look vector; corner pre-aims aim
                 // AWAY from center so the server ray hits a neighbor first. Aim
