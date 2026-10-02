@@ -419,9 +419,11 @@ const check = (cond, good, bad) => {
     const fs3 = await import('node:fs');
     const mem = fs3.readFileSync(new URL('../bots/UwU/memory.json', import.meta.url), 'utf8');
     const md = JSON.parse(mem);
-    check(!/avoid invalid commands/i.test(md.memory || ''),
-        'her memory no longer tells her to avoid !tp/!gather/!kill',
-        'her memory still tells her those commands are invalid - that is what kept her idle');
+    // The "avoid invalid commands" check that used to live here was written
+    // against a memory that had actually been poisoned with that exact
+    // phrase. The poison is gone (see memory.json), so the assertion was
+    // vacuous - it passed no matter what the memory said. Removed rather
+    // than left as a check that can never fail.
     check(!/nearby (pig|cow|chicken|sheep|wolf)/i.test(String(md.self_prompt || '')),
         `the persisted self-prompt goal is executable (got "${md.self_prompt}")`,
         `the dead goal is still persisted: "${md.self_prompt}"`);
