@@ -781,6 +781,25 @@ export class SelfPrompter {
             let s = score(n);
             if (wantsMaterial && takesMaterial(n)) s += 40;  // decisive
             else if (/(collect|mine|dig|get|gather|find|search)/i.test(n)) s += scoreArgs(n);
+            // WORLD-SEARCH COMMANDS ARE NOT IN-WORLD ACTIONS. !findPlace is a
+            // real-world geocoder - "a bar in Berlin", "Eiffel Tower" - and she
+            // ran it three times for the goal "find something to eat", with
+            // "food", "cafe" and "Food". It matched on the word "find" and
+            // outranked !getFood, the command that actually feeds her. A
+            // real-world search can never produce a meal, however many times
+            // she asks it.
+            if (/^!(findplace|geocode|searchweb|websearch|findonlineplace)/i.test(n)) s -= 25;
+            // THE OBJECT BEATS THE VERB. "find something to eat" must reach
+            // !getFood. It did not: "find" matched !findShelter and !findCave,
+            // and the noun "eat" matched nothing, so the list was two places to
+            // hide and no way to eat. Weight a command by whether the goal's
+            // CONTENT word is in its name, and by whether the command acts on
+            // the body/player rather than on the world.
+            if (/(food|eat|hunger|drink|sleep|health)/i.test(g)) {
+                if (/^!(getfood|eat|drink|consume|restoreheal|sethealth)/i.test(n)) s += 30;
+                // shelter/cave commands are about hiding, not feeding
+                if (/^!(findshelter|findcave|buildshelter|findsaf(e|er)place)/i.test(n)) s -= 20;
+            }
             return { n, s };
         }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {
