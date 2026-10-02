@@ -1160,6 +1160,73 @@ async function autoLight(bot) {
     return false;
 }
 
+// 26.3 ATTACK-AIM FIX. PandaAntiExploit rejects any melee hit whose angle
+// between the player's view vector and the target's bounding-box centre
+// exceeds MAX_ATTACK_ANGLE = 70 degrees, logging
+// "FAILED TO HIT ENTITY: INVALID ANGLE". Measured on the real service with
+// the three hostiles summoned next to her: every swing logged its angle, and
+// every swing at >70deg drew a matching server rejection, while swings at
+// 32-69deg were accepted. Same disease class as the block-dig bug: the server
+// decides from ITS view vector, and it never sees our intent - only the look
+// we actually flushed to the wire.
+//
+// This aims at the bounding-box centre (what Panda measures), not at
+// entity.position, and returns the angle it achieved so callers can tell a
+// real swing from a doomed one. `stopSwing` is deliberately absent: the caller
+// decides whether to swing.
+function attackAimAngle (bot, entity) {
+    const eye = bot.entity.position.offset(0, bot.entity.eyeHeight || 1.62, 0)
+    const centre = entity.position.offset(0, (entity.height || 1.8) * 0.5, 0)
+    const to = centre.minus(eye)
+    const dist = to.norm()
+    if (!Number.isFinite(dist) || dist < 1e-6) return 180
+    const yw = bot.entity.yaw
+    const pt = bot.entity.pitch
+    // server getViewVector: x=-sin(yaw)cos(pitch), y=-sin(pitch), z=cos(yaw)cos(pitch)
+    const view = new Vec3(-Math.sin(yw) * Math.cos(pt), -Math.sin(pt), Math.cos(yw) * Math.cos(pt))
+    const cos = (to.x * view.x + to.y * view.y + to.z * view.z) / dist
+    return Math.acos(Math.max(-1, Math.min(1, cos))) * 180 / Math.PI
+}
+
+export const PANDAS_MAX_ATTACK_ANGLE = 70
+
+// Aim at the target's bounding-box centre and wait for the look to actually
+// reach the server, so the swing cannot be judged against a stale yaw.
+// Returns the achieved angle in degrees, or null if we could not aim.
+export async function aimAtTarget (bot, entity, maxAngle = PANDAS_MAX_ATTACK_ANGLE) {
+    try {
+        const centre = entity.position.offset(0, (entity.height || 1.8) * 0.5, 0)
+        const before = attackAimAngle(bot, entity)
+        // Only re-aim when we are actually out of tolerance; a target already
+        // centred must not be chased by a look that never quite settles.
+        if (before > maxAngle * 0.6) {
+            await bot.lookAt(centre, true)
+            // 26.3 physics defers force-look through _pendingForceLook and only
+            // flushes it on the next physics tick. Swinging in the same tick
+            // would beat that flush, so let one tick pass.
+            await new Promise(r => setTimeout(r, 60))
+        }
+        const after = attackAimAngle(bot, entity)
+        return after
+    } catch (_) {
+        return null
+    }
+}
+
+// Aim, then swing only if the aim is inside Panda's tolerance. Every melee
+// call site should go through this so a swing is never wasted on a stale yaw.
+export async function attackAimed (bot, entity, attackFn) {
+    const angle = await aimAtTarget(bot, entity)
+    if (angle === null) return false
+    try {
+        if (attackFn) await attackFn()
+        else await bot.attack(entity)
+        return angle <= PANDAS_MAX_ATTACK_ANGLE
+    } catch (_) {
+        return false
+    }
+}
+
 async function equipHighestAttack(bot) {
     // COMBAT-FAST: skip re-equip when the right weapon is already held
     // (equip() costs a full inventory round-trip each fight tick).
@@ -3281,7 +3348,9 @@ export async function critAttack(bot, entity) {
         await bot.lookAt(entity.position.offset(0, (entity.height || 1.8) * 0.8, 0));
         bot.setControlState('jump', true);
         await bot.waitForTicks(2);
-        await bot.attack(entity);
+        // 26.3: the 0.8*height look above aims high; Panda measures the bbox
+        // centre. Re-aim through the same helper so a crit is not thrown away.
+        await attackAimed(bot, entity);
         await bot.waitForTicks(1);
         bot.setControlState('jump', false);
         return true;
@@ -3364,22 +3433,27 @@ export async function attackEntity(bot, entity, kill=true) {
     await equipHighestAttack(bot)
 
     if (!kill) {
-        if (bot.entity.position.distanceTo(pos) > 5) {
-            console.log('moving to mob...')
-            await goToPosition(bot, pos.x, pos.y, pos.z);
-        }
-        console.log('attacking mob...')
-        await bot.attack(entity);
-    }
-    else {
-        bot.pvp.attack(entity);
-        while (world.getNearbyEntities(bot, 24).includes(entity)) {
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            if (bot.interrupt_code) {
-                bot.pvp.stop();
-                return false;
+            if (bot.entity.position.distanceTo(pos) > 5) {
+                console.log('moving to mob...')
+                await goToPosition(bot, pos.x, pos.y, pos.z);
             }
+            console.log('attacking mob...')
+            await attackAimed(bot, entity);
         }
+        else {
+            // 26.3: this fires exactly ONCE and then just polls until the mob dies.
+            // A single swing rejected by Panda (>70deg) therefore ended the whole
+            // fight with the mob untouched. Aim, and keep swinging while it lives.
+            await attackAimed(bot, entity, () => bot.pvp.attack(entity));
+            while (world.getNearbyEntities(bot, 24).includes(entity)) {
+                await new Promise(resolve => setTimeout(resolve, 1000))
+                if (bot.interrupt_code) {
+                    bot.pvp.stop();
+                    return false;
+                }
+                // re-aim each round: the mob moves and she faces travel direction
+                try { await attackAimed(bot, entity, () => bot.pvp.attack(entity)); } catch (_) {}
+            }
         log(bot, `Successfully killed ${entity.name}.`);
         await pickupNearbyItems(bot);
         return true;
@@ -3800,7 +3874,10 @@ export async function defendSelf(bot, range=9) {
                     bot.swingArm('right');
                 } catch (_) {}
             } else {
-                try { bot.pvp.attack(enemy); } catch (_) {}
+                // 26.3: aim before the swing; an unaimed pvp.attack is judged
+                // against whatever yaw she was already facing and is usually
+                // rejected by Panda's 70deg gate.
+                try { await attackAimed(bot, enemy, () => bot.pvp.attack(enemy)); } catch (_) {}
             }
             if (_eid != null) bot._meleeHitAt[_eid] = _now;
             attacked = true;
@@ -3889,7 +3966,9 @@ export async function defendBlind(bot, range = 16) {
             try {
                 if (bot.entity.position.distanceTo(foe.position) > 3.5)
                     await goToPosition(bot, foe.position.x, foe.position.y, foe.position.z, 2);
-                await bot.attack(foe);
+                // 26.3: pathing faces travel direction, not the target, so this
+                // swing was usually judged >70deg off and rejected outright.
+                await attackAimed(bot, foe);
                 swung = true;
             } catch (_) {}
             await new Promise(r => setTimeout(r, 250));
@@ -4064,7 +4143,10 @@ export async function guardPlayer(bot, username, radius = 6, range = 9) {
                 if (enemy) {
                     bot.armorManager.equipAll();
                     await equipHighestAttack(bot);
-                    bot.pvp.attack(enemy);
+                    // 26.3: aim first. pvp.attack() swings on whatever yaw she
+                    // happens to be facing, and Panda rejects >70deg swings, so
+                    // the unaimed version wasted most of the fight.
+                    await attackAimed(bot, enemy, () => bot.pvp.attack(enemy));
                     attacked_tick_guard(bot);
                 }
             } catch (_) {}
