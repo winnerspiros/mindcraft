@@ -2175,6 +2175,17 @@ export class Agent {
                         .then((moved) => console.log(`[threat] flee result: moved=${moved}`))
                         .catch((e) => console.warn('[threat] flee failed:', e?.message));
                 }
+                // The same state-only trap applied to 'fight': it returned a goal
+                // and nothing more, so deciding to punch did not punch. Bare
+                // hands are a real weapon - bot.pvp.attack needs no item - so
+                // this is a genuine option whenever it fires.
+                if (r.action === 'fight' && source?.position) {
+                    this._reactFights = (this._reactFights || 0) + 1;
+                    console.log(`[threat] hurt: FIGHTING ${source.name || 'attacker'} @ ${source.position.toString()} (#${this._reactFights})`);
+                    skills.attackEntity(this.bot, source, true)
+                        .then((won) => console.log(`[threat] fight result: done=${won}`))
+                        .catch((e) => console.warn('[threat] fight failed:', e?.message));
+                }
             }
 
             // track who is harming her so she can retaliate (verbal -> attack -> TNT)

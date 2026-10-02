@@ -335,7 +335,12 @@ export class SelfPrompter {
             // Success condition is a guess from the goal text (have/reach/build
             // keywords) — the critic (P3) does the real verdict later.
             const _sc = this._guessSuccess(this.prompt);
-            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it). Respond:`;
+            // Capability self-knowledge: what she is actually holding, and what
+            // that rules out. Without it she invents commands for things she
+            // has no command for, and plans digs she cannot physically do.
+            let _gap = '';
+            try { _gap = this.toolGapNote(); } catch (_) {}
+            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''} Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
             if (!used_command) {
@@ -563,6 +568,36 @@ export class SelfPrompter {
     // Discovery's MissionPlanner success-condition, ported as a pure guesser:
     // map goal-text keywords to a checkable "done" sentence. The brain reads
     // this every self-prompt turn (see startLoop); the critic (P3) verifies.
+    /**
+     * What she is holding, as a capability fact she can act on.
+     *
+     * She spent this session inventing commands that do not exist (!getCoal,
+     * !mineCoal, !gatherCoal, !mineCoalOre) because no coal command exists, and
+     * standing still with an empty inventory because she had nothing to dig with
+     * and no way to tell that was the problem. She can already run !inventory;
+     * what she lacked was the habit of checking it before planning a dig or a
+     * fight.
+     *
+     * So state it plainly in her own turn. Short, factual, no emoji - the same
+     * plain-text rules as everything else she says.
+     */
+    toolGapNote() {
+        const bot = this.agent?.bot;
+        if (!bot?.inventory) return '';
+        let items = [];
+        try { items = bot.inventory.items() || []; } catch (_) { return ''; }
+        const names = items.map(i => String(i?.name || ''));
+        const has = (re) => names.some(n => re.test(n));
+        const missing = [];
+        if (!has(/_pickaxe$|stonecutter$/)) missing.push('no pickaxe (stone and ore are unbreakable bare-handed)');
+        if (!has(/_axe$/)) missing.push('no axe (wood is slow bare-handed)');
+        if (!has(/sword$/) && !has(/_axe$/)) missing.push('no weapon (fists still work at contact range)');
+        if (!missing.length) return '';
+        return `Your pack right now: ${names.length ? names.join(', ') : 'EMPTY'}. ` +
+            `Note before you plan: ${missing.join('; ')}. ` +
+            `Craft with !craftRecipe <item> <n> (it finds the table itself) - oak_log first if you need planks or sticks.`;
+    }
+
     _guessSuccess(goal) {
         const g = String(goal || '').toLowerCase();
         if (!g) return 'making progress on the goal';
