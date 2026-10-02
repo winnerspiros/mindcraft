@@ -993,16 +993,42 @@ export class Agent {
         // It is only consulted for self/system prompts. A human message gets one
         // reply, and a human turning up is exactly the thing that should reset
         // the budget and let her answer.
+        //
+        // BUT: this gate was returning early, before generation, for turns that
+        // exist to produce a COMMAND. ChatBudget measures how much she talks to
+        // people; a self-prompt turn is not talking to anyone - it is the thing
+        // that makes her act. Live, 45 minutes:
+        //
+        //   [gate:monologue] not generating        x72
+        //   did not use command in last 3 prompts  x20
+        //
+        // and the log showed them interleaved one for one:
+        //
+        //   received message from system : ... MUST contain a command ...
+        //   UwU [gate:monologue] not generating
+        //   [cadence] solo next turn in 12s
+        //   received message from system : ... MUST contain a command ...
+        //   UwU [gate:monologue] not generating
+        //   Agent did not use command in the last 3 auto-prompts.
+        //
+        // She was silenced by a chat rule while trying to work, so the
+        // self-prompt counter saw "no command" three times and paused - which
+        // is the same starvation, one layer up. The budget is the wrong tool
+        // here: it exists to stop her narrating to a room, and a command is not
+        // narration. So it no longer blocks generation at all; the real
+        // controls stay exactly where they were, on the OUTPUT, in
+        // routeResponse's speak gate and in checkLength().
+        //
+        // canSpeak() is still called, and its verdict honoured where it matters:
+        // _budgetHold records it, and a self-prompt turn that is over budget
+        // does not reserve a slot it will not use.
         if (!isYandere() && self_prompt) {
             try {
                 const { ChatBudget } = await import('../utils/chat_budget.js');
                 this._budget ||= new ChatBudget();
                 const gate = this._budget.canSpeak({ now: Date.now() });
-                if (!gate.ok) {
-                    console.log(`${this.name} [gate:${gate.why}] not generating`);
-                    return false;
-                }
-                this._budget.reserve();
+                this._budgetHold = gate;
+                if (gate.ok) this._budget.reserve();
             } catch (e) { console.warn('[gate] failed open:', e.message); }
         }
 
@@ -1710,6 +1736,28 @@ export class Agent {
                 // was lost to an earlier edit, leaving `.replace(...)` with no
                 // left-hand side - a hard syntax error, so the file did not load.
                 message = scrubOutput(message);
+
+                // The chat budget, applied to the OUTPUT. It used to run before
+                // generation and return false, which meant a self-prompt turn
+                // could not produce a command at all - 72 monologue blocks in
+                // 45 minutes, feeding 20 "did not use command" pauses. Now that
+                // now that generation always happens, the cap has to be enforced
+                // here or it is simply gone. A command is not talk, so this only
+                // judges text actually about to be spoken to people. Re-checked
+                // with a fresh clock: the output arrives seconds later, so the
+                // window may have closed since the pre-generation read.
+                if (!isYandere() && self_prompt && !containsCommand(message)) {
+                    try {
+                        const { ChatBudget } = await import('../utils/chat_budget.js');
+                        this._budget ||= new ChatBudget();
+                        const outGate = this._budget.canSpeak({ now: Date.now() });
+                        if (!outGate.ok) {
+                            console.log(`${this.name} [gate:${outGate.why}] dropped output (budget)`);
+                            return;   // no delivered() - the room never saw this
+                        }
+                        this._budget.reserve();
+                    } catch (e) { console.warn('[gate] failed open:', e.message); }
+                }
 
                 let len = checkLength(message);
                 if (!len.ok && len.why === 'paragraph') {
