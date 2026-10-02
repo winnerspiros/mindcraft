@@ -96,13 +96,78 @@ const NO_PROPOSITION = new RegExp(
 const ASKS_SOMETHING = /\?/;
 const ASKS_AT_START = /(^|[.!?]\s+)\b(what|where|when|why|how|who|which)\b/i;
 
+// A REQUEST IS NOT A PROPOSITION EITHER. This is the second half of the same
+// defect, and it is the one that was still live after the question fix: the
+// owner typed
+//
+//   YandereDev: "yo help im dying"
+//   [turntaker] -> backchannel (40%)
+//   UwU backchannel (darling, 40%): yeah
+//
+// "yeah" for WHAT. A question asks for information and an ack cannot supply it,
+// which is why asksSomething() exists - but a request asks for an ACTION, and
+// an ack cannot supply that either. hasProposition() only knows how to say
+// "there is a position to agree with", so "help im dying", "can you help me",
+// "come here" and "need food" all came back true and the ack sailed through.
+//
+// The distinction that matters: a CLAIM ("mob farms go at y=30") is something to
+// agree or disagree with, and the persona needs both of those. A REQUEST is
+// something to DO. "yeah" to a claim is assent; "yeah" to a plea for help is
+// the bot declining to help while sounding like it agreed.
+//
+// Imperative-verb detection at the START of a clause. The first version
+// required the verb at the END of the string, which was wrong for exactly the
+// live case: "yo help im dying" is verb-first with a plea after it, so the
+// anchor missed it and "yeah" went straight back out. A request in this genre
+// is verb-first, so that is where the match belongs, and the trailing text is
+// the reason for the request rather than a change of subject.
+//
+// Deliberately NOT matching mid-sentence: "i need a minute" is not a demand on
+// her, and matching "need" anywhere turned ordinary conversation into empties.
+const REQUESTS_ACTION = /(^|[.!?]\s+)(yo\s+|hey\s+|ok\s+|please\s+|pls\s+)?\b(help|come|go|give|bring|wait|stop|follow|drop|pick up|do it|look|check|open|close|fix|build|rescue|save|revive|tp|tpa)\b/i;
+const ASKS_CAN = /\b(can|could|would|will)\s+(you|u)\b/i;
+const PLEA = /\b(please|pls|urgent|im dying|help)\b/i;
+
+export function asksForAction(playerText) {
+    const t = String(playerText || '')
+        .replace(/![A-Za-z_][A-Za-z_0-9]*\([^)]*\)/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!t) return false;
+    // A QUESTION is askedSomething()'s job, and it must win. "wait what" opens
+    // with the imperative "wait" and would otherwise match REQUESTS_ACTION,
+    // which is only correct because the turn taker also has no say here - an
+    // ack cannot answer "what" any more than it can answer "?" so the ack is
+    // wrong either way. Checking it costs nothing and keeps the two rules from
+    // disagreeing about the same sentence.
+    if (asksSomething(t)) return false;
+    if (REQUESTS_ACTION.test(t)) return true;
+    if (ASKS_CAN.test(t)) return true;
+    // "pls" / "help" / "urgent" anywhere is a plea, not a position. This is
+    // what catches "yo help im dying" even with a greeting in front of it.
+    return PLEA.test(t);
+}
+
+// "wait what" is the hard case for ASKS_AT_START, and it is worth spelling out
+// because both of my fixes missed it. It has no question mark, and "what" is
+// not at the start of the string - it follows the imperative "wait". The
+// original rule was deliberately conservative here, because matching wh-words
+// anywhere bit "thats what i said" (a claim, which must stay assent-able) and
+// an existing test protects "right" answering exactly that.
+//
+// The narrow fix: a wh-word that is NOT clause-initial but IS the last content
+// word of the utterance is interrogative, because nothing follows it to be the
+// relative pronoun it would otherwise be. "thats what i said" ends on a noun;
+// "wait what" ends on the question word itself.
+const ASKS_TRAILING = /\b(what|where|when|why|how|who|which)\s*[?.!]*\s*$/i;
+
 export function asksSomething(playerText) {
     const t = String(playerText || '')
         .replace(/![A-Za-z_][A-Za-z_0-9]*\([^)]*\)/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
     if (!t) return false;
-    return ASKS_SOMETHING.test(t) || ASKS_AT_START.test(t);
+    return ASKS_SOMETHING.test(t) || ASKS_AT_START.test(t) || ASKS_TRAILING.test(t);
 }
 
 export function hasProposition(playerText) {
@@ -141,6 +206,10 @@ export function isEmptyAck(text, playerText) {
     // string, so it reads as having a proposition to agree with and the ack
     // sailed straight through. Live: "nothing much you?" -> "right".
     if (asksSomething(playerText)) return true;
+    // Same for a REQUEST, for the same structural reason: "yo help im dying"
+    // carries no question mark, so it read as a proposition and "yeah" went
+    // out. A request wants an action; an ack is not one. See asksForAction().
+    if (asksForAction(playerText)) return true;
     return !hasProposition(playerText);
 }
 
