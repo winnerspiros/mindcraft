@@ -1358,6 +1358,7 @@ export class Agent {
                 // purpose: a hallucinated !gather must NOT count as an action, or
                 // it re-opens the speak gate for the very turn that had nothing
                 // behind it.
+                this._realActionSeq = (this._realActionSeq ?? 0) + 1;
                 this._lastRealActionAt = Date.now();
                 this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
 
@@ -1453,6 +1454,28 @@ export class Agent {
         } catch (e) { return 0; }
     }
 
+    // One-shot: may she narrate THIS turn because she just did something?
+    //
+    // Returns true at most once per real action. A time window alone was the
+    // bug - 8 seconds against a 4-22s self-prompt gear means the second turn of
+    // every burst re-qualified, so she narrated the room every cycle. The
+    // action is the event, one line about it is the reaction, and after that
+    // she has to actually do something new to earn the right to say anything
+    // unprompted again.
+    //
+    // The action is identified by a COUNTER, not by its timestamp. Two actions
+    // inside the same millisecond share a timestamp, so a timestamp key reads
+    // the second one as the first already spent and she goes permanently mute
+    // after a burst - which is the exact failure the one-shot was added to
+    // prevent, just moved to the other end. Date.now() has millisecond
+    // resolution and a self-prompt loop can absolutely run two turns in one.
+    _consumeActionReact() {
+        if (!(this._lastRealActionAt && (Date.now() - this._lastRealActionAt) < 8000)) return false;
+        if (this._actionReactSpentSeq === this._realActionSeq) return false;
+        this._actionReactSpentSeq = this._realActionSeq;
+        return true;
+    }
+
     async routeResponse(to_player, message) {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
@@ -1485,7 +1508,7 @@ export class Agent {
                     // be fixed for.
                     // She just ran a real command, so this turn is a reaction to
                     // something that actually happened rather than narration.
-                    just_acted: (Date.now() - (this._lastRealActionAt || 0)) < 8000,
+                    just_acted: this._consumeActionReact(),
                     is_bid: !!this._pendingBid
                         && (Date.now() - (this._pendingBid.at || 0)) < 60000,
                     bid_has_target: !!this._pendingBid && this._visibleHumanCount() > 0,
@@ -1501,9 +1524,27 @@ export class Agent {
                     // is not a person reacting, it is a stuck loop. Consuming the
                     // flag on first use means she says one thing and then has to
                     // live with it like everyone else.
+                    // A real attack (repeated hits) gets a real answer. The
+                    // event has now been spoken about; do not let it authorise
+                    // a second, third and fourth complaint about the same death.
                     notable_event: !!(this._lastNotableEvent
                         && !this._lastNotableEvent.reported
                         && Date.now() - this._lastNotableEvent.at < 120000),
+                    // SAME ONE-SHOT RULE FOR EVERY ORDINARY ACTION. just_acted
+                    // is a 8-second time window, and the self-prompt gear is
+                    // 4-22s, so without consuming the flag the second turn of
+                    // every burst inherited the exemption and narrated again.
+                    // This is the "constant one-liners in chat" the owner
+                    // reported: 05:47, alone, unprompted -
+                    //   "great, now I'm just starving couldn't even get a
+                    //    slice of bread xD"
+                    //   "i'm about to pass out here somebody help me out plz:("
+                    // A reaction to a real event is one line. Telling the room
+                    // her hunger every 13 seconds is not a reaction, it is a
+                    // state readout, and the chat budget's own share ceiling
+                    // (0.55) exists precisely because that is not how players
+                    // talk. notable_event above already works this way.
+                    just_acted: this._consumeActionReact(),
                     any_human: this.anyHumanOnline(),
                 });
                 if (!verdict.ok) {
@@ -1541,6 +1582,33 @@ export class Agent {
                     return;
                 }
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
+        }
+
+        // ── PLAIN TEXT, LAST STAGE BEFORE THE WIRE ────────────────────────
+        // personas/normal.json forbids emoji in three places, in capitals, and
+        // they leaked anyway: "…where are they? 🤔" and "…a slice of bread xD"
+        // both went out in live chat, plus ":(" and ">_<". A prompt is a
+        // suggestion and this is a shape, so it is checked as a shape here, at
+        // the last point before routeResponse sends it.
+        //
+        // Strip, not reject: a line with a face in it still has eight words
+        // worth saying, and throwing the whole message away for one glyph is
+        // how you get silence instead of plain text. <3 and ♥ survive - the
+        // owner named them as the marks that do make sense in this persona.
+        if (!isYandere()) {
+            try {
+                const { scrubEmoji } = await import('../utils/emoji_scrub.js');
+                const clean = scrubEmoji(message);
+                if (clean !== message) {
+                    console.log(`${this.name} [plain-text] scrubbed: `
+                        + `${String(message).slice(0, 50)} -> ${clean.slice(0, 50)}`);
+                    message = clean;
+                }
+                if (!message.trim()) {
+                    console.log(`${this.name} [plain-text] nothing left after scrub, not sending`);
+                    return;
+                }
+            } catch (e) { console.warn('[plain-text] failed open:', e.message); }
         }
 
         // She just spoke. If nobody answers, this is what eventually makes her
