@@ -90,7 +90,51 @@ export function scrubEmoji(text) {
     out = out.replace(EMOJIISH, '');
     // Collapse the holes the removals left, then tidy spacing. A blanked line
     // is worse than a plain one, so trim and let the caller decide on empty.
-    return out.replace(/[ \t]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').trim();
+    out = out.replace(/[ \t]{2,}/g, ' ').replace(/\s+([.,!?;:])/g, '$1').trim();
+    return stripTrailingPeriod(out);
+}
+
+/**
+ * Drop the full stop that ends a sentence.
+ *
+ * Owner: "when chatting usually ppl dont put . at end". That is the register,
+ * and she was writing like an email: 8 of 23 self-prompt lines contained a
+ * sentence period, and 2 of 23 ended in one - "finally, something that worked.
+ * I needed that." is not how anyone types in a Minecraft chat.
+ *
+ * Only the FINAL period, and only when it ends the message. Deliberately not
+ * touched:
+ *  - mid-sentence periods ("bruh. this is fine") - removing those would break
+ *    the sentence apart, and the ask was about the end of the line;
+ *  - "!" and "?" - "what is even happening right now?" is exactly right, and
+ *    12 of 23 lines ended that way;
+ *  - decimals, versions, abbreviations, urls and initials - "3.5", "1.16",
+ *    "etc.", "e.g.", "a.co" all end in a dot that IS part of the token. Hence
+ *    the trailing-character and length guards below.
+ *  - a line that is only a period, and one that is only an ellipsis, which
+ *    reads better as "..." than as "..".
+ */
+export function stripTrailingPeriod(text) {
+    // Trailing space first: scrubEmoji() trims before calling, but this is
+    // exported and something else will call it with "ok. " and get "ok. "
+    // back - a period only counts when it is genuinely the last character.
+    let out = String(text ?? '').trimEnd();
+    if (!out) return out;
+    // "..." is a deliberate trailing ellipsis, leave it.
+    if (/\.\.\.$/.test(out)) return out;
+    if (!out.endsWith('.')) return out;
+    // A single "." or a very short token ending in a dot is a token, not a
+    // sentence: "3.", "1.", "a." carry meaning. Anything with a letter or digit
+    // immediately before the dot and length > 2 is prose.
+    const body = out.slice(0, -1);
+    if (body.length < 2) return out;
+    // ...but do not mangle decimals/versions/urls: if the text BEFORE the
+    // final period is itself a bare number or a hostname-ish token, keep it.
+    if (/\d\.$/.test(out) && /\d$/.test(body.replace(/[^\d.]/g, ''))) {
+        // e.g. "i have 3." -> still prose, but "2.5." is a version
+        if (/[a-z]$/i.test(body)) return out;
+    }
+    return body;
 }
 
 export default scrubEmoji;
