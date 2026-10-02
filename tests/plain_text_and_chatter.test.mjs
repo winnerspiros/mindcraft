@@ -267,5 +267,165 @@ const check = (cond, good, bad) => {
         `${suspicious.length} unclassified send(s): ${JSON.stringify(suspicious)}`);
 }
 
+// ── 8. AN ACK TO A REQUEST IS ALSO A NON-SEQUITUR ────────────────────
+{
+    // Owner, live: "still sended a ramdom yeah, whats yeah for?"
+    //
+    //   YandereDev: "yo help im dying"
+    //   [turntaker] -> backchannel (40%)
+    //   UwU backchannel (darling, 40%): yeah
+    //
+    // The question case was already handled. A REQUEST was not, and it is the
+    // same defect: a question asks for information and an ack cannot supply it;
+    // a request asks for an ACTION and an ack cannot supply that either. But a
+    // request carries no question mark, so asksSomething() said no, and
+    // hasProposition() said yes - "there is a position to agree with" - so
+    // "yeah" went out to a plea for help. That is the bot declining to help
+    // while sounding like it agreed.
+    //
+    // The distinction that must survive: a CLAIM is assent-able, a REQUEST is
+    // not. "mob farms go at y=30" needs "yeah" and "no" to mean something.
+    const { isEmptyAck, asksForAction } = await import('../src/utils/empty_ack.js');
+
+    const requests = ['yo help im dying', 'help im dying', 'can you help me', 'come here',
+        'pls help', 'urgent need food', 'bring me some wood', 'tp to me', 'wait',
+        'can u help', 'follow me', 'rescue me', 'save me'];
+    for (const r of requests) {
+        check(isEmptyAck('yeah', r), `"yeah" cannot answer the request ${JSON.stringify(r)}`,
+            `"yeah" answered the request ${JSON.stringify(r)}`);
+    }
+
+    // and the claims that MUST keep working, or she becomes unable to agree
+    // with or disagree with anything
+    const claims = ['mob farms go at y=30', 'that was fun', 'no way', 'im stuck',
+        'i need a minute', 'thats what i said', 'you know what i mean',
+        'send me the coords', 'right on y=30'];
+    for (const c of claims) {
+        check(!isEmptyAck('yeah', c), `"yeah" is still assent to the claim ${JSON.stringify(c)}`,
+            `the claim ${JSON.stringify(c)} was silenced - she can no longer agree with anything`);
+    }
+
+    // "wait what" is the case both of my attempts got wrong, so pin it: no
+    // question mark, and "what" is not clause-initial (it follows "wait"), so
+    // the conservative wh-word rule missed it and the imperative rule claimed
+    // it. It is a question, and an ack cannot answer it.
+    check(asksForAction('wait what') === false,
+        '"wait what" is read as a question, not a command',
+        '"wait what" is read as a request - the imperative won over the wh-word');
+    check(isEmptyAck('yeah', 'wait what'),
+        '"yeah" cannot answer "wait what"',
+        '"yeah" answered "wait what"');
+    check(isEmptyAck('right', 'thats what i said') === false,
+        '"thats what i said" stays a claim - the wh-word is a relative pronoun there',
+        '"thats what i said" was misread as a question');
+}
+
+// ── 9. THE TURN-TAKER PROMPT DOES NOT TEACH BAD ACKS ──────────────────
+{
+    // The scoring prompt is where the ack vocabulary comes from, and it was
+    // still offering "right" - the exact token removed from _pickAck() in
+    // 0b4684a, for being a non-sequitur to a question and for never appearing
+    // in the corpus the comment cited. Removing it from the pool while leaving
+    // it in the prompt that selects the pool meant the model could still
+    // choose the behaviour, and _pickAck would then map it onto something
+    // else. The prompt also had no instruction about questions or requests at
+    // all, which is why 40% backchannel on "yo help im dying" was reasonable
+    // from the model's point of view.
+    const fs2 = await import('node:fs');
+    const tt = fs2.readFileSync(new URL('../src/agent/turn_taker.js', import.meta.url), 'utf8');
+    const prompt = tt.slice(tt.indexOf('const SCORING_PROMPT'), tt.indexOf('function renorm'));
+
+    check(!/backchannel[^\n]*"right"/.test(prompt),
+        'the scoring prompt no longer offers "right" as a backchannel example',
+        'the scoring prompt still teaches "right" - it was removed from the pool for being a non-sequitur');
+    check(/Never choose backchannel when the player asked/.test(prompt),
+        'the scoring prompt forbids backchanneling a question or request',
+        'the scoring prompt says nothing about questions or requests');
+}
+
+// ── 10. A GOAL NAMING AN ABSENT TARGET IS REWRITTEN ───────────────────
+{
+    // Owner, live: "also she still in game does nothing, just standing still."
+    //
+    // This was not a cadence problem and not the speak gate. Twenty-five
+    // minutes of it, from the log:
+    //
+    //   [curriculum] proposed next goal: "gather food from the nearby pig"
+    //   ... six consecutive turns, identical goal, 4-22s apart ...
+    //   Current Action: Idle
+    //   !kick  x43   !tpa  x44   !kill x23   !attack x15   !gather x16
+    //
+    // The self-prompt DEMANDS a command every turn, so the model dutifully
+    // produced a command - and every one targeted an animal that was not
+    // there. She was not idle by choice. She was handed the same impossible
+    // goal on a 4-22s gear with nothing that could succeed, so the only honest
+    // output was a no-op. "Current Action: Idle" is the symptom, not the cause.
+    //
+    // The root cause is that proposeNextGoal() returned whatever the LLM said
+    // without ever checking it against the world. The model is free to invent
+    // "the nearby pig" out of nothing, and the failed-goal similarity guard
+    // could not catch it because each attempt named a DIFFERENT animal.
+    const { Curriculum } = await import('../src/agent/curriculum.js');
+
+    // a bot with entities, none of them a pig
+    const mkBot = (names) => ({
+        entity: { position: { x: 0, y: 64, z: 0 } },
+        entities: Object.fromEntries(names.map((n, i) => [n, { name: n, position: { x: i + 2, y: 64, z: 0 } }])),
+    });
+    const mk = (names) => {
+        const c = new Curriculum({ name: 'UwU', bot: mkBot(names) });
+        c.fp = '/tmp/nonexistent-curriculum-test.json';   // never writes
+        return c;
+    };
+
+    // the exact live goal, with the pig absent
+    const noPig = mk(['cow', 'sheep', 'stone', 'oak_log']);
+    const fixed = noPig.makeExecutable('gather food from the nearby pig');
+    check(fixed !== 'gather food from the nearby pig',
+        `an absent target is dropped: "gather food from the nearby pig" -> "${fixed}"`,
+        'the dead goal was returned unchanged - she will stand still again');
+    check(!/\bpig\b/.test(fixed),
+        `no absent noun survives the rewrite (got "${fixed}")`,
+        `"pig" survived the rewrite: "${fixed}"`);
+    check(fixed.length >= 3,
+        'the rewrite is still a usable goal length',
+        `the rewrite was too short to be a goal: "${fixed}"`);
+
+    // the entity IS there: the goal must be left alone
+    const withPig = mk(['pig', 'cow']);
+    const untouched = withPig.makeExecutable('gather food from the nearby pig');
+    check(untouched === 'gather food from the nearby pig',
+        'a goal naming a target that IS present is left alone',
+        `an achievable goal was rewritten to "${untouched}"`);
+
+    // goals with no checkable target must never be touched
+    for (const g of ['mine cobblestone for tools', 'check if the wheat is ready',
+        'build a small house', 'tidy the chest', 'craft a wooden pickaxe',
+        'chop the rest of that oak', 'look around']) {
+        const c = mk(['cow']);
+        check(c.makeExecutable(g) === g, `unrelated goal untouched: "${g}"`,
+            `an unrelated goal was rewritten: "${g}" -> "${c.makeExecutable(g)}"`);
+    }
+
+    // unknown world: do NOT reject. Refusing here would be worse than the bug,
+    // because a null goal leaves the caller holding the dead one.
+    const noEntities = new Curriculum({ name: 'UwU', bot: { entity: { position: { x: 0, y: 0, z: 0 } } } });
+    noEntities.fp = '/tmp/nonexistent-curriculum-test.json';
+    check(noEntities.makeExecutable('gather food from the nearby pig') === 'gather food from the nearby pig',
+        'an unreadable world does not reject the goal',
+        'an unreadable world silently discarded a valid goal');
+
+    // and the other half: her memory had learned to distrust her own commands
+    const fs3 = await import('node:fs');
+    const mem = fs3.readFileSync(new URL('../bots/UwU/memory.json', import.meta.url), 'utf8');
+    const md = JSON.parse(mem);
+    check(!/avoid invalid commands/i.test(md.memory || ''),
+        'her memory no longer tells her to avoid !tp/!gather/!kill',
+        'her memory still tells her those commands are invalid - that is what kept her idle');
+    check(!/nearby (pig|cow|chicken|sheep|wolf)/i.test(String(md.self_prompt || '')),
+        `the persisted self-prompt goal is executable (got "${md.self_prompt}")`,
+        `the dead goal is still persisted: "${md.self_prompt}"`);
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
