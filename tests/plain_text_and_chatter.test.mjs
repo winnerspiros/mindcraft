@@ -429,5 +429,82 @@ const check = (cond, good, bad) => {
         `the dead goal is still persisted: "${md.self_prompt}"`);
 }
 
+// ── 11. A WRONG ARG COUNT IS EXPLAINED, NOT JUST REPORTED ─────────────
+//
+// Owner, live: "she doesnt respond to my last messages and shes still
+// idle in game". Half of that was her standing still writing commands
+// that could never work:
+//
+//   Agent executed: !breakBlock and got: given 1 args, but requires 3
+//   Agent executed: !tps and got: given 3 args, but it only accepts 0
+//   Agent executed: !collectBlocks and got: given 0 args, but requires 1
+//   Agent executed: !craftRecipe and got: given 1 args, but requires 2
+//   Agent executed: !digDown and got: given 0 args, but requires 1
+//   Agent executed: !findPlace and got: given 0 args, but requires 1
+//
+// Six failures in six minutes, five distinct commands, every one of them
+// recoverable in a single sentence. explainParamError already existed for
+// the wrong-TYPE case ("Param 'x' must be of type float" -> "!breakBlock
+// takes (x: float, y: float, z: float)"); it just did not match the
+// wrong-COUNT message shape, so the model was told it failed and nothing
+// about what it wanted. It then guessed again - !digDown, then !digDown 1,
+// then !craftable with an arg.
+//
+// These are the exact strings the live log produced, not invented ones.
+{
+    // Importing src/agent/commands/index.js transitively loads undici, which
+    // reads the global File at module scope and crashes on Node 19 (it landed
+    // in Node 20). The bot itself runs fine because mindcraft's runtime
+    // provides it; a bare `node tests/...` does not. Shim the one global it
+    // wants rather than skipping the assertions - this is the branch that
+    // decides whether she is told what the command actually takes.
+    if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
+    const { explainParamError } = await import('../src/agent/commands/index.js');
+
+    // every arity shape, including the "it only accepts" wording that the
+    // zero-arg commands actually emit (a naive /only accepts/ misses it).
+    const arity = [
+        ['!breakBlock', 'Command !breakBlock was given 1 args, but requires at least 3 args.'],
+        ['!tps', 'Command !tps was given 3 args, but it only accepts 0 args.'],
+        ['!collectBlocks', 'Command !collectBlocks was given 0 args, but requires at least 1 args.'],
+        ['!craftRecipe', 'Command !craftRecipe was given 1 args, but requires at least 2 args.'],
+        ['!digDown', 'Command !digDown was given 0 args, but requires at least 1 args.'],
+        ['!findPlace', 'Command !findPlace was given 0 args, but requires at least 1 args.'],
+    ];
+    for (const [cmd, err] of arity) {
+        const ex = explainParamError(cmd, err);
+        check(!!ex, `${cmd} arg-count error is explained`, `${cmd} arg-count error returned null - the model is told nothing`);
+        check(!!ex && ex.includes(cmd), `${cmd} correction names the command`,
+            `${cmd} correction does not name the command: ${ex}`);
+        check(!!ex && /takes/.test(ex), `${cmd} correction states the signature`,
+            `${cmd} correction never says what the command takes: ${ex}`);
+    }
+
+    // a command with NO params must not produce a dangling empty signature
+    // ("!tps takes . You passed 3 arg(s)") - that reads as broken output.
+    const tps = explainParamError('!tps', 'Command !tps was given 1 args, but it only accepts 0 args.');
+    check(!/\btakes\s*\./.test(tps || ''), 'a zero-arg command does not print an empty signature',
+        `a zero-arg command printed an empty signature: ${tps}`);
+
+    // too many args and too few need OPPOSITE advice, not one generic hint
+    const tooFew = explainParamError('!breakBlock', 'Command !breakBlock was given 1 args, but requires at least 3 args.');
+    const tooMany = explainParamError('!tps', 'Command !tps was given 3 args, but it only accepts 0 args.');
+    check(!/drop|extra/i.test(tooFew || ''), 'too-few args does not tell her to drop args',
+        `too-few advice says to drop args: ${tooFew}`);
+    check(/drop|extra/i.test(tooMany || ''), 'too-many args tells her to drop them',
+        `too-many advice never says to drop the extra args: ${tooMany}`);
+
+    // the pre-existing wrong-TYPE branch must still work
+    const typeErr = explainParamError('!breakBlock', "Error: Param 'x' must be of type float.");
+    check(!!typeErr && /float/.test(typeErr), 'the wrong-TYPE correction still works',
+        `the wrong-TYPE correction regressed: ${typeErr}`);
+
+    // an unknown command is not this function's job - nearestCommandNames
+    // owns that. It must return null rather than invent a signature.
+    check(explainParamError('!notACommand', 'Command !notACommand does not exist') === null,
+        'an unknown command gets no invented signature',
+        'explainParamError fabricated a signature for a command that does not exist');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

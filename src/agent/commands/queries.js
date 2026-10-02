@@ -213,6 +213,7 @@ export const queryList = [
     {
         name: "!tps",
         description: "Measure the server's ticks-per-second (TPS) and your ping over a short sample window.",
+        params: {},
         perform: async function (agent) {
             const bot = agent.bot;
             const SAMPLE_MS = 2000;
