@@ -145,7 +145,68 @@ try {
     // and it had failed the same way before: excluding only [user] turns is not
     // enough, because "(AUTO) ... YandereDev is nearby" is a system turn she is
     // supposed to emit. What must never appear is the yandere VOICE.
-    const y = (authored.match(/you feel (chatty|clingy|lonely|possessive)|clingy|possessive|your beloved|bound to you/gi) || []).length;
+    // ...and the wording must be ASSERTED, not merely present.
+    //
+    // The NORMAL persona disclaimer is appended to the reflection prompt
+    // (prompter.js:863 personalityPromptLine) and it reads "no beloved, no
+    // jealousy, no possessiveness". The line that FORBIDS the persona trips
+    // this scan on the word "possessiveness", and the model quoting it back
+    // into memory is indistinguishable from residue by substring. That is a
+    // false positive that failed a green run (hermes verify 10:44: "1
+    // yandere, 0 clingy") with nothing actually wrong - 90 memory writes in
+    // 40 minutes, zero poisoned, 133 direct reads all clean.
+    //
+    // Count only matches a negator governs in the same clause. A leak is an
+    // assertion ("you feel possessive"); a prohibition is not.
+    //
+    // The clause window is deliberately 30 chars and NOT a whole-line strip:
+    // a blunt strip of 40 swallowed "you are bound to him" and a 24-char one
+    // left "no possessiveness" standing. Clause-bounded matching is the only
+    // shape that got both right.
+    const NEG_CLAUSE = /\b(?:no|not|never|without|avoid(?:ed|s|ing)?|don't|do not|does not|isn't|aren't|nothing)\b[^.;!?\n]{0,30}$/i;
+    const POISON_RE = /you feel (chatty|clingy|lonely|possessive)|clingy|possessive|your beloved|bound to you/gi;
+    let y = 0;
+    for (let mm = POISON_RE.exec(authored); mm; mm = POISON_RE.exec(authored)) {
+        const before = authored.slice(Math.max(0, mm.index - 60), mm.index);
+        const clause = before.slice(before.lastIndexOf(/[.;!?\n]/) + 1);
+        if (!NEG_CLAUSE.test(clause)) y++;
+    }
+    POISON_RE.lastIndex = 0;
+
+    // Pin the discrimination itself. Without this the scan is an untested
+    // regex over live data: it passed because memory happened to be clean,
+    // which is exactly what happened before the false positive.
+    const countAsserted = (t) => {
+        POISON_RE.lastIndex = 0;
+        let n = 0, m2;
+        while ((m2 = POISON_RE.exec(t)) !== null) {
+            const b4 = t.slice(Math.max(0, m2.index - 60), m2.index);
+            if (!NEG_CLAUSE.test(b4.slice(b4.lastIndexOf(/[.;!?\n]/) + 1))) n++;
+        }
+        POISON_RE.lastIndex = 0;
+        return n;
+    };
+    // prohibitions: the persona disclaimer and its relatives
+    for (const prohibition of [
+        'no beloved, no jealousy, no possessiveness',
+        'you are in NORMAL persona right now - no yandere performance, no beloved, no jealousy, no possessiveness.',
+        'do not act possessive',
+        'without being clingy',
+        'she avoided possessiveness entirely',
+    ]) {
+        if (countAsserted(prohibition) === 0) ok(`negation-aware: prohibition not flagged: "${prohibition.slice(0, 44)}"`);
+        else bad(`negation-aware scan flags a PROHIBITION as a leak: "${prohibition.slice(0, 60)}"`);
+    }
+    // assertions: real residue must still be caught
+    for (const assertion of [
+        'you feel possessive about him',
+        'you are feeling clingy today',
+        'your beloved approaches',
+        'your soul is bound to you',
+    ]) {
+        if (countAsserted(assertion) > 0) ok(`negation-aware: leak still caught: "${assertion}"`);
+        else bad(`negation-aware scan MISSES a real leak: "${assertion}"`);
+    }
     const userTurns = (mem.turns || []).filter((t) => String(t.role || '') === 'user');
     if (userTurns.length) ok(`${userTurns.length} human turn(s) in history (not scanned for persona leakage)`);
     const c = (s.match(/clingy/gi) || []).length;
