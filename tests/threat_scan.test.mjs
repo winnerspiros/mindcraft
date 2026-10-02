@@ -146,10 +146,30 @@ check('a priming creeper still resolves to avoid', creeper.action === 'avoid',
 // chars silently truncated the tail, so the checks below passed vacuously.
 const scanStart = agentSrc.indexOf('this._threatScan = setInterval')
 const scanRegion = agentSrc.slice(scanStart, scanStart + 4200)
+// Slice from `anchor` to the end of its own `if` block, matched on indentation.
+// A fixed char window silently truncated the real code out of scope whenever a
+// comment in the branch grew, which is how "deletes the dispatch" mutations
+// passed. Branch-scoped checks cannot rot that way.
+const branch = (src, anchor) => {
+  const i = src.indexOf(anchor)
+  if (i < 0) return null
+  const indent = (src.slice(src.lastIndexOf('\n', i) + 1, i).match(/^\s*/) || [''])[0]
+  const close = '\n' + indent.slice(0, indent.length - 1) + '}'
+  const end = src.indexOf(close, i)
+  return end < 0 ? src.slice(i, i + 2000) : src.slice(i, end + close.length)
+}
 check('the threat scan is actually wired', /this\._threatScan = setInterval/.test(agentSrc))
 check('startEvents (which starts the scan) is called', /this\.startEvents\(\)/.test(agentSrc))
-check('the scan dispatches attackEntity on a fight', /attackEntity\(this\.bot, r\.target, true\)/.test(scanRegion))
-check('the scan dispatches avoidEnemies on avoid', /avoidEnemies\(this\.bot, 24,/.test(scanRegion))
+check('the scan dispatches attackEntity on a fight', (() => {
+  const b = branch(scanRegion, "if (r.action === 'fight' && r.target)")
+  return b && /attackEntity\(this\.bot, r\.target, true\)/.test(b)
+})())
+// Anchor on the avoid branch itself, not anywhere in the scan body: a loose
+// search passed while the dispatch was deleted outright.
+check('the scan dispatches avoidEnemies on avoid', (() => {
+  const b = branch(scanRegion, "if (r.action === 'avoid' && r.target)")
+  return b && /avoidEnemies\(this\.bot, 24,/.test(b)
+})())
 check('the scan still logs its decision', /\[threat\] \$\{r\.action\}: \$\{r\.reason\}/.test(scanRegion))
 // narration alone was the bug: a self-prompt with no skill call is the defect
 const narrateOnly = /console\.log\(\`\[threat\] \$\{r\.action\}: \$\{r\.reason\}\`\);\s*this\.self_prompter\.start\(r\.goal\);\s*\} catch/.test(scanRegion)
@@ -161,9 +181,18 @@ check('the scan is not narration-only', !narrateOnly)
 // action:attack", raised interrupt_code, and the RUNNING fight returned
 // done=false - measured live: 3 zombies -> 3 aborted fights, 0 kills, while
 // she sat at full health being ignored. Fights must serialise.
-check('the scan serialises fights', /_fightInFlight/.test(scanRegion))
-check('a running fight blocks a new one', /if \(this\._fightInFlight\)/.test(scanRegion))
-check('the in-flight flag is always cleared', /\.finally\(\(\) => \{ this\._fightInFlight = false; \}\)/.test(scanRegion))
+check('the scan serialises fights', (() => {
+  const b = branch(scanRegion, "if (r.action === 'fight' && r.target)")
+  return b && /_fightInFlight/.test(b)
+})())
+check('a running fight blocks a new one', (() => {
+  const b = branch(scanRegion, "if (r.action === 'fight' && r.target)")
+  return b && /if \(this\._fightInFlight\) return;/.test(b)
+})())
+check('the in-flight flag is always cleared', (() => {
+  const b = branch(scanRegion, "if (r.action === 'fight' && r.target)")
+  return b && /\.finally\(\(\) => \{ this\._fightInFlight = false; \}\)/.test(b)
+})())
 check('the serialisation is documented in-file',
   /Never preempt a fight/.test(scanRegion) && /with a fight/.test(scanRegion))
 

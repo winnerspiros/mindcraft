@@ -2311,14 +2311,12 @@ export class Agent {
                 this._lastThreatKey = key;
                 this._lastThreatAt = Date.now();
                 console.log(`[threat] ${r.action}: ${r.reason}`);
-                // MOVE, do not narrate. This scan only called self_prompter.start(),
-                // which hands the model a sentence to write — exactly the
-                // "a reflex that cannot move her is a comment" failure this file
-                // already documents for reactToHurt. The self-prompt stays as
-                // narration only; the decision is acted on directly.
-                //
-                // Fire-and-forget: this runs on a 1s interval and awaiting here
-                // would pile up overlapping fights.
+                // MOVE, do not narrate. This scan used to only call
+                // self_prompter.start(), which hands the model a sentence to
+                // write - exactly the "a reflex that cannot move her is a
+                // comment" failure this file already documents for reactToHurt.
+                // The self-prompt stays as narration only; the decision is acted
+                // on directly.
                 if (r.action === 'fight' && r.target) {
                     // One fight at a time. The scan runs every 1s, so without
                     // this a second zombie starts a fresh attackEntity while the
@@ -2328,28 +2326,27 @@ export class Agent {
                     // fight bails out with done=false - so three zombies produced
                     // three aborted fights and zero kills. Never preempt a fight
                     // with a fight: if one is in flight, let it finish.
-                    if (this._fightInFlight) {
-                        console.log('[threat] scan: a fight is already running, not starting another');
-                    } else {
-                        this._fightInFlight = true;
-                        this._reactFights = (this._reactFights || 0) + 1;
-                        console.log(`[threat] scan: FIGHTING ${r.target.name || 'mob'} @ ${r.target.position?.toString?.() || '?'} (#${this._reactFights})`);
-                        this.self_prompter.start(r.goal);
-                        skills.attackEntity(this.bot, r.target, true)
-                            .then((won) => console.log(`[threat] scan fight result: done=${won}`))
-                            .catch((e) => console.warn('[threat] scan fight failed:', e?.message))
-                            .finally(() => { this._fightInFlight = false; });
-                    }
-                } else if (r.action === 'avoid' && r.target) {
-                    this._reactFlees = (this._reactFlees || 0) + 1;
-                    console.log(`[threat] scan: AVOIDING ${r.target.name || 'mob'} (#${this._reactFlees})`);
+                    if (this._fightInFlight) return;
+                    this._fightInFlight = true;
+                    console.log(`[threat] scan: FIGHTING ${r.target.name || 'mob'} @ ${r.target.position?.toString?.() || '?'}`);
+                    this.self_prompter.start(r.goal);
+                    skills.attackEntity(this.bot, r.target, true)
+                        .then((won) => console.log(`[threat] scan fight result: done=${won}`))
+                        .catch((e) => console.warn('[threat] scan fight failed:', e?.message))
+                        .finally(() => { this._fightInFlight = false; });
+                    return;
+                }
+                if (r.action === 'avoid' && r.target) {
+                    // A priming creeper outranks an in-flight melee: fleeing is
+                    // the only move that survives it, so this one does preempt.
+                    console.log(`[threat] scan: AVOIDING ${r.target.name || 'mob'}`);
                     this.self_prompter.start(r.goal);
                     skills.avoidEnemies(this.bot, 24, 'sprint')
                         .then((moved) => console.log(`[threat] scan avoid result: moved=${moved}`))
                         .catch((e) => console.warn('[threat] scan avoid failed:', e?.message));
-                } else if (r.goal) {
-                    this.self_prompter.start(r.goal);
+                    return;
                 }
+                if (r.goal) this.self_prompter.start(r.goal);
             } catch (e) {
                 console.warn('[threat] scan failed:', e?.message);
             }
