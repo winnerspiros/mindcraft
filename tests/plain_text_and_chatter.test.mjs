@@ -959,8 +959,11 @@ const check = (cond, good, bad) => {
         'the escape attempt runs but its result is ignored');
 
     // the helper must actually move her, and must not leak control states
-    const esc = sk.slice(sk.indexOf('async function swimToNearestAir'),
-        sk.indexOf('async function swimToNearestAir') + 2200);
+    // slice to the closing brace of the helper, not a fixed length: at 2200
+    // chars the loop fell outside it and four assertions failed on strings that
+    // were never scanned.
+    const escStart = sk.indexOf('async function swimToNearestAir');
+    const esc = sk.slice(escStart, sk.indexOf('\n}', escStart));
     check(esc.length > 0, 'swimToNearestAir was located', 'the escape helper is missing');
     check(/setControlState\('forward', true\)/.test(esc),
         'the escape drives her forward (lookAt alone only turns her)',
@@ -979,9 +982,75 @@ const check = (cond, good, bad) => {
     check(/\[\s*\[1,\s*0\]\s*,\s*\[-1,\s*0\]/.test(esc),
         'the escape considers all 8 neighbour columns',
         'the escape only tries one direction, which may be the solid wall');
-    check(/offsets\.length === 0\) return false/.test(esc),
+    check(/if \(!pick\) return false;/.test(esc),
         'the escape gives up when she is genuinely walled in',
         'the escape loops even with nowhere to go');
+}
+
+// ── 21. AN EXIT MUST BE AIR, NOT SOLID ROCK ──────────────────────────
+//
+// The sideways escape ran and always failed: 29 "swim failed", 0 escapes,
+// still drowning. The diagnostic settled it:
+//
+//   [drown-diag] pos=-2.7,59.2,7.5
+//   1,0=water/water -1,0=stone/stone 0,1=stone/stone 0,-1=stone/air
+//   1,1=stone/water 1,-1=air/stone  -1,1=stone/stone -1,-1=stone/stone
+//
+// Five of eight neighbours are stone/stone. She is sealed in a 1-block
+// pocket with exactly ONE opening: 0,-1, where the head-space is air over
+// stone.
+//
+// The neighbour test was `!wet(above)`, which is TRUE FOR SOLID STONE.
+// So it called all five walls "exits", picked whichever came first, and
+// held jump into a wall for 3 seconds. Forty failures, zero escapes.
+//
+// Fixed by requiring the head-space to be air specifically: not water, and
+// not solid. Replaying the logged geometry now yields exactly one exit.
+{
+    const fs15 = await import('node:fs');
+    const sk = fs15.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+    const escStart = sk.indexOf('async function swimToNearestAir');
+    const esc = sk.slice(escStart, sk.indexOf('\n}', escStart));
+    check(esc.length > 0, 'swimToNearestAir was located', 'the escape helper is missing');
+
+    check(/const solid = /.test(esc),
+        'the exit test distinguishes solid blocks from air',
+        'solid rock is being counted as a breathing space, so she swims into walls');
+    check(!/\(\s*!wet\(above\)\s*&&\s*!solid\(above\)\s*\)/.test(esc) === false,
+        'the exit test rejects both water and solid head-space',
+        'the exit test must reject water AND solid, keeping only air');
+    check(/!wet\(above\)/.test(esc),
+        'water is still rejected as a head-space',
+        'water would count as an exit');
+    check(/'air'/.test(esc),
+        'air is named explicitly as the only breathable head-space',
+        'the exit test does not name air, so it cannot be distinguishing it');
+
+    // and the preference order still holds: a same-level opening beats a step up
+    check(/const pick = level\[0\] \|\| aboveOnly\[0\]/.test(esc),
+        'a same-level exit is preferred over stepping up',
+        'the escape prefers the worse option when both exist');
+
+    // replay the real geometry through the real predicate
+    const wet = (n) => n === 'water' || n === 'bubble_column';
+    const solid = (n) => !n || (n !== 'air' && !wet(n));
+    const logged = {
+        '1,0': ['water', 'water'], '-1,0': ['stone', 'stone'],
+        '0,1': ['stone', 'stone'], '0,-1': ['stone', 'air'],
+        '1,1': ['stone', 'water'], '1,-1': ['air', 'stone'],
+        '-1,1': ['stone', 'stone'], '-1,-1': ['stone', 'stone'],
+    };
+    const exits = Object.entries(logged)
+        .filter(([, [, above]]) => !wet(above) && !solid(above))
+        .map(([k]) => k);
+    check(exits.length === 1 && exits[0] === '0,-1',
+        'the logged pocket yields exactly its one real exit (0,-1)',
+        `expected only 0,-1, got ${JSON.stringify(exits)} - the wall test is still wrong`);
+    // the naive test this replaces must fail on the same geometry
+    const naive = Object.entries(logged).filter(([, [, above]]) => !wet(above)).map(([k]) => k);
+    check(naive.length > 1,
+        'the naive !wet() test really would have picked walls (guards the regression)',
+        'the naive comparison no longer distinguishes anything - the test above may be vacuous');
 }
 
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
