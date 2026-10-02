@@ -35,8 +35,13 @@ export class History {
         this.memory = await this.agent.prompter.promptMemSaving(turns);
 
         if (this.memory.length > 500) {
-            this.memory = this.memory.slice(0, 500);
-            this.memory += '...(Memory truncated to 500 chars. Compress it more next time)';
+            const cut = this.memory.slice(0, 500);
+            // Slice at a word boundary so names like "YandereDev" don't become "Yandere"
+            // or "Dev". A mid-word cut is exactly the "shrink works that dont make
+            // sense to shrink" the owner reported.
+            const lastSpace = cut.lastIndexOf(' ');
+            this.memory = (lastSpace > 400 ? cut.slice(0, lastSpace) : cut)
+                + '...(Memory truncated to 500 chars. Compress it more next time)';
         }
 
         console.log("Memory updated to: ", this.memory);
