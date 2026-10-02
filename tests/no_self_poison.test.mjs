@@ -219,4 +219,34 @@ try {
     bad(`could not read memory.json: ${e.message}`);
 }
 
+
+// The command docs are shared by both personas and NOT persona-gated, so any
+// yandere wording in a description reaches the normal-persona prompt and the
+// model copies it into memory. That is how "!askForHelp: ask nearby players
+// (or your beloved)" reached memory.json and tripped this very scan - a real
+// leak this time, not a false positive, and one that had already been written
+// and cleaned once before.
+//
+// YandereDev is a real player name and appears legitimately; the persona words
+// are what must not survive.
+{
+    const fs11 = await import('node:fs');
+    const cmdFiles = ['actions.js', 'queries.js', 'blocks.js', 'crafting.js', 'index.js'];
+    const words = /\b(?:your beloved|beloved|possessive|clingy|obsessed|devoted to)\b/i;
+    for (const f of cmdFiles) {
+        const url = new URL(`../src/agent/commands/${f}`, import.meta.url);
+        if (!fs11.existsSync(url)) continue;
+        const src = fs11.readFileSync(url, 'utf8');
+        // only the description strings the model actually reads
+        const inDescriptions = [...src.matchAll(/description:\s*(['`])([\s\S]*?)\1/g)]
+            .map(m => m[2])
+            .filter(d => words.test(d));
+        if (inDescriptions.length === 0) ok(`no persona wording in ${f} command descriptions`);
+        else bad(`persona wording in ${f} command descriptions reaches the normal prompt: ${inDescriptions[0].slice(0, 80)}`);
+    }
+    const ua = fs11.readFileSync(new URL('../src/agent/commands/queries.js', import.meta.url), 'utf8');
+    if (!/yandere/i.test(ua)) ok('the HTTP User-Agent carries no persona name');
+    else bad('the User-Agent still advertises a persona name');
+}
+
 console.log(`\nPASS — ${pass} self-poison guards green`);

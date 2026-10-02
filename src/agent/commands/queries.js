@@ -153,7 +153,7 @@ async function findPlace(query) {
     if (!q) return 'No search given — tell me what or where, e.g. "a bar in Berlin".';
     try {
         const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q)}&format=jsonv2&limit=4&addressdetails=1&accept-language=en`;
-        const res = await fetchTimeout(url, 12000, { headers: { 'User-Agent': 'uwu-bot/1.0 (kawaii yandere minecraft AI)' } });
+        const res = await fetchTimeout(url, 12000, { headers: { 'User-Agent': 'uwu-bot/1.0 (minecraft AI)' } });
         const data = await res.json();
         if (!Array.isArray(data) || data.length === 0) return `No real places found for "${q}".`;
         let out = `REAL PLACES for "${q}":`;

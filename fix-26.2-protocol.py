@@ -63,6 +63,36 @@ def patch_protocol_json(path):
     return True
 
 
+# --- 8c protodef serializer.js: silence ONLY the undecodable update_light ---
+#
+# The 26.3 server sends update_light frames protodef cannot decode
+# ("varint is too big: 70" - the payload outgrew the old mask layout). The
+# schema in minecraft-data is correct: 26.3's packet_update_light is
+# byte-identical to 1.21.11's, so this is not schema drift and no schema edit
+# fixes it. The frame is dropped and retried forever.
+#
+# protodef logs a full stack trace per dropped frame: 26 traces per 35 minutes
+# against a 1-OCPU box, burying every real error. Light data only feeds chunk
+# lighting, which the bot never reads, so the frames are worth nothing.
+#
+# There is a supported flag for this (noErrorLogging / client.hideErrors) but
+# it silences EVERY decode failure, including ones that mean real world-data
+# corruption - the exact failure mode this file exists to prevent. So match on
+# the frame instead: that packet is suppressed, everything else still logs.
+LIGHT_OLD = """      if (e.partialReadError) {
+        if (!this.noErrorLogging) {
+          console.log(e.stack)
+        }
+        return cb()"""
+LIGHT_NEW = """      if (e.partialReadError) {
+        const benign = /packet_update_light/.test(e.stack || '');
+        if (!this.noErrorLogging && !benign) {
+          console.log(e.stack)
+        }
+        return cb()"""
+LIGHT_MARKER = "packet_update_light/.test(e.stack"
+
+
 def patch_js(path, old, new, marker, label):
     src = open(path).read()
     if marker in src:
@@ -2278,6 +2308,14 @@ def main():
     ensure_mineflayer_toolproof(BASE)
     ensure_mineflayer_stopproof(BASE)
     ensure_loaded_gate(BASE)
+
+    # 2b. protodef serializer: drop the undecodable update_light trace only.
+    # Serialization resolves the NESTED protodef, but guard the top-level copy
+    # too since npm hoisting differs per install.
+    for _b in (BASE, os.path.join(BASE, "minecraft-protocol", "node_modules")):
+        _ser = os.path.join(_b, "protodef", "src", "serializer.js")
+        if os.path.exists(_ser):
+            patch_js(_ser, LIGHT_OLD, LIGHT_NEW, LIGHT_MARKER, "update_light decode noise")
 
     # 3. upstream pathfinder PRs (idempotent — no-op when already present)
     ensure_pathfinder_prs(BASE)

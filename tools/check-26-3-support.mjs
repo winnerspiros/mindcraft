@@ -88,5 +88,32 @@ if (!/'26\.3'/.test(readFileSync(chunk.column, 'utf8'))) {
         '"Bits per block is too big" continuously and her inventory reads back empty.');
 }
 
+// --- 4. protodef must not spam the undecodable update_light frame ----------
+// The 26.3 server sends update_light frames protodef cannot decode. They are
+// dropped and retried forever, and protodef stack-traces each one: 26 traces
+// per 35 minutes on a 1-OCPU box, burying every real error. light data only
+// feeds chunk lighting, which the bot never reads.
+//
+// Checked here because this is a node_modules patch applied by
+// fix-26.2-protocol.py, and a reinstall silently reverts it. The check is for
+// the NARROW suppression (matching this frame only) - the blanket
+// noErrorLogging flag is deliberately not acceptable, because it also hides
+// decode failures that mean real world-data corruption.
+const protodefCands = [
+    path.join(ROOT, 'node_modules', 'protodef', 'src', 'serializer.js'),
+    path.join(ROOT, 'node_modules', 'minecraft-protocol', 'node_modules', 'protodef', 'src', 'serializer.js'),
+];
+let checkedSerializer = false;
+for (const ser of protodefCands) {
+    if (!existsSync(ser)) continue;
+    checkedSerializer = true;
+    const txt = readFileSync(ser, 'utf8');
+    if (/packet_update_light\/.test/.test(txt)) continue;
+    fail(`protodef at ${rel(ser)} has no narrow update_light suppression`,
+        'Run: python3 fix-26.2-protocol.py');
+}
+if (!checkedSerializer) fail('could not find any protodef/src/serializer.js under node_modules',
+    'checked: ' + protodefCands.map(rel).join(', '));
+
 console.log('OK — 26.3 support intact (protocol data, chunk mapping, section header)');
 console.log(`   minecraft-data: ${rel(resolved)}`);
