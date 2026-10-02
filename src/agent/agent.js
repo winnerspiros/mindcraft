@@ -2156,6 +2156,25 @@ export class Agent {
                     console.log(`[threat] hurt: ${r.action} (${r.reason})`);
                     this.self_prompter.start(r.goal);
                 }
+                // MOVE. reactToHurt is a state decision, and its state-only
+                // result was the entire failure: she logged "flee" 13 times and
+                // moved zero times. The goal only handed the model a sentence to
+                // write, and the model duly wrote "!run away" -> hallucinated,
+                // discarded. Worse, her inventory is EMPTY (verified by rcon), so
+                // isArmed() is false and every single threat took the flee branch,
+                // permanently. A reflex that cannot move her is a comment.
+                //
+                // Act directly; the self-prompt stays as narration only.
+                // avoidEnemies is the same skill cowardice uses and it resumes
+                // self_preservation in its finally. Fire-and-forget: this is an
+                // event handler, awaiting would block the entityHurt emit chain.
+                if (r.action === 'flee' && source?.position) {
+                    this._reactFlees = (this._reactFlees || 0) + 1;
+                    console.log(`[threat] hurt: FLEEING from ${source.name || 'attacker'} @ ${source.position.toString()} (#${this._reactFlees})`);
+                    skills.avoidEnemies(this.bot, 24, 'sprint')
+                        .then((moved) => console.log(`[threat] flee result: moved=${moved}`))
+                        .catch((e) => console.warn('[threat] flee failed:', e?.message));
+                }
             }
 
             // track who is harming her so she can retaliate (verbal -> attack -> TNT)
