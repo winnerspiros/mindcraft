@@ -800,9 +800,10 @@ const check = (cond, good, bad) => {
     const src = fs9.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
 
     // (a) the pre-generation gate must not return false any more
-    const pre = src.slice(src.indexOf('if (!isYandere() && self_prompt) {\n            try {\n                const { ChatBudget }'),
-        src.indexOf('// Handle other user messages'));
-    check(!!pre, 'the pre-generation budget block was found',
+    const preStart = src.indexOf('if (!isYandere() && self_prompt) {');
+    const pre = preStart === -1 ? '' : src.slice(preStart, src.indexOf('// Handle other user messages'));
+    check(preStart !== -1 && /ChatBudget/.test(pre),
+        'the pre-generation budget block was found',
         'could not locate the pre-generation ChatBudget block');
     check(!/return false;/.test(pre),
         'the chat budget no longer returns false before generation',
