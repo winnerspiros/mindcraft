@@ -593,9 +593,17 @@ export class SelfPrompter {
         if (!has(/_axe$/)) missing.push('no axe (wood is slow bare-handed)');
         if (!has(/sword$/) && !has(/_axe$/)) missing.push('no weapon (fists still work at contact range)');
         if (!missing.length) return '';
+        // Do NOT tell her to craft a raw block. !craftRecipe rejects oak_log
+        // outright ("not an item, or it does not have a crafting recipe") - it
+        // is a world block, not a recipe. Saying "oak_log first" sent her into
+        // a loop: craft oak_log -> rejected -> "crafting is broken too" -> chat.
+        // Raw blocks come from !collectBlocks <block>; crafted things from
+        // !craftRecipe.
+        const next = missing.some(m => m.includes('axe'))
+            ? `Get an oak_log with !collectBlocks oak_log (bare hands work, just slowly), then !craftRecipe oak_planks, then stick, then wooden_axe.`
+            : `Gather the raw blocks with !collectBlocks <block>, then !craftRecipe <item> <n> (it finds the table itself).`;
         return `Your pack right now: ${names.length ? names.join(', ') : 'EMPTY'}. ` +
-            `Note before you plan: ${missing.join('; ')}. ` +
-            `Craft with !craftRecipe <item> <n> (it finds the table itself) - oak_log first if you need planks or sticks.`;
+            `Note before you plan: ${missing.join('; ')}. ${next}`;
     }
 
     _guessSuccess(goal) {

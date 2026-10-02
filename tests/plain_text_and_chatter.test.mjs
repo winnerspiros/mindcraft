@@ -1185,7 +1185,16 @@ const check = (cond, good, bad) => {
     const fs24 = await import('node:fs');
     const sp = fs24.readFileSync(new URL('../src/agent/self_prompter.js', import.meta.url), 'utf8');
     check(/toolGapNote\(\)/.test(sp), 'toolGapNote exists', 'she cannot be told what she holds');
-    const g = sp.slice(sp.indexOf('toolGapNote() {'), sp.indexOf('toolGapNote() {') + 1400);
+    // slice the whole method, not a fixed length: at 1400 chars an insertion
+    // pushed the body out of range and assertions silently scanned text that
+    // was never there. Match to the closing brace at the method's indent level.
+    const _gs = sp.indexOf('    toolGapNote() {');
+    let _d = 0, _e = _gs;
+    for (; _e < sp.length; _e++) {
+        if (sp[_e] === '{') _d++;
+        else if (sp[_e] === '}') { _d--; if (_d === 0) { _e++; break; } }
+    }
+    const g = sp.slice(_gs, _e);
 
     check(/_pickaxe\$/.test(g) && /no pickaxe/.test(g),
         'a missing pickaxe is called out by name',
@@ -1196,9 +1205,29 @@ const check = (cond, good, bad) => {
     check(/EMPTY/.test(g),
         'an empty pack is stated explicitly',
         'an empty inventory is the case that matters most and it is not surfaced');
-    check(/oak_log/.test(g),
-        'the raw-material first step is named',
-        'crafting needs planks and sticks; without this she crafts into a wall');
+    // she was previously told "oak_log first" - but !craftRecipe REJECTS
+    // oak_log ("not an item, or it does not have a crafting recipe"). That
+    // advice sent her into a loop: craft oak_log -> rejected -> "crafting is
+    // broken too" -> said in public chat. Raw blocks come from
+    // !collectBlocks, crafted things from !craftRecipe.
+    check(/!collectBlocks/.test(g),
+        'the note routes RAW blocks to !collectBlocks',
+        'she is told to craft a block that can never be crafted');
+    // Scope this to what she is actually TOLD, not the whole method: the
+    // method contains a comment naming !craftRecipe oak_log precisely because
+    // that advice caused the loop, and matching that comment is a false
+    // positive. Extract only the user-visible template strings.
+    const told = [...g.matchAll(/`([^`]*)`/g)].map(m => m[1]).join('\n');
+    check(told.length > 0, 'the note emits user-visible text', 'no template strings found');
+    check(!/craftRecipe\s+oak_log/.test(told),
+        'the note does not tell her to craft a raw block',
+        '!craftRecipe oak_log always fails - that advice caused the live loop');
+    check(/collectBlocks\s+oak_log/.test(told),
+        'oak_log is routed to !collectBlocks instead',
+        'she is not told how to actually obtain a log');
+    check(/oak_planks/.test(g) && /wooden_axe/.test(g),
+        'the real chain is named: log, planks, stick, axe',
+        'she is not told how to actually get a tool');
     // plain text only - this is injected into her prompt
     check(!/[^\x00-\x7F]/.test(g.replace(/[^\x00-\x7F]/g, (c) => c === '—' || c === '’' ? c : 'X')) || !/[\u{1F300}-\u{1FAFF}♥❤]/u.test(g),
         'the capability note is plain text',
