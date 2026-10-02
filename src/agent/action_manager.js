@@ -2,6 +2,7 @@ export class ActionManager {
     constructor(agent) {
         this.agent = agent;
         this.executing = false;
+        this._actionGen = 0;
         this.currentActionLabel = '';
         this.currentActionFn = null;
         this.timedout = false;
@@ -21,6 +22,37 @@ export class ActionManager {
         } else {
             return this._executeAction(actionLabel, actionFn, timeout);
         }
+    }
+
+    /**
+     * Preempt the running action IMMEDIATELY, without waiting for it to finish.
+     *
+     * For life-or-death reflexes only (drowning, a Pillager at 3 blocks). The
+     * normal stop() deliberately waits 700ms and then up to 10s for the action
+     * to yield, because most actions are safe to let finish. That is fatal when
+     * she is being shot: the reflex is queued behind a dig and she dies before
+     * it runs.
+     *
+     * This releases the CONTROLS (movement, digging, pathfinding, pvp) and
+     * raises interrupt_code, so whatever is running sees the flag and gives up
+     * on its next check, and the new action takes over the body immediately. We
+     * deliberately do NOT await the old action: waiting is the bug.
+     */
+    async _preempt() {
+        const label = this.currentActionLabel || '(unknown)';
+        try { this.agent.requestInterrupt(); } catch (_) {}
+        // Best-effort control release. Any failure here must not prevent the
+        // reflex from running - a dig that refuses to stop is still better than
+        // standing in the open while we throw.
+        try { this.agent.bot.stopDigging?.(); } catch (_) {}
+        try { this.agent.bot.collectBlock?.cancelTask?.(); } catch (_) {}
+        try { this.agent.bot.pathfinder?.stop?.(); } catch (_) {}
+        try { this.agent.bot.pvp?.stop?.(); } catch (_) {}
+        try { this.agent.bot.clearControlStates?.(); } catch (_) {}
+        try { this.agent.bot.setControlState?.('forward', false); } catch (_) {}
+        try { this.agent.bot.setControlState?.('back', false); } catch (_) {}
+        try { this.agent.bot.setControlState?.('jump', false); } catch (_) {}
+        console.log(`preempted running action "${label}" for a reflex - not waiting`);
     }
 
     async stop() {
@@ -118,6 +150,25 @@ export class ActionManager {
                     }
                     if (!this.executing) { this.agent.clearBotLogs(); }
                     else await this.stop();
+                } else if (actionLabel.startsWith('mode:')) {
+                    // DEATH-MODE PREEMPT (measured 2026-10-02). A Pillager
+                    // killed her with exactly this log:
+                    //   action "mode:self_preservation" trying to interrupt
+                    //   current action "action:collectBlocks"
+                    //   Agent died: UwU was shot by Pillager
+                    // self_preservation is a DIFFERENT label from the running
+                    // dig, so it fell through to the generic else -> stop(),
+                    // which gives the action 700ms and then up to 10s of
+                    // "waiting for code to finish". A Pillager kills her well
+                    // inside 10s, so the reflex fired, was announced in the log,
+                    // and she died still holding the pickaxe.
+                    //
+                    // So: do not wait at all. Signal the interrupt, release the
+                    // movement controls the dig is holding, and start now. The
+                    // dig's own 25s race reports its failure afterwards - it is
+                    // already designed to be interrupted (see the stop() comment
+                    // about not calling stopDigging from here).
+                    await this._preempt();
                 } else await this.stop();
             } else await this.stop();
 
@@ -127,6 +178,13 @@ export class ActionManager {
             this.executing = true;
             this.currentActionLabel = actionLabel;
             this.currentActionFn = actionFn;
+            // Generation guard. A preempted action is still running its own
+            // `await actionFn()` and will eventually reach the cleanup below -
+            // where, without this, it would set executing=false and wipe the
+            // state of the reflex that replaced it. Each action captures the
+            // generation it started in; if a newer action has begun, this one
+            // is a ghost and must not touch shared state.
+            const myGen = ++this._actionGen;
 
             // timeout in minutes
             if (timeout > 0) {
@@ -139,6 +197,16 @@ export class ActionManager {
 
             // start the action
             await actionFn();
+
+            // A reflex preempted me while I was still running. I am a ghost: the
+            // reflex owns the body now, so leave its state alone. Clearing
+            // executing here would make the manager think nothing is running
+            // while she is actively fleeing, and the next action would start on
+            // top of her.
+            if (myGen !== this._actionGen) {
+                console.log(`stale action "${actionLabel}" finished after being preempted; leaving state to the newer action`);
+                return { success: false, message: 'preempted by a higher-priority reflex', interrupted: true, timedout: false };
+            }
 
             // mark action as finished + cleanup
             this.executing = false;

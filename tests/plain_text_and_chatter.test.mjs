@@ -1592,5 +1592,56 @@ const check = (cond, good, bad) => {
         'placeBlock does hand-placement, which mostly cannot find a face underwater');
 }
 
+// ── 29. A REFLEX MUST PREEMPT, NOT QUEUE BEHIND A DIG ─────────────────
+//
+// A Pillager killed her with exactly this log:
+//   action "mode:self_preservation" trying to interrupt current action
+//   "action:collectBlocks"
+//   Agent died: UwU was shot by Pillager
+//
+// The reflex FIRED. It was queued behind a dig: a different label, so it took
+// the generic else -> stop(), which waits 700ms then up to 10s for the action
+// to yield. She is shot well inside 10s, still holding the pickaxe. Same
+// family as the drowning: protection mode declares intent while an action
+// holds the controls.
+{
+    const fs29 = await import('node:fs');
+    const src = fs29.readFileSync(new URL('../src/agent/action_manager.js', import.meta.url), 'utf8');
+
+    const pm = src.match(/async _preempt\(\)\s*\{/);
+    check(pm, 'a non-waiting preempt path exists', 'reflexes still queue behind long actions');
+    // _preempt must not await the action it is preempting
+    const bi = src.indexOf('async _preempt() {');
+    let bd = 0, be = bi;
+    for (let k = bi; k < src.length; k++) {
+        if (src[k] === '{') bd++;
+        else if (src[k] === '}') { bd--; if (bd === 0) { be = k + 1; break; } }
+    }
+    const pbody = src.slice(bi, be);
+    check(!/\bwhile\s*\(this\.executing/.test(pbody),
+        '_preempt does not wait for the running action to finish',
+        'waiting is the bug - a Pillager kills her inside the wait');
+    check(!/await\s+this\.stop\(\)/.test(pbody),
+        '_preempt does not delegate to the patient stop()',
+        'stop() is 700ms + 10s of waiting; the reflex inherits that');
+    check(/requestInterrupt/.test(pbody) && /stopDigging|cancelTask/.test(pbody),
+        '_preempt actually releases the dig',
+        'it signals without releasing the controls the dig holds');
+
+    // and the mode branch routes here
+    check(/actionLabel\.startsWith\('mode:'\)/.test(src) && /_preempt\(\)/.test(src),
+        'a mode preempts immediately instead of via stop()',
+        'self_preservation is queued behind the dig and she dies waiting');
+
+    // The ghost-guard. Without it a preempted dig resumes and sets
+    // executing=false, wiping the reflex that replaced it.
+    check(/myGen\s*!==\s*this\._actionGen/.test(src),
+        'a preempted action is stopped from clobbering the reflex state',
+        'the ghost dig ends with executing=false while she is still fleeing');
+    check(/const myGen = \+\+this\._actionGen/.test(src),
+        'the generation counter is taken per action',
+        'without it there is nothing to compare against');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
