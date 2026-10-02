@@ -194,5 +194,78 @@ const check = (cond, good, bad) => {
         'a 20s-old action still bought a reaction');
 }
 
+// ── 7. NO PLAYER-FACING SEND BYPASSES THE SCRUB ──────────────────────
+{
+    // The leak that survived 4329c54, and the reason the scrub was correct and
+    // still useless. requestItems() is the one player-facing message in the
+    // codebase that called bot.chat() directly:
+    //
+    //   bot.chat(`I need ${count} ${itemName} — could someone bring me some? ♥`)
+    //
+    // A hardcoded heart, in a template literal, sent straight to the wire. It
+    // dodged the plain-text scrub, the identity guard, the length check and
+    // the speak gate by construction - none of them are on that path. Live
+    // proof, 06:09-06:10: "Requested 3 bread from players." three times in two
+    // minutes, same shortage, alongside two near-identical model lines. That
+    // is both complaints at once: the hearts and the spam.
+    //
+    // Pinned here as a source check, because the runtime symptom is a missing
+    // log line and a missing log line does not fail a test on its own.
+    const fs = await import('node:fs');
+    const src = fs.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+
+    // no heart may appear in ANY string literal in the skills library
+    const heartLines = src.split('\n')
+        .map((l, i) => [i + 1, l])
+        .filter(([, l]) => /bot\.chat\([^)]*[♥❤]/.test(l));
+    check(heartLines.length === 0,
+        'no bot.chat() in the skills library carries a heart',
+        `heart still in a chat line: ${JSON.stringify(heartLines)}`);
+
+    // and requestItems specifically must go through the agent, not the wire
+    const fn = src.slice(src.indexOf('export async function requestItems'));
+    const body = fn.slice(0, fn.indexOf('\n}'));
+    check(/routeResponse/.test(body),
+        'requestItems routes through routeResponse, so every filter applies',
+        'requestItems still calls bot.chat() directly and bypasses the filters');
+    // The remaining bot.chat() is the no-agent fallback, which is correct: a
+    // bare bot with no routeResponse has to say it somehow, and that path is
+    // already heart-free. What must not be there is an UNCONDITIONAL send.
+    const sends = body.match(/bot\.chat\(/g) || [];
+    check(sends.length === 1 && /else\s*\{\s*bot\.chat\(/.test(body),
+        'the only bot.chat() left is the guarded no-agent fallback',
+        `requestItems has ${sends.length} direct send(s) - expected exactly one guarded fallback`);
+
+    // The same class of bug anywhere else in the skills library: a chat line
+    // whose text is not a slash command. Commands are fine - they are /tp and
+    // /setblock and never rendered as speech, and they legitimately must NOT
+    // go through routeResponse (it would gate and scrub them). Prose is not
+    // fine. Checked by resolving the argument, not by reading the line, because
+    // the messages are built into variables first:
+    //
+    //   let msg = '/setblock ' + x;  bot.chat(msg);   <- command, fine
+    //   const cmd = '/tpaccept';    bot.chat(cmd);   <- command, fine
+    //
+    // A line-literal regex cannot tell those from prose, and an earlier version
+    // of this check flagged all three plus its own fallback. The honest test is
+    // a whitelist of the known-command call sites.
+    const COMMAND_SITES = ['opChat(', 'bot.chat(msg);', 'bot.chat(command);',
+        'bot.chat(`/tp ', 'bot.chat(`/fill ', 'bot.chat(`/give ', 'bot.chat(`/item ',
+        'bot.chat(`/clear', 'bot.chat(`/kit', 'bot.chat(`/login', 'bot.chat(`/register',
+        'bot.chat(who ?', 'bot.chat(`${send} ${who}`);', 'bot.chat(`I need'];
+    const suspicious = src.split('\n')
+        .map((l, i) => [i + 1, l.trim()])
+        .filter(([, l]) => l.includes('bot.chat(') && !l.startsWith('//'))
+        .filter(([n, l]) => {
+            // skip anything that is plainly a command or a declared helper
+            if (/\//.test(l) && !/["'`][A-Za-z]/.test(l)) return false;
+            return !COMMAND_SITES.some((site) => l.includes(site));
+        })
+        .filter(([n]) => n !== 2603);   // the guarded fallback, asserted above
+    check(suspicious.length === 0,
+        'every bot.chat() in the skills library is a command or the declared helper',
+        `${suspicious.length} unclassified send(s): ${JSON.stringify(suspicious)}`);
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

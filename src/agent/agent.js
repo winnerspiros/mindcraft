@@ -1584,33 +1584,6 @@ export class Agent {
             } catch (e) { console.warn('[empty-ack] failed open:', e.message); }
         }
 
-        // ── PLAIN TEXT, LAST STAGE BEFORE THE WIRE ────────────────────────
-        // personas/normal.json forbids emoji in three places, in capitals, and
-        // they leaked anyway: "…where are they? 🤔" and "…a slice of bread xD"
-        // both went out in live chat, plus ":(" and ">_<". A prompt is a
-        // suggestion and this is a shape, so it is checked as a shape here, at
-        // the last point before routeResponse sends it.
-        //
-        // Strip, not reject: a line with a face in it still has eight words
-        // worth saying, and throwing the whole message away for one glyph is
-        // how you get silence instead of plain text. <3 and ♥ survive - the
-        // owner named them as the marks that do make sense in this persona.
-        if (!isYandere()) {
-            try {
-                const { scrubEmoji } = await import('../utils/emoji_scrub.js');
-                const clean = scrubEmoji(message);
-                if (clean !== message) {
-                    console.log(`${this.name} [plain-text] scrubbed: `
-                        + `${String(message).slice(0, 50)} -> ${clean.slice(0, 50)}`);
-                    message = clean;
-                }
-                if (!message.trim()) {
-                    console.log(`${this.name} [plain-text] nothing left after scrub, not sending`);
-                    return;
-                }
-            } catch (e) { console.warn('[plain-text] failed open:', e.message); }
-        }
-
         // She just spoke. If nobody answers, this is what eventually makes her
         // say it again - and then give up. The words are the model's; this only
         // supplies the intent (see utils/attention.js).
@@ -1952,41 +1925,6 @@ export class Agent {
             }
         } catch (e) { console.warn('[fragment] split failed:', e.message); }
 
-        // ── NORMAL PERSONA: STRIP UNICODE EMOJI ONLY ───────────────────────
-        // A prompt rule cannot hold this - she produced 😅 on a turn that had
-        // NO examples and a script section explicitly banning it. Instructions
-        // lose to the pull of the distribution; a filter cannot. Applied here,
-        // at the single choke point every outgoing line passes through, so it
-        // covers chat turns AND self-prompt/mode turns.
-        //
-        // TEXT EMOTICONS ARE ALLOWED - :) :-( -_- :/ and friends are real and
-        // players use them. The first version of this scrub banned those too,
-        // which was overcorrecting: it flattened two genuinely different
-        // things into one rule. Measured over 57,394 real player messages
-        // (Minecraft Dialogue Corpus, ACL 2019):
-        //
-        //   unicode emoji  : 0 occurrences. Not one, in the whole corpus.
-        //   text emoticons  : 0.29% of messages (':)' 132, ':(' 20, ':D' 4)
-        //   placement       : 166 of 166 sit at the END of the message
-        //
-        // So: unicode emoji go, text emoticons stay. The corpus is task
-        // collaboration, which is sparser than hanging out, so treat 0.29% as
-        // a floor rather than a target - the owner plays and uses them.
-        // What must hold either way is that an emoticon is a REACTION at the
-        // end of a line, never decoration mid-sentence.
-        try {
-            if (!isYandere() && /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/u.test(message)) {
-                const before = message;
-                message = message
-                    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2190}-\u{21FF}\u{2B00}-\u{2BFF}\u{1F000}-\u{1F2FF}]/gu, '')
-                    .replace(/\uFE0F/g, '')
-                    .replace(/\s+([.,!?])/g, '$1')
-                    .replace(/\s{2,}/g, ' ')
-                    .trim();
-                console.log(`${this.name} [scrub] emoji removed: "${before.slice(0, 80)}" -> "${message.slice(0, 80)}"`);
-            }
-        } catch (e) { console.warn('[scrub] emoji pass failed:', e.message); }
-
         let to_translate = message;
         let remaining = '';
         const cmd_info = getCommandInfo(message);
@@ -1998,6 +1936,42 @@ export class Agent {
         message = (await handleTranslation(to_translate)).trim() + " " + remaining;
         // newlines are interpreted as separate chats, which triggers spam filters. replace them with spaces
         message = message.replaceAll('\n', ' ');
+
+        // ── PLAIN TEXT: THE ACTUAL LAST STAGE BEFORE THE WIRE ─────────────
+        // This replaces both earlier emoji passes, which were two bugs:
+        //
+        //  1. ORDER. One sat before applyTypo(), the other before translation.
+        //     Neither was last. Anything those stages appended or rewrote was
+        //     never checked, and the comment on the older one claiming it was
+        //     "the single choke point every outgoing line passes through" was
+        //     false - it had a translation call after it.
+        //  2. THE OLDER ONE ALLOWED TEXT EMOTICONS ON PURPOSE, and said so:
+        //     "TEXT EMOTICONS ARE ALLOWED - :) :-( -_- :/ and friends are real
+        //     and players use them." That was read off a corpus stat (0.29% of
+        //     21,822 messages) and shipped as policy. The owner overruled it:
+        //     "she also used ascii emoji, she shouldnt use these" and "xD is
+        //     fake, heart ascii is not. normal i like a real user, a normal
+        //     user wont go out of their way to paste ascii emojis in chat."
+        //     The corpus measures what players sent each other; it does not get
+        //     a vote on what this bot should be. Both faces and emoji go.
+        //
+        // Scrub, do not reject: a line with a face in it still has eight words
+        // worth saying, and dropping the whole message for one glyph is how you
+        // get silence instead of plain text.
+        if (!isYandere()) {
+            try {
+                const { scrubEmoji } = await import('../utils/emoji_scrub.js');
+                const clean = scrubEmoji(message);
+                if (clean !== message) {
+                    console.log(`${this.name} [plain-text] scrubbed: ${String(message).slice(0, 60)} -> ${clean.slice(0, 60)}`);
+                    message = clean;
+                }
+                if (!message.trim()) {
+                    console.log(`${this.name} [plain-text] nothing left after scrub, not sending`);
+                    return;
+                }
+            } catch (e) { console.warn('[plain-text] failed open:', e.message); }
+        }
 
         if (settings.only_chat_with.length > 0) {
             for (let username of settings.only_chat_with) {
