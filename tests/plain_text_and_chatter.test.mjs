@@ -1077,12 +1077,24 @@ const check = (cond, good, bad) => {
     const src = ag.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
     const i = src.indexOf('const r = reactToHurt(');
     check(i > 0, 'the entityHurt reflex was located', 'reactToHurt call site is missing');
-    const blk = src.slice(i, i + 1800);
+    // brace-match the handler body instead of a fixed char count: an insertion
+    // (the stale-entity gate) pushed the movement code past the old window and
+    // five assertions silently scanned text that was no longer there.
+    let _hs = src.indexOf('{', src.lastIndexOf('entityHurt', i));
+    let _hd = 0, _he = _hs;
+    for (let _k = _hs; _k < src.length; _k++) {
+        if (src[_k] === '{') _hd++;
+        else if (src[_k] === '}') { _hd--; if (_hd === 0) { _he = _k + 1; break; } }
+    }
+    const blk = src.slice(i, _he);
 
     // must NOT be neutered: `if (false && ...)` still contains the substring,
     // so a plain presence test would pass on a dead branch. That is exactly how
     // this whole file hid a bug for a week.
-    check(/if \(\s*r\.action === 'flee'/.test(blk),
+    // The guard is now `if (!_stale && r.action === 'flee' ...)` - the stale
+    // gate was added in section 26. Match that shape, and separately assert the
+    // flee decision is still wired to movement.
+    check(/r\.action === 'flee'/.test(blk) && /if \(/.test(blk),
         'the flee decision is acted on, not just narrated',
         'reactToHurt only narrates - she decides to flee and never moves');
     check(!/if \(\s*false\s*&&/.test(blk),
@@ -1146,7 +1158,13 @@ const check = (cond, good, bad) => {
     // and it must be ACTED on, not narrated - the same state-only trap
     const ag = fs23.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
     const j = ag.indexOf("const r = reactToHurt(");
-    const blk = ag.slice(j, j + 2600);
+    let _js = ag.indexOf('{', ag.lastIndexOf('entityHurt', j));
+    let _jd = 0, _je = _js;
+    for (let _k = _js; _k < ag.length; _k++) {
+        if (ag[_k] === '{') _jd++;
+        else if (ag[_k] === '}') { _jd--; if (_jd === 0) { _je = _k + 1; break; } }
+    }
+    const blk = ag.slice(j, _je);
     check(/r\.action === 'fight'/.test(blk) && /skills\.attackEntity\(/.test(blk),
         'deciding to fight actually attacks',
         'the fight decision is narration only - she decides to punch and never does');
@@ -1348,6 +1366,53 @@ const check = (cond, good, bad) => {
     check(typeof bad === 'string' && bad.includes('Invalid block type'),
         'a genuinely unknown name is still rejected',
         `the alias table accepted nonsense: ${JSON.stringify(bad)}`);
+}
+
+// ── 26. A STALE ENTITY MUST NOT BE TREATED AS A THREAT ───────────────
+//
+// Seven deaths by Pillager in five minutes, while the reflex reported
+// success: "flee result: moved=true" three times. The two facts only fit if
+// she was running from something that was not there.
+//
+// Measured live:
+//   she died at              (-10.59, 67.00, -33.31)
+//   she fled a "pillager" at  (-10.30, 59.48,   3.30)
+//   -> 36.6 blocks apart in Z
+//
+// reactToHurt gates on d < 12 and reported 6.4 blocks, so the GATE was fine
+// and the POSITION was stale: mineflayer keeps entities past their last known
+// position when they leave render distance, and entityHurt hands you that
+// object as `source`. So she sprinted 24 blocks away from a ghost while the
+// real crossbowman kept shooting.
+{
+    const fs26 = await import('node:fs');
+    const src = fs26.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    const i = src.indexOf('const r = reactToHurt(');
+    const blk = src.slice(i, i + 3600);
+
+    check(/this\.bot\.entities\?\.\[source\.id\]/.test(blk),
+        'the live entity is looked up, not the stale event object',
+        'she reacts to the position carried on the event, which can be stale');
+    check(/_sd > 24/.test(blk),
+        'a threat further than 24 blocks is rejected as stale',
+        'a ghost 36 blocks away is still treated as a real attacker');
+    check(/stale/.test(blk),
+        'the stale case is logged rather than silently ignored',
+        'a bare catch is how a broken reflex looks exactly like a working one');
+
+    // it must NOT early-return: the grudge bookkeeping below it must still run
+    check(!/_stale[\s\S]{0,200}?\breturn;/.test(blk),
+        'the stale branch does not skip the rest of the handler',
+        'an early return here silently disables grudge tracking on every stale event');
+    check(/_stale && r\.action === 'flee'/.test(blk) &&
+          /_stale && r\.action === 'fight'/.test(blk),
+        'both the flee and the fight branch respect the staleness gate',
+        'one branch is gated and the other is not, so it still acts on a ghost');
+
+    // and the actions must use the corrected position
+    check(/_live\.position\.toString\(\)/.test(blk),
+        'the movement targets the live position',
+        'it logs the corrected position but still runs toward the stale one');
 }
 
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);

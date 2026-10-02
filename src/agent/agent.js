@@ -2168,9 +2168,31 @@ export class Agent {
                 // avoidEnemies is the same skill cowardice uses and it resumes
                 // self_preservation in its finally. Fire-and-forget: this is an
                 // event handler, awaiting would block the entityHurt emit chain.
-                if (r.action === 'flee' && source?.position) {
+                // Do not trust the position on the event. The 26.3 entity
+                // tracker keeps stale positions for entities that leave the
+                // client's render distance: measured live, she died at
+                // (-10.6, 67, -33.3) while fleeing a "pillager" reported at
+                // (-10.3, 59.4, 3.3) - 36 blocks apart in Z. Running from a
+                // ghost 36 blocks away explains both the flee result=true and
+                // the deaths: she ran, and the real shooter never got a
+                // response. Recompute from the live entity instead.
+                let _live = source;
+                try {
+                    if (source) {
+                        const _e = this.bot.entities?.[source.id];
+                        if (_e && _e.position && Number.isFinite(_e.position.x)) _live = _e;
+                    }
+                } catch (_) {}
+                const _sd = _live?.position && this.bot.entity?.position
+                    ? _live.position.distanceTo(this.bot.entity.position) : Infinity;
+                const _stale = Number.isFinite(_sd) && _sd > 24;
+                if (_stale) {
+                    // NOT a return: the grudge bookkeeping below must still run.
+                    console.log(`[threat] ignoring ${source.name || 'attacker'} at ${_sd.toFixed(1)} blocks - stale entity, not a real threat`);
+                }
+                if (!_stale && r.action === 'flee' && _live?.position) {
                     this._reactFlees = (this._reactFlees || 0) + 1;
-                    console.log(`[threat] hurt: FLEEING from ${source.name || 'attacker'} @ ${source.position.toString()} (#${this._reactFlees})`);
+                    console.log(`[threat] hurt: FLEEING from ${_live.name || 'attacker'} @ ${_live.position.toString()} (#${this._reactFlees})`);
                     skills.avoidEnemies(this.bot, 24, 'sprint')
                         .then((moved) => console.log(`[threat] flee result: moved=${moved}`))
                         .catch((e) => console.warn('[threat] flee failed:', e?.message));
@@ -2179,9 +2201,9 @@ export class Agent {
                 // and nothing more, so deciding to punch did not punch. Bare
                 // hands are a real weapon - bot.pvp.attack needs no item - so
                 // this is a genuine option whenever it fires.
-                if (r.action === 'fight' && source?.position) {
+                if (!_stale && r.action === 'fight' && _live?.position) {
                     this._reactFights = (this._reactFights || 0) + 1;
-                    console.log(`[threat] hurt: FIGHTING ${source.name || 'attacker'} @ ${source.position.toString()} (#${this._reactFights})`);
+                    console.log(`[threat] hurt: FIGHTING ${_live.name || 'attacker'} @ ${_live.position.toString()} (#${this._reactFights})`);
                     skills.attackEntity(this.bot, source, true)
                         .then((won) => console.log(`[threat] fight result: done=${won}`))
                         .catch((e) => console.warn('[threat] fight failed:', e?.message));
