@@ -59,11 +59,52 @@ const HOSTILE_BEHAVIOUR = {
     wither_skeleton: { explodes: false, priority: 4 },
 };
 
-/** Normalise a Mineflayer entity to a bare mob name, or null if it is not a mob. */
+/**
+ * Normalise a Mineflayer entity to a bare mob name, or null if it is not a mob.
+ *
+ * 26.3 reports a real entity taxonomy instead of the old catch-all `mob`.
+ * Measured live from the running service (env-gated census of
+ * Object.values(bot.entities)):
+ *
+ *   hostile/zombie  hostile/pillager  ambient/bat  animal/sheep
+ *   player/player   other/item         projectile/arrow
+ *
+ * There is no `mob` bucket at all. The old `entity.type !== 'mob'` guard
+ * therefore returned null for EVERY hostile, so assessThreats found nothing,
+ * the 1s threat scan never once logged a detection all-time, and being
+ * approached or hit was the only path that ever produced a fight — which is
+ * exactly why she stood still and died: the "act before it hits her" layer had
+ * been dead since 26.3.
+ *
+ * Accept the buckets that can actually be a mob, and keep excluding the ones
+ * that must never be fought (players, projectiles, dropped items, vehicles).
+ */
+const NON_MOB_TYPES = new Set([
+    'player', 'projectile', 'other', 'item', 'orb', 'vehicle',
+    'painting', 'experience_orb', 'display', 'interaction', 'text_display',
+]);
+
+// The buckets a real mob can live in. Kept separate from NON_MOB_TYPES so both
+// directions are checked explicitly: a type must be excluded AND allowed. A
+// single combined test let a future edit to either list silently widen the
+// other, which is how a player could end up as a punch target.
+const MOB_TYPES = new Set([
+    'mob', 'hostile', 'animal', 'ambient', 'water_creature',
+    'creature', 'axolotl', 'villager',
+]);
+
 export function mobName(entity) {
-    if (!entity || entity.type !== 'mob') return null;
+    if (!entity) return null;
+    const type = String(entity.type || '').toLowerCase();
     const raw = String(entity.name || entity.displayName || '').toLowerCase();
-    return raw.replace(/^minecraft:/, '').trim() || null;
+    const name = raw.replace(/^minecraft:/, '').trim();
+    if (!name) return null;
+    // Both directions must agree. Checking only the allowlist would accept a
+    // non-mob type added to MOB_TYPES; checking only the exclusion list would
+    // accept an unknown type the allowlist never sees.
+    if (NON_MOB_TYPES.has(type)) return null;
+    if (!MOB_TYPES.has(type)) return null;
+    return name;
 }
 
 function distanceBetween(a, b) {

@@ -81,7 +81,10 @@ const sites = [
   ['the fight loop swing', near("if (foe) { // eyes recovered")],
   ['the per-tick guard swing', near('getNearestEntityWhere(bot, e => mc.isHostile(e), range)')],
   ['attackEntity non-kill branch', near("console.log('attacking mob...')", 300)],
-  ['attackEntity kill branch', near('bot.pvp.stop();', 300)],
+  // The kill branch grew (it now closes distance and has a deadline), so give
+  // it room. Anchored on the unique `else {` + goToPosition pair instead of a
+  // bare pvp.stop(), which appears elsewhere too.
+  ['attackEntity kill branch', near('await goToPosition(bot, pos.x, pos.y, pos.z, 2);', 600)],
   ['crit attack', nearAnywhere("bot.setControlState('jump', true)", 600)],
   // The melee map aims BEFORE its bookkeeping line (lookAt/swingArm sit above
   // it), so this one looks backward.
@@ -93,7 +96,18 @@ for (const [name, cond] of sites) check(`${name} is aimed`, cond)
 // Regression for the original bug: one rejected swing ended the whole fight.
 const killIdx = src.indexOf('while (world.getNearbyEntities(bot, 24).includes(entity))')
 check('kill branch re-aims inside the poll loop',
-  killIdx > 0 && /attackAimed\(/.test(src.slice(killIdx, killIdx + 700)))
+  killIdx > 0 && /attackAimed\(/.test(src.slice(killIdx, killIdx + 1200)))
+// The poll must be BOUNDED. An unbounded while means a lost fight hangs the
+// promise forever and the 1s threat scan can never start another one - which is
+// how she ended up "fighting" a zombie that was hitting her, at 4.2 blocks,
+// with no result ever logged.
+check('the kill poll is bounded by a deadline',
+  /const deadline = Date\.now\(\) \+ \d+/.test(src.slice(killIdx - 600, killIdx + 400)) &&
+  /if \(Date\.now\(\) > deadline\)/.test(src.slice(killIdx, killIdx + 600)))
+// and it must actually CLOSE the distance, not swing at air from detection range
+check('the kill branch closes distance before swinging',
+  /goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\)/.test(src.slice(killIdx - 800, killIdx)) &&
+  /distanceTo\(entity\.position\) > 2\.5/.test(src.slice(killIdx, killIdx + 1200)))
 
 // --- no unaided pvp.attack may remain on a hostile target ---
 const unaided = [...src.matchAll(/^\s*bot\.pvp\.attack\(([^)]*)\)/gm)].map(m => m[1])

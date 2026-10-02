@@ -3444,15 +3444,35 @@ export async function attackEntity(bot, entity, kill=true) {
             // 26.3: this fires exactly ONCE and then just polls until the mob dies.
             // A single swing rejected by Panda (>70deg) therefore ended the whole
             // fight with the mob untouched. Aim, and keep swinging while it lives.
+            //
+            // It also never CLOSED THE DISTANCE. The mob is detected from up to
+            // MELEE_RANGE and a full village of pillagers sits well past the ~3
+            // block sword reach, so she swung at air, never stepped in, and the
+            // `while` below spun forever with no `done=` ever logged - the zombie
+            // stood there hitting her while she "fought" it at 4.2 blocks.
+            await goToPosition(bot, pos.x, pos.y, pos.z, 2);
             await attackAimed(bot, entity, () => bot.pvp.attack(entity));
+            // Bounded: an unbounded poll means a lost fight (mob unreachable,
+            // knocked out of reach, respawns, another mob interleaves) hangs this
+            // promise forever and the 1s threat scan can never start the next one.
+            const deadline = Date.now() + 30000;
             while (world.getNearbyEntities(bot, 24).includes(entity)) {
+                if (Date.now() > deadline) {
+                    log(bot, `gave up on ${entity.name}, it stayed out of reach.`);
+                    return false;
+                }
                 await new Promise(resolve => setTimeout(resolve, 1000))
                 if (bot.interrupt_code) {
                     bot.pvp.stop();
                     return false;
                 }
-                // re-aim each round: the mob moves and she faces travel direction
-                try { await attackAimed(bot, entity, () => bot.pvp.attack(entity)); } catch (_) {}
+                // close again each round: the mob backs off and she faces travel
+                try {
+                    if (bot.entity.position.distanceTo(entity.position) > 2.5) {
+                        await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, 2);
+                    }
+                    await attackAimed(bot, entity, () => bot.pvp.attack(entity));
+                } catch (_) {}
             }
         log(bot, `Successfully killed ${entity.name}.`);
         await pickupNearbyItems(bot);
