@@ -49,39 +49,48 @@ const modes_list = [
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            // falling from a height — MLG water bucket to survive the fall
-            // Drowning wins over the MLG bucket. These were mutually exclusive
-            // via else-if, and the fall test matches first in exactly the case
-            // that kills: sinking into water puts you off the ground with
-            // downward velocity, so she was reaching for a water bucket while
-            // her bubbles ran out. Live: she drowned at y=62 with the rescue
-            // never once evaluating, and bubbles only fall while the head is
-            // under - which is the same moment as that fall.
+            // Drowning rescue.
             //
-            // So the drowning branch is tested FIRST and on its own condition,
-            // not as a branch of the fall test.
-            const air = Number(bot.oxygenLevel);
-            const bubblesLow = Number.isFinite(air) && air <= 6;
+            // Two separate faults, both of which had to go before this fires:
+            //
+            // 1. ORDER. This shared an else-if with the MLG water-bucket fall
+            //    rescue, and the fall test matched FIRST in exactly the case
+            //    that kills: sinking into water puts her off the ground with
+            //    downward velocity, so she was reaching for a bucket while her
+            //    bubbles ran out. She drowned at y=62 with the rescue never
+            //    once evaluating.
+            // 2. THE SIGNAL. bot.oxygenLevel is unusable on 26.3 - live, it read
+            //    air=NaN, forever. mineflayer sets it from
+            //    bot.registry.entitiesByName[name].metadataKeys[...]->air_supply
+            //    (entities.js:550), and the bundled 26.3 entities.json carries no
+            //    metadata field for ANY of its 161 entries. So metadataKeys is
+            //    undefined, metas is {}, and oxygenLevel is never assigned;
+            //    breath.js returns early on modern protocol and delegates to
+            //    that same lookup. The Number.isFinite guard I added last time
+            //    turned "never set" into "no danger", which is why the rescue
+            //    looked correct and never ran. Do not reintroduce it.
+            //
+            // Head-under is the signal that works, and it is sufficient:
+            // bubbles only fall while the head is submerged, so this fires with
+            // air still left. It is also tested first, not as a branch of the
+            // fall test.
             const headUnder = blockAbove.name === 'water';
 
-            if (bubblesLow || headUnder) {
-                // Drowning rescue. Mineflayer tracks air as bot.oxygenLevel
-                // (0-15 bubbles, from entity metadata air_supply). She needs to
-                // surface on a countdown, not after damage starts.
+            if (headUnder) {
+                // Drowning rescue, on head-under alone (see the note above).
                 //
                 // Throttled on last_drown, same reason as last_flee: a rescue
                 // that re-fires every tick would stop the self-prompt loop
                 // continuously and starve brain + idle modes.
-                if (bubblesLow) {
-                    if (Date.now() - this.last_drown > 5000) {
-                        this.last_drown = Date.now();
-                        execute(this, agent, async () => {
-                            const ok = await skills.swimUp(bot, 8000);
-                            if (!ok) say(agent, 'stuck underwater, this is not great');
-                        });
-                    }
+                if (Date.now() - this.last_drown > 5000) {
+                    this.last_drown = Date.now();
+                    execute(this, agent, async () => {
+                        const ok = await skills.swimUp(bot, 8000);
+                        if (!ok) say(agent, 'stuck underwater, this is not great');
+                    });
                 } else if (!bot.pathfinder.goal) {
-                    // submerged but fine on air: drift up gently
+                    // rescue already in flight or recently done: drift up gently
+                    // so she still rises while the throttle holds it back
                     bot.setControlState('jump', true);
                 }
             }
