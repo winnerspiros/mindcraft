@@ -50,37 +50,28 @@ const modes_list = [
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
             // falling from a height — MLG water bucket to survive the fall
-            if (!bot.entity.elytraFlying && !bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
-                if (Date.now() - this.last_clutch > 2000) {
-                    this.last_clutch = Date.now();
-                    execute(this, agent, async () => {
-                        await skills.waterBucketClutch(bot);
-                    });
-                }
-            }
-            else if (blockAbove.name === 'water') {
+            // Drowning wins over the MLG bucket. These were mutually exclusive
+            // via else-if, and the fall test matches first in exactly the case
+            // that kills: sinking into water puts you off the ground with
+            // downward velocity, so she was reaching for a water bucket while
+            // her bubbles ran out. Live: she drowned at y=62 with the rescue
+            // never once evaluating, and bubbles only fall while the head is
+            // under - which is the same moment as that fall.
+            //
+            // So the drowning branch is tested FIRST and on its own condition,
+            // not as a branch of the fall test.
+            const air = Number(bot.oxygenLevel);
+            const bubblesLow = Number.isFinite(air) && air <= 6;
+            const headUnder = blockAbove.name === 'water';
+
+            if (bubblesLow || headUnder) {
                 // Drowning rescue. Mineflayer tracks air as bot.oxygenLevel
-                // (0-15 bubbles, from entity metadata air_supply) and NOTHING
-                // here read it: she drowned 19 times in 40 minutes.
-                //
-                // Two separate faults, both needed fixing:
-                //
-                // 1. The old branch only held jump when `!bot.pathfinder.goal`,
-                //    so when she was walking somewhere and the path took her
-                //    into water - the exact case that kills - it did NOTHING.
-                //    Holding jump is also not a rescue; it only works if she is
-                //    already rising. skills.swimUp() polls until the head block
-                //    is dry, so it finishes the job.
-                // 2. Nothing reacted to the bubbles running low at all. She
-                //    needs to surface on a countdown, not after damage starts.
+                // (0-15 bubbles, from entity metadata air_supply). She needs to
+                // surface on a countdown, not after damage starts.
                 //
                 // Throttled on last_drown, same reason as last_flee: a rescue
                 // that re-fires every tick would stop the self-prompt loop
                 // continuously and starve brain + idle modes.
-                const air = Number(bot.oxygenLevel);
-                // metadata is absent until first seen; treat unknown as full
-                // and fall back to the block test rather than panicking.
-                const bubblesLow = Number.isFinite(air) && air <= 6;
                 if (bubblesLow) {
                     if (Date.now() - this.last_drown > 5000) {
                         this.last_drown = Date.now();
@@ -90,8 +81,17 @@ const modes_list = [
                         });
                     }
                 } else if (!bot.pathfinder.goal) {
-                    // still submerged but fine on air: drift up gently
+                    // submerged but fine on air: drift up gently
                     bot.setControlState('jump', true);
+                }
+            }
+            else if (!bot.entity.elytraFlying && !bot.entity.onGround && bot.entity.velocity && bot.entity.velocity.y < -0.5) {
+                // falling from a height — MLG water bucket to survive the fall
+                if (Date.now() - this.last_clutch > 2000) {
+                    this.last_clutch = Date.now();
+                    execute(this, agent, async () => {
+                        await skills.waterBucketClutch(bot);
+                    });
                 }
             }
             else if (this.fall_blocks.some(name => blockAbove.name.includes(name))) {
