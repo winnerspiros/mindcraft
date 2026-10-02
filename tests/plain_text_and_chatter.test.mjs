@@ -852,6 +852,49 @@ const check = (cond, good, bad) => {
 }
 
 
+// ── 18. THE DROWNING RESCUE MUST COME BEFORE THE FALL RESCUE ──────────
+//
+// She drowned again at y=62 while mining stone, and the rescue never
+// evaluated once. The cause is ordering, not a missing check:
+//
+//     if (falling)      -> waterBucketClutch
+//     else if (head in water) -> swimUp
+//
+// Sinking into water puts her off the ground with downward velocity, so
+// the fall test matched FIRST in exactly the case that kills. Bubbles
+// also only fall while the head is under, which is the same moment. The
+// drowning branch was unreachable whenever she actually needed it.
+//
+// This asserts position in the source, because that is the whole defect:
+// a functional test of the two branches would pass either way round.
+{
+    const fs12 = await import('node:fs');
+    const m = fs12.readFileSync(new URL('../src/agent/modes.js', import.meta.url), 'utf8');
+    const selfPres = m.slice(m.indexOf("name: 'self_preservation'"), m.indexOf("name: 'self_defense'"));
+    check(selfPres.length > 0, 'the self_preservation mode was located in modes.js',
+        'could not locate the self_preservation mode');
+
+    const drown = selfPres.indexOf('bubblesLow || headUnder');
+    const fall = selfPres.indexOf('elytraFlying');
+    check(drown !== -1, 'the drowning branch exists', 'the drowning rescue is missing');
+    check(fall !== -1, 'the fall branch exists', 'the MLG fall rescue is missing');
+    check(drown !== -1 && fall !== -1 && drown < fall,
+        'the drowning branch is tested BEFORE the fall branch',
+        'the fall test precedes the drowning test, so the rescue is unreachable while sinking into water');
+
+    // and it must actually be a separate `if`, not an else-if of the fall
+    check(/if \(bubblesLow \|\| headUnder\) \{/.test(selfPres),
+        'the drowning branch is its own if-statement',
+        'the drowning branch is chained off the fall branch again');
+    check(/swimUp\(bot, 8000\)/.test(selfPres),
+        'the drowning branch still calls swimUp',
+        'the drowning rescue no longer surfaces');
+    // oxygen must still be read, and NaN treated as full air
+    check(/Number\.isFinite\(air\)/.test(selfPres),
+        'unknown oxygenLevel is treated as full air',
+        'an absent oxygenLevel would make every tick look like a drowning emergency');
+}
+
 // ── 17. A COMMAND MUST NOT BE ABLE TO KILL THE BOT ─────────────────
 //
 // 13 restarts in 3h, every one from the same line:
