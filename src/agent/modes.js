@@ -42,6 +42,7 @@ const modes_list = [
         last_ate: 0,
         last_clutch: 0,
         last_flee: 0, // 26.3: flee-throttle — moveAway every tick (phantom chip damage refreshes lastDamageTime) stops the self-prompt loop each time and starves brain + idle modes; min 15s between flees
+        last_drown: 0, // drowning-rescue throttle; an unthrottled swimUp stops the self-prompt loop every tick
         update: async function (agent) {
             const bot = agent.bot;
             let block = bot.blockAt(bot.entity.position);
@@ -58,8 +59,38 @@ const modes_list = [
                 }
             }
             else if (blockAbove.name === 'water') {
-                // does not call execute so does not interrupt other actions
-                if (!bot.pathfinder.goal) {
+                // Drowning rescue. Mineflayer tracks air as bot.oxygenLevel
+                // (0-15 bubbles, from entity metadata air_supply) and NOTHING
+                // here read it: she drowned 19 times in 40 minutes.
+                //
+                // Two separate faults, both needed fixing:
+                //
+                // 1. The old branch only held jump when `!bot.pathfinder.goal`,
+                //    so when she was walking somewhere and the path took her
+                //    into water - the exact case that kills - it did NOTHING.
+                //    Holding jump is also not a rescue; it only works if she is
+                //    already rising. skills.swimUp() polls until the head block
+                //    is dry, so it finishes the job.
+                // 2. Nothing reacted to the bubbles running low at all. She
+                //    needs to surface on a countdown, not after damage starts.
+                //
+                // Throttled on last_drown, same reason as last_flee: a rescue
+                // that re-fires every tick would stop the self-prompt loop
+                // continuously and starve brain + idle modes.
+                const air = Number(bot.oxygenLevel);
+                // metadata is absent until first seen; treat unknown as full
+                // and fall back to the block test rather than panicking.
+                const bubblesLow = Number.isFinite(air) && air <= 6;
+                if (bubblesLow) {
+                    if (Date.now() - this.last_drown > 5000) {
+                        this.last_drown = Date.now();
+                        execute(this, agent, async () => {
+                            const ok = await skills.swimUp(bot, 8000);
+                            if (!ok) say(agent, 'stuck underwater, this is not great');
+                        });
+                    }
+                } else if (!bot.pathfinder.goal) {
+                    // still submerged but fine on air: drift up gently
                     bot.setControlState('jump', true);
                 }
             }

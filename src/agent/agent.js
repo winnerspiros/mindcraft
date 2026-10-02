@@ -1489,6 +1489,32 @@ export class Agent {
         if (this.shut_up) return;
         let self_prompt = to_player === 'system' || to_player === this.name;
 
+        // ── SYSTEM-TEXT LEAK: SHE IS REPEATING THE PROMPT BACK ───────────
+        // Live, she spoke her own action output as chat:
+        //   SYSTEM: Action output:
+        //   Found oak_log nearby.
+        //   You harvested oak_log.
+        //   You now have 1 oak_log.
+        //   SYSTEM: Warning: something is approaching!
+        //
+        // strictFormat() rewrites system turns into user turns prefixed
+        // "SYSTEM: " (utils/text.js). The model sometimes echoes that frame
+        // verbatim instead of answering, and every line of it reaches players.
+        // Nothing downstream caught it: looksLikeCommand() sees no bang, the
+        // plain-text scrub only removes emoji, the speak gate is about
+        // register not about leaking internals.
+        //
+        // Dropped whole-message. A partial filter is wrong here - the leaked
+        // text is multi-line action output, so trimming one line still ships
+        // "You now have 1 oak_log." as if she had said it.
+        {
+            const raw = String(message ?? '');
+            if (/^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/im.test(raw)) {
+                console.log(`${this.name} [leak:system-text] suppressed: ${raw.slice(0, 90)}`);
+                return;
+            }
+        }
+
         // ── NORMAL PERSONA: SPEAK GATE ────────────────────────────────────
         // Deterministic, not a model call — see utils/speak_gate.js for why.
         // This is the choke point: every outgoing line reaches it, and unlike
