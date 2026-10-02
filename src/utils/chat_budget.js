@@ -137,8 +137,20 @@ export class ChatBudget {
         // A share needs a sample. At 4 of 5 turns the arithmetic gives 80%, which
         // is not evidence of anything - the humans simply have not spoken yet.
         // Only judge the share once there is a real conversation to measure.
-        const total = humans + hers;
-        if (total >= MIN_SHARE_SAMPLE && hers / total > SHARE_CEILING + (1 / total)) {
+        //
+        // WINDOWED, or the share is a LIFETIME ratio and never recovers. Both
+        // operands were lifetime totals: deliveredCount only ever increments and
+        // human_msgs_since_her_last only ever increments, so once she was ahead
+        // she stayed ahead for the lifetime of the process. Live evidence:
+        // 29 delivered against 8 human messages = 78% forever, so every
+        // self-prompt for 7 hours returned over_share (181 hits) while a human
+        // stood there talking to her. The share is a claim about the CURRENT
+        // conversation, so both sides have to expire on the same window as the
+        // rest of the budget. humanAt is stamped by humanSpoke().
+        const winHuman = (this.humanAt || []).filter((t) => now - t < WINDOW_MS).length;
+        const winHers = this.deliveredAt.filter((t) => now - t < WINDOW_MS).length;
+        const total = winHuman + winHers;
+        if (total >= MIN_SHARE_SAMPLE && winHers / total > SHARE_CEILING + (1 / total)) {
             return { ok: false, why: 'over_share' };
         }
         return { ok: true, why: 'within_budget' };
@@ -186,8 +198,13 @@ export class ChatBudget {
     }
 
     /** A human spoke, so her consecutive run is over. */
-    humanSpoke() {
+    humanSpoke(now = Date.now()) {
         this.consecutive = 0;
+        // The windowed share reads this. Without the stamp the human side of
+        // the ratio was always 0, so she looked like she was talking to
+        // herself no matter how much he was actually saying.
+        this.humanAt ||= [];
+        this.humanAt.push(now);
     }
 
     /** Her own message counts against the share, so nudge the run. */
@@ -197,4 +214,4 @@ export class ChatBudget {
     }
 }
 
-export { WINDOW_MS, MAX_MESSAGES_PER_WINDOW, MAX_CONSECUTIVE, MIN_GAP_MS, RUN_EXPIRES_MS, SHARE_CEILING };
+export { WINDOW_MS, MAX_MESSAGES_PER_WINDOW, MAX_CONSECUTIVE, MIN_GAP_MS, RUN_EXPIRES_MS, SHARE_CEILING, MIN_SHARE_SAMPLE };
