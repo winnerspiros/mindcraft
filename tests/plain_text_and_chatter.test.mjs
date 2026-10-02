@@ -1053,5 +1053,67 @@ const check = (cond, good, bad) => {
         'the naive comparison no longer distinguishes anything - the test above may be vacuous');
 }
 
+// ── 22. THE HURT REFLEX MUST MOVE, NOT JUST SPEAK ───────────────────
+//
+// She was slain by a Pillager and by a Phantom. The logs looked healthy:
+//
+//   [threat] hurt: flee (unarmed, attacker 3.1 blocks away)   x13
+//
+// Thirteen times she decided to flee and never once moved. The reason is
+// the same class of bug as the drowning rescue: reactToHurt is a STATE
+// decision, and its only output was a goal string fed to the self-prompter.
+// The model then wrote:
+//
+//   Generated response: !run away
+//   Agent hallucinated command: !run (no near match)
+//
+// ...and that was discarded. A reflex that cannot move her is a comment.
+//
+// Compounding it: her inventory is EMPTY (verified over rcon:
+// `data get entity UwU Inventory` -> `[]`), so isArmed() is always false and
+// EVERY threat resolved to the flee branch, permanently.
+{
+    const ag = await import('node:fs');
+    const src = ag.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    const i = src.indexOf('const r = reactToHurt(');
+    check(i > 0, 'the entityHurt reflex was located', 'reactToHurt call site is missing');
+    const blk = src.slice(i, i + 1800);
+
+    // must NOT be neutered: `if (false && ...)` still contains the substring,
+    // so a plain presence test would pass on a dead branch. That is exactly how
+    // this whole file hid a bug for a week.
+    check(/if \(\s*r\.action === 'flee'/.test(blk),
+        'the flee decision is acted on, not just narrated',
+        'reactToHurt only narrates - she decides to flee and never moves');
+    check(!/if \(\s*false\s*&&/.test(blk),
+        'the flee branch is not disabled',
+        'the flee branch is dead code guarded by a false condition');
+    check(/skills\.avoidEnemies\(/.test(blk),
+        'the flee reflex calls the movement skill',
+        'nothing moves her on being hurt');
+    check(/'sprint'/.test(blk),
+        'the flee reflex sprints (a pillager shoots; walking loses the race)',
+        'the flee is a walk - she cannot outrun a crossbow');
+    check(/\.catch\(/.test(blk),
+        'the fire-and-forget move cannot throw into the event handler',
+        'an unhandled rejection here could take the process down');
+
+    // it must NOT await: this is an entityHurt emit, awaiting blocks the chain
+    check(!/await skills\.avoidEnemies/.test(blk),
+        'the reflex does not await inside the event handler',
+        'awaiting in entityHurt blocks the emit chain');
+
+    // the narration must survive, but as narration only
+    check(/self_prompter\.start\(r\.goal\)/.test(blk),
+        'the goal is still passed to the prompter for narration',
+        'losing the prompt loses her voice in the moment');
+
+    // and the state-only decision it rests on must be real
+    const th = ag.readFileSync(new URL('../src/utils/threat.js', import.meta.url), 'utf8');
+    check(/export function isArmed/.test(th) && /_axe\$/.test(th),
+        'isArmed still requires a real weapon',
+        'isArmed was weakened - she would pick fights with tools');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
