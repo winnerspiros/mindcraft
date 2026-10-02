@@ -1298,8 +1298,17 @@ export class Agent {
                         }
                     }
                 } else {
+                    // Infinity here is not a bug and not a bad reading: it is
+                    // the deliberate first-sender case (see agent.js:868), where
+                    // _humanGapMs is Infinity so the very first word is exempt
+                    // from turn-taking. Printing it as "Infinitymin" made the
+                    // exemption look like a broken clock, and it cost me a
+                    // wrong hypothesis on a real "she is not responding" bug.
+                    const _gap = Number.isFinite(_returning)
+                        ? `${Math.round(_returning / 60000)}min`
+                        : 'a first message from this player';
                     console.log(`${this.name} [turntaker] skipped: ${source} speaking after `
-                        + `${Math.round(_returning / 60000)}min - an opening is not a `
+                        + `${_gap} - an opening is not a `
                         + 'mid-conversation turn, so it is answered');
                 }
             } catch (e) {

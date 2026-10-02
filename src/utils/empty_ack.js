@@ -63,6 +63,21 @@ const bare = (list) => new RegExp(
 // A greeting, a name-call and a pure command make no proposition, so an ack
 // answering them is empty. A claim, a question or a request does, so "no" and
 // "yeah" are real answers to it.
+//
+// The trailing VOCATIVES are the live bug this fixed. The regex is end-anchored,
+// so "hey" matched but "hey bro" did not - the trailing word was not in the
+// vocabulary, and the whole thing fell through to hasProposition() as if it
+// were a claim. Live, 07:0x:
+//
+//   received message from YandereDev : hey bro
+//   [turntaker] -> backchannel (30%)
+//   UwU backchannel (darling, 30%): ok
+//
+// A vocative after a greeting is still a greeting. "hey bro", "yo dude",
+// "hi man" are openers, not propositions, and greeting_pragmatics.test.mjs
+// caught the resulting "ok" in the recorded history. Kept as a separate
+// alternative rather than loosening the anchor, so a real claim that merely
+// starts with a greeting word ("hey that farm is broken") is still a claim.
 const NO_PROPOSITION = new RegExp(
     '^(hi+|hey|yo|sup|hello|hiya|howdy|gm|gn|good (morning|evening|night)|'
     + 'thanks?|ty|thx|np|nice|cool|wow|oh|ah|eh|hey uwu|hi uwu|uwu|'
@@ -73,6 +88,12 @@ const NO_PROPOSITION = new RegExp(
     // with content.
     + 'you (there|here|online)|anyone( there| here| online)?|'
     + '!\\w+\\([^)]*\\)|\\s*)+$', 'i');
+
+// "hey bro", "yo dude", "hi man" - a greeting plus a vocative. Checked as a
+// prefix match on the greeting alone, then the remainder must be nothing but
+// vocatives/fillers. That way "hey that farm is broken" is NOT caught, because
+// "that farm is broken" is not a vocative.
+const GREETING_VOCATIVE = /^(hi+|hey|yo|sup|hello|hiya|howdy|gm)\b[\s,]*((bro|dude|man|guys?|dudes|everyone|all|chat|friends?|fam|yall|people)\b[\s,!.]*)*$/i;
 
 // A QUESTION IS NOT SOMETHING YOU CAN AGREE WITH. It asks for information, and
 // every ack in the table is an assertion of belief, so an ack to a question
@@ -176,6 +197,9 @@ export function hasProposition(playerText) {
         .replace(/\s+/g, ' ')
         .trim();
     if (!t) return false;
+    // "hey bro" is a greeting, not a claim. Checked before NO_PROPOSITION
+    // because that one is end-anchored and does not cover a trailing vocative.
+    if (GREETING_VOCATIVE.test(t)) return false;
     return !NO_PROPOSITION.test(t);
 }
 
