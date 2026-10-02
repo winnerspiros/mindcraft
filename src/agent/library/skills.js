@@ -738,8 +738,7 @@ export async function crawl(bot, how = 'trapdoor', seconds = 0) {
             try { bot.setControlState('sprint', true); } catch (_) {}
             try { bot.setControlState('forward', true); } catch (_) {}
             await new Promise(r => setTimeout(r, seconds > 0 ? seconds * 1000 : 3500));
-            try { bot.setControlState('sprint', false); } catch (_) {}
-            try { bot.setControlState('forward', false); } catch (_) {}
+                try { bot.setControlState('forward', false); } catch (_) {}
             // scoop back a poured lane so the bucket comes home (only when dry now)
             if (pouredLane) {
                 try {
@@ -6288,8 +6287,68 @@ export async function swimUp(bot, timeoutMs = 8000) {
     } finally { try { bot.setControlState('jump', false); } catch (_) {} }
     const feet = bot.blockAt(bot.entity.position);
     if (feet && feet.name !== 'water') return true;
-    log(bot, 'Still underwater — swim failed (blocked above? dig up or pearl out).');
+
+    // Sealed in. Holding jump cannot move her through rock, and she drowned
+    // that way: "Still underwater - swim failed (blocked above?)" immediately
+    // before the death, head at y=54 under solid stone, mining a flooded
+    // pocket. Oxygen was never the problem - geometry was.
+    //
+    // Water is not always capped. When it is not, the nearest air pocket is
+    // sideways, so crawl to it: pick the neighbour column with air nearest the
+    // surface, and go. This is a last resort with seconds of air left, so it
+    // is deliberately dumb - no pathfinding, no detour.
+    const escape = await swimToNearestAir(bot, 3000);
+    if (escape) {
+        log(bot, 'Swam sideways to air - the pocket was capped.');
+        return true;
+    }
+    log(bot, 'Still underwater - swim failed (blocked above? dig up or pearl out).');
     return false;
+}
+
+/**
+ * Last-ditch escape from a sealed water pocket: walk/sprint to the nearest
+ * neighbouring column that is not water, preferring one nearer the surface.
+ * Returns true if she got out. Deliberately simple - this runs with almost
+ * no air left, so anything that costs time to plan is worse than useless.
+ */
+async function swimToNearestAir(bot, timeoutMs = 3000) {
+    const t0 = Date.now();
+    const wet = (b) => b && (b.name === 'water' || b.name === 'bubble_column');
+    try {
+        const p = bot.entity.position;
+        const bx = Math.floor(p.x), by = Math.floor(p.y), bz = Math.floor(p.z);
+        // any of the 8 neighbouring columns that is not fully water at her level
+        // is a way out; her own column being water is what got her in here
+        const offsets = [];
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]]) {
+            const at = bot.blockAt(new Vec3(bx + dx, by, bz + dz));
+            const above = bot.blockAt(new Vec3(bx + dx, by + 1, bz + dz));
+            if (!wet(at) || !wet(above)) offsets.push([dx, dz]);
+        }
+        if (offsets.length === 0) return false;
+        const [dx, dz] = offsets[0];
+        const target = new Vec3(bx + dx + 0.5, by, bz + dz + 0.5);
+
+        while (Date.now() - t0 < timeoutMs) {
+            const feet = bot.blockAt(bot.entity.position);
+            const head = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+            if (!wet(feet) && !wet(head)) return true;   // out
+            try {
+                // face the chosen column and hold forward+rise. lookAt only
+                // turns her; forward does the moving, jump keeps her rising.
+                await bot.lookAt(target, true).catch(() => {});
+                bot.setControlState('forward', true);
+                bot.setControlState('jump', true);
+            } catch (_) { /* keep trying until the clock runs out */ }
+            await new Promise(r => setTimeout(r, 150));
+        }
+        const feet = bot.blockAt(bot.entity.position);
+        return !!feet && feet.name !== 'water';
+    } finally {
+        try { bot.setControlState('forward', false); } catch (_) {}
+        try { bot.setControlState('jump', false); } catch (_) {}
+    }
 }
 
 export async function diveDown(bot, depth = 6, timeoutMs = 12000) {
