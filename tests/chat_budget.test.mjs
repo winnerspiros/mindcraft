@@ -325,26 +325,28 @@ const check = (cond, good, bad) => {
         'the budget refills after 10 minutes', 'budget never refills');
 }
 {
-    // A monologue: hers with no human contribution at all.
+    // A monologue: three of hers and not one human word in the window.
     //
-    // humanSpoke() between each reserve so the CONSECUTIVE cap (which correctly
-    // fires first at 3 in a row) is not what is under test - the monologue rule
-    // is, and it has to be reachable on its own.
+    // Reachable only by spacing the deliveries PAST the run expiry. The
+    // consecutive cap is the outer guard and fires first on anything tighter -
+    // three messages back to back is blocked as too_many_in_a_row, which is
+    // correct but is not this rule. Note the shape this needs: the previous
+    // version of this test interleaved humanSpoke() to reset consecutive, which
+    // is self-contradictory - a human speaking is exactly what makes it NOT a
+    // monologue, and it also stamps the human side of the window, so the guard
+    // could never see an empty one. Deliveries 100s apart expire the run each
+    // time (90s) while all three stay inside the 10-minute window.
     const b = new ChatBudget();
     let t = 0;
-    for (let i = 0; i < 3; i++) { b.reserve(t); b.delivered(t); b.humanSpoke(); t += MIN_GAP_MS + 10; }
-    const v = b.canSpeak({ now: t, human_msgs_since_her_last: 0 });
-    check(!v.ok, 'stops talking to herself', 'allowed a monologue');
-    // With 3 messages in a row the consecutive cap fires before the monologue
-    // check is even reached - both are correct blocks on the same behaviour, so
-    // the assertion is on the BLOCK, and separately on the monologue path being
-    // reachable at all.
-    check(['monologue', 'too_many_in_a_row'].includes(v.why), `blocked (${v.why})`,
+    for (let i = 0; i < 3; i++) { b.reserve(t); b.delivered(t); t += RUN_EXPIRES_MS + 10_000; }
+    const v = b.canSpeak({ now: t });
+    check(v.why === 'monologue', `blocked by the monologue rule (got ${v.why})`,
         `wrong reason: ${v.why}`);
-    // Reach the monologue rule directly: 3 messages with a human interleaved
-    // resets consecutive but leaves her share at 3 with nothing back.
-    check(true, 'the monologue rule is reachable (consecutive cap is the outer guard)',
-        'unreachable');
+
+    // and the same shape, window slid: the ceiling is not a lifetime ban.
+    const past = b.canSpeak({ now: t + 11 * 60_000 });
+    check(past.ok, `monologue ceiling expires with the window (got ${past.why})`,
+        'the monologue ceiling is a lifetime ban');
 }
 
 // ── the share must be BELOW a real chattiest person's 60% ──────────────

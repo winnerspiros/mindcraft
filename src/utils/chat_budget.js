@@ -52,7 +52,6 @@ export class ChatBudget {
         this.sent = [];          // budget ledger: every ATTEMPT, sent or not
         /** @type {number[]} */
         this.deliveredAt = [];   // what the room ACTUALLY saw, timestamped
-        this.deliveredCount = 0; // what the room actually saw - share uses this
         this.consecutive = 0;    // her messages in a row with nothing from a human
         this.lastSentAt = 0;
     }
@@ -61,8 +60,7 @@ export class ChatBudget {
      * May she send right now?
      * @param {object} ctx
      * @param {number}  ctx.now
-     * @param {number}  ctx.human_msgs_since_her_last  how many humans have spoken since
-     * @param {number}  ctx.visible_humans
+     * @param {boolean} ctx.checked
      */
     canSpeak(ctx) {
         // ctx.checked: this turn already passed the pre-generation gate, so the
@@ -117,38 +115,24 @@ export class ChatBudget {
         }
         // SHARE. If humans have barely spoken and she is on her own, her share
         // is already dominant; going higher is the talking-to-herself look.
-        const humans = ctx.human_msgs_since_her_last ?? 0;
-        // DELIVERED count, not sent.length: a message she composed and dropped
-        // was not said to anyone, so it must not count as her dominating the room
-        // or talking to herself. Using sent.length here blocked her at attempt 3
-        // with 0 messages actually sent.
-        const hers = this.deliveredCount;
-        // Same time-expiry as the run above: 3 undelivered-by-anyone messages is
-        // a monologue only if they are RECENT. deliveredCount is a lifetime total,
-        // so without the window check she hits 3 once and is then never allowed
-        // to speak alone again, however long the silence has been.
-        if (humans === 0 && hers >= 3) {
-            // Window on deliveredAt, NOT on `sent`: `sent` is the reservation
-            // ledger and delivered() never wrote to it, so counting it here saw
-            // zero messages and the expiry could never trigger.
-            this.deliveredAt = this.deliveredAt.filter((t) => now - t < WINDOW_MS);
-            if (this.deliveredAt.length >= 3) return { ok: false, why: 'monologue' };
-        }
+        //
+        // WINDOWED, or the share is a LIFETIME ratio and never recovers. Both
+        // operands used to be lifetime totals - deliveredCount and
+        // human_msgs_since_her_last only ever increment - so once she was ahead
+        // she stayed ahead for the lifetime of the process. Live evidence: 29
+        // delivered against 8 human messages = 78% forever, so every self-prompt
+        // for 7 hours returned over_share (181 hits) while a human stood there
+        // talking to her. The monologue guard below had the identical defect and
+        // the identical fix.
+        //
+        // DELIVERED, never reserved: a message she composed and dropped was not
+        // said to anyone, so it cannot count as her dominating the room.
+        const winHers = this.deliveredAt.filter((t) => now - t < WINDOW_MS).length;
+        const winHuman = (this.humanAt || []).filter((t) => now - t < WINDOW_MS).length;
+        if (winHuman === 0 && winHers >= 3) return { ok: false, why: 'monologue' };
         // A share needs a sample. At 4 of 5 turns the arithmetic gives 80%, which
         // is not evidence of anything - the humans simply have not spoken yet.
         // Only judge the share once there is a real conversation to measure.
-        //
-        // WINDOWED, or the share is a LIFETIME ratio and never recovers. Both
-        // operands were lifetime totals: deliveredCount only ever increments and
-        // human_msgs_since_her_last only ever increments, so once she was ahead
-        // she stayed ahead for the lifetime of the process. Live evidence:
-        // 29 delivered against 8 human messages = 78% forever, so every
-        // self-prompt for 7 hours returned over_share (181 hits) while a human
-        // stood there talking to her. The share is a claim about the CURRENT
-        // conversation, so both sides have to expire on the same window as the
-        // rest of the budget. humanAt is stamped by humanSpoke().
-        const winHuman = (this.humanAt || []).filter((t) => now - t < WINDOW_MS).length;
-        const winHers = this.deliveredAt.filter((t) => now - t < WINDOW_MS).length;
         const total = winHuman + winHers;
         if (total >= MIN_SHARE_SAMPLE && winHers / total > SHARE_CEILING + (1 / total)) {
             return { ok: false, why: 'over_share' };
@@ -193,7 +177,6 @@ export class ChatBudget {
         this.deliveredAt.push(now);
         this.lastSentAt = now;
         this.consecutive++;
-        this.deliveredCount++;
         this.pending = false;
     }
 
