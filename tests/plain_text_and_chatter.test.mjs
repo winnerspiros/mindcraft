@@ -1415,5 +1415,99 @@ const check = (cond, good, bad) => {
         'it logs the corrected position but still runs toward the stale one');
 }
 
+// ── 27. THE SELF-PROMPT MUST NAME REAL COMMANDS ───────────────────────
+//
+// Symptom: she stands staring at nothing and never responds.
+//
+// The log looked healthy - 35 commands executed, 11 "suppressed" lines. The
+// real numbers were elsewhere:
+//
+//   full self-prompt responses:            60
+//   ...containing a command:                3
+//   hallucinated commands:                 15
+//     !gather x3 !mine x3 !dig x3 !eat !find !searchCoal !usePickaxe
+//     !checkNearbyBiomes
+//
+// Root cause: the prompt said only
+//
+//   "Your next response MUST contain a command with this syntax:
+//    !commandName."
+//
+// !commandName is a PLACEHOLDER. She was never shown what she can actually
+// do, so she invented names - against goals that name nothing real either
+// ("gather food", "mine some coal ore for torches"; there is no !mine or
+// !getCoal). So she spent turns complaining ("are you kidding me? this is
+// getting ridiculous") and the speak gate correctly suppressed 10 of those
+// as unprompted_self_narration.
+//
+// The gate was working. She had nothing to say that counted.
+{
+    const fs27 = await import('node:fs');
+    const sp = fs27.readFileSync(new URL('../src/agent/self_prompter.js', import.meta.url), 'utf8');
+
+    check(/_realCommandsFor\(/.test(sp), 'the self-prompter can name real commands',
+        'it can only say !commandName, so she invents names');
+
+    // the list must come from the registry, never a hardcoded list
+    // Lazily imported, NOT at module scope: a top-level import of
+    // commands/index.js reaches undici, which needs a global File that Node 19
+    // lacks, and six test files import self_prompter - that killed the whole
+    // suite at 264 checks in an unrelated file.
+    check(/await import\('\.\/commands\/index\.js'\)/.test(sp),
+        'command names come from the registry',
+        'a hardcoded list would drift from what the bot can do');
+    check(!/^import .*allCommandNames.*from '\.\/commands\/index\.js'/m.test(sp),
+        'the registry is NOT imported at module scope',
+        'a top-level import drags undici into every test that imports self_prompter');
+    check(/await this\._realCommandsFor\(/.test(sp),
+        'the call site awaits the now-async helper',
+        'a missing await makes the list silently empty - she would invent names again');
+    const idx = fs27.readFileSync(new URL('../src/agent/commands/index.js', import.meta.url), 'utf8');
+    check(/export const allCommandNames/.test(idx),
+        'the registry exports its command names',
+        'self_prompter has no way to enumerate real commands');
+
+    // must be injected into the prompt she actually receives
+    const mi = sp.indexOf('const msg = `You are self-prompting');
+    const tpl = sp.slice(mi, sp.indexOf('`;', mi));
+    // Interpolated conditionally (${_cmds ? ... : ''}) so an unmatched goal
+    // adds no text - same shape as _gap. Match that, not a bare ${_cmds}.
+    check(/\$\{_cmds\s*\?/.test(tpl),
+        'the real command list reaches her prompt',
+        'the list is computed but never shown to her');
+
+    // the matcher must split camelCase, or it silently matches nothing
+    const ms = sp.slice(sp.indexOf('_realCommandsFor(goal) {'), sp.indexOf('_realCommandsFor(goal) {') + 2600);
+    check(/\(\[a-z0-9\]\)\(\[A-Z\]\)/.test(ms),
+        'command names are split on camelCase before matching',
+        '!getFood lowercased first becomes "getfood" and never matches "food"');
+    check(!/toLowerCase\(\)\.split\(\/\(\?=\[A-Z\]\)/.test(ms),
+        'the broken matcher that scored every goal 0 is gone',
+        'the old split emitted an empty segment and matched nothing');
+
+    // and it must actually work, against the REAL registry and the REAL goals
+    const { allCommandNames } = await import('../src/agent/commands/index.js');
+    const names = allCommandNames();
+    const wordsOf = (n) => String(n).replace(/^!/, '')
+        .replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const rank = (g0) => {
+        const g = g0.toLowerCase();
+        const score = (n) => { let h = 0; for (const w of wordsOf(n)) { if (w.length <= 2) continue; if (g.includes(w)) { h += w.length * 2; continue; } if (w.length > 3 && w.includes(g.split(' ')[0])) h += 3; } return h; };
+        return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 8).map(x => x.n);
+    };
+    const food = rank('gather food from nearby');
+    check(food.length > 0 && food.includes('!getFood'),
+        'a food goal ranks !getFood first',
+        `expected !getFood in ${JSON.stringify(food)}`);
+    check(rank('gather food').includes('!getFood'),
+        'the bare "gather food" goal also resolves',
+        'the shortest goal matched nothing, which is the common case');
+    // the three names she invented must not exist
+    for (const fake of ['!mine', '!gather', '!getCoal', '!dig', '!eat']) {
+        check(!names.includes(fake), `${fake} really does not exist (she was inventing it)`,
+            `${fake} exists - the premise of this fix is wrong`);
+    }
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
