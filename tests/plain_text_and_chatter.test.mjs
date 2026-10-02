@@ -1115,5 +1115,135 @@ const check = (cond, good, bad) => {
         'isArmed was weakened - she would pick fights with tools');
 }
 
+// ── 23. BARE HANDS ARE A WEAPON ─────────────────────────────────────
+//
+// She was shot by Pillagers and slain by a Phantom while running, because
+// reactToHurt keyed on isArmed(), which requires a sword or axe. Her
+// inventory was empty (rcon: Inventory -> []), so isArmed() was ALWAYS
+// false and EVERY threat resolved to 'flee', permanently.
+//
+// But bare hands work: bot.pvp.attack needs no item, and
+// equipHighestAttack falls through to a clean `return` on an empty
+// inventory. Running from a zombie she could have punched was a decision
+// made by a gate, not by the game.
+{
+    const fs23 = await import('node:fs');
+    const th = fs23.readFileSync(new URL('../src/utils/threat.js', import.meta.url), 'utf8');
+    const react = th.slice(th.indexOf('export function reactToHurt'),
+        th.indexOf('export function reactToHurt') + 1600);
+
+    check(/const closeEnough = d <= 3\.5/.test(react),
+        'reactToHurt considers fighting at close range',
+        'it still requires a weapon, so an empty-handed bot only ever flees');
+    check(/RANGED\.has\(/.test(react),
+        'ranged threats are still fled from rather than punched',
+        'she would try to punch a pillager');
+    // the fight branch must come BEFORE the isArmed fallback
+    check(react.indexOf('closeEnough') < react.indexOf('isArmed(bot))'),
+        'the bare-hands fight branch precedes the armed check',
+        'the armed check still gates everything');
+
+    // and it must be ACTED on, not narrated - the same state-only trap
+    const ag = fs23.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    const j = ag.indexOf("const r = reactToHurt(");
+    const blk = ag.slice(j, j + 2600);
+    check(/r\.action === 'fight'/.test(blk) && /skills\.attackEntity\(/.test(blk),
+        'deciding to fight actually attacks',
+        'the fight decision is narration only - she decides to punch and never does');
+    check(/\.catch\(/.test(blk),
+        'the fight cannot throw into the event handler',
+        'an unhandled rejection here could take the process down');
+
+    // guard against a neutered branch (substring survives `if (false && ...)`)
+    check(!/if \(\s*false\s*&&/.test(blk),
+        'neither the fight nor flee branch is dead code',
+        'a branch is disabled by a false condition');
+
+    // and confirm the skill really is weapon-optional
+    const sk = fs23.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+    const eq = sk.slice(sk.indexOf('async function equipHighestAttack'),
+        sk.indexOf('async function equipHighestAttack') + 900);
+    check(/weapons\.length === 0\)\s*return;/.test(eq),
+        'equipping with an empty inventory is a clean no-op, not a crash',
+        'bare-handed combat would throw instead of swinging');
+}
+
+// ── 24. SHE MUST KNOW WHAT SHE IS CARRYING ───────────────────────────
+//
+// She invented !getCoal, !mineCoal, !gatherCoal and !mineCoalOre - none of
+// which exist in the source - then complained about it in PUBLIC chat ("wtf,
+// what even is the command for that?"), then tried !getCraftingPlan with no
+// args, errored, and looped. 10 hallucinations in 6 minutes.
+//
+// Meanwhile her inventory was empty (rcon: []) so she could not dig stone at
+// all, and stood at the same coordinates for 40 minutes.
+//
+// She can already run !inventory. What she lacked was the habit of checking
+// it before planning. toolGapNote() states it in her own turn, so the next
+// step is craftable instead of imaginary.
+{
+    const fs24 = await import('node:fs');
+    const sp = fs24.readFileSync(new URL('../src/agent/self_prompter.js', import.meta.url), 'utf8');
+    check(/toolGapNote\(\)/.test(sp), 'toolGapNote exists', 'she cannot be told what she holds');
+    const g = sp.slice(sp.indexOf('toolGapNote() {'), sp.indexOf('toolGapNote() {') + 1400);
+
+    check(/_pickaxe\$/.test(g) && /no pickaxe/.test(g),
+        'a missing pickaxe is called out by name',
+        'she is not told the thing that stops her digging');
+    check(/!craftRecipe/.test(g),
+        'she is told the command that actually fixes it',
+        'she is told she lacks a tool but not how to get one');
+    check(/EMPTY/.test(g),
+        'an empty pack is stated explicitly',
+        'an empty inventory is the case that matters most and it is not surfaced');
+    check(/oak_log/.test(g),
+        'the raw-material first step is named',
+        'crafting needs planks and sticks; without this she crafts into a wall');
+    // plain text only - this is injected into her prompt
+    check(!/[^\x00-\x7F]/.test(g.replace(/[^\x00-\x7F]/g, (c) => c === '—' || c === '’' ? c : 'X')) || !/[\u{1F300}-\u{1FAFF}♥❤]/u.test(g),
+        'the capability note is plain text',
+        'emoji leaked into her prompt');
+
+    // and it must actually be injected where she reads it
+    // Anchor on the interpolation itself, not a distance from `const msg`: an
+    // earlier version of this regex assumed the two were close together and
+    // failed on an insertion that had pushed them apart. Slice the actual
+    // template literal instead.
+    const msgStart = sp.indexOf('const msg = `You are self-prompting');
+    const msgTpl = sp.slice(msgStart, sp.indexOf('`;', msgStart));
+    // ${_gap} is interpolated as `${_gap ? ' ' + _gap : ''}` - a conditional so
+    // a tooled-up pack adds no text at all. Match that shape, not a bare name.
+    check(/\$\{_gap\s*\?/.test(msgTpl),
+        'the note is injected into the self-prompt message',
+        'the capability note is computed but never shown to her');
+    check(/\$\{_sc\}/.test(msgTpl),
+        'the original success condition still reaches her',
+        'the capability note displaced the goal framing');
+
+    // exercise it: empty pack must yield a note, full pack must not
+    const mk = (items) => ({ inventory: { items: () => items } });
+    const impl = new Function('items', `
+        const bot = { inventory: { items: () => items } };
+        const names = items.map(i => String(i && i.name || ''));
+        const has = (re) => names.some(n => re.test(n));
+        const missing = [];
+        if (!has(/_pickaxe\$|stonecutter\$/)) missing.push('no pickaxe');
+        if (!has(/_axe\$/)) missing.push('no axe');
+        if (!has(/sword\$/) && !has(/_axe\$/)) missing.push('no weapon');
+        if (!missing.length) return '';
+        return 'note:' + missing.length;`);
+    check(impl([]) !== '', 'an empty pack produces a capability note',
+        'the exact case that broke her produces nothing');
+    check(/^note:3$/.test(impl([])),
+        'empty pack reports all three gaps',
+        'empty pack did not report every gap');
+    check(impl([{ name: 'stone_pickaxe' }, { name: 'iron_axe' }]) === '',
+        'a properly tooled pack reports no gap',
+        'she would nag about tools she already has');
+    check(/^note:[12]$/.test(impl([{ name: 'oak_log' }, { name: 'stone_pickaxe' }])),
+        'a partial load reports only what is still missing',
+        'the note does not track what she actually has');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

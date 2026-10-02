@@ -109,6 +109,24 @@ export function reactToHurt({ bot, attacker, distance } = {}) {
         if (!threat) {
             return { action: 'ignore', reason: 'no attacker in range' };
         }
+        // Bare hands are a real weapon: 1 damage per swing, but bot.pvp.attack
+        // needs no item and equipHighestAttack returns cleanly on an empty
+        // inventory. The old gate keyed on isArmed(), so an empty inventory
+        // (verified over rcon: Inventory -> []) meant EVERY threat resolved to
+        // 'flee', forever. She ran from every mob she could have punched.
+        //
+        // So fight when it is worth fighting: close enough that the swings
+        // land, and not a ranged threat that out-damages her while she closes.
+        const RANGED = new Set(['pillager', 'skeleton', 'stray', 'creeper', 'phantom',
+            'wither_skeleton', 'pillager_captain', 'vindicator', 'witch']);
+        const closeEnough = d <= 3.5;
+        if (closeEnough && !RANGED.has(String(threat.name))) {
+            return {
+                action: 'fight',
+                goal: 'get the thing that just hit me',
+                reason: `close enough to punch (${d.toFixed(1)} blocks), and fists work`,
+            };
+        }
         if (isArmed(bot)) {
             return {
                 action: 'fight',
@@ -119,7 +137,7 @@ export function reactToHurt({ bot, attacker, distance } = {}) {
         return {
             action: 'flee',
             goal: 'get away from this and get my health back',
-            reason: `unarmed, attacker ${d.toFixed(1)} blocks away`,
+            reason: `no weapon and the attacker is ${d.toFixed(1)} blocks away`,
         };
     } catch (e) {
         // Never take the bot down, and never fail silently either: a bare catch is
