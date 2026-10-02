@@ -331,6 +331,24 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
 
 
 
+/**
+ * Colloquial block names -> real block ids.
+ *
+ * She reaches for "grass" and "log" constantly; neither is a block id. Rejecting
+ * them with an edit-distance suggestion ("Did you mean: glass?") taught her
+ * nothing, and she retried the same word every turn.
+ */
+const BLOCK_NAME_ALIASES = {
+    grass: 'grass_block',
+    log: 'oak_log',
+    logs: 'oak_log',
+    wood: 'oak_log',
+    tree: 'oak_log',
+    cobble: 'cobblestone',
+    planks: 'oak_planks',
+    coal: 'coal_ore',
+};
+
 // todo: handle arrays?
 /**
  * Returns an object containing the command, the command name, and the comand parameters.
@@ -425,6 +443,13 @@ export function parseCommandMessage(message, preCap = null) {
                 suppressNoDomainWarning = true; //Don't spam console. Only give the warning once.
             }
         } else if(param.type === 'BlockName') { //Check that there is a block with this name
+            // Colloquial names first: she reaches for "grass" and "log"
+            // constantly and neither is a block id. Rejecting them with an
+            // edit-distance guess ("Did you mean: glass?" for grass) taught her
+            // nothing and she retried the same word every turn. args[i] = arg
+            // below then hands the real id to perform().
+            const alias = BLOCK_NAME_ALIASES[arg];
+            if (alias && getBlockId(alias) != null) arg = alias;
             if(getBlockId(arg) == null) {
                 const s = suggestBlockNames(arg);
                 return `Invalid block type: ${arg}.${s.length ? ` Did you mean: ${s.join(', ')}?` : ''}`;
