@@ -1709,5 +1709,60 @@ const check = (cond, good, bad) => {
         'it is declared inside, so the formatting below the try cannot see it');
 }
 
+// ── 31. NO TRAILING FULL STOP — PEOPLE DON'T WRITE LIKE THAT IN CHAT ────
+//
+// Owner: "when chatting usually ppl dont put . at end". Measured on her own
+// output at the time: 8 of 23 self-prompt lines contained a sentence period
+// and 2 of 23 ended in one. "finally, something that worked. I needed that."
+// is an email, not a Minecraft chat line.
+//
+// Only the FINAL period goes. "!" and "?" are correct and 12 of 23 lines ended
+// that way; mid-sentence periods are structure; and a dot that IS the token
+// (1.16, e.g., example.com) must survive.
+{
+    const { scrubEmoji, stripTrailingPeriod } = await import('../src/utils/emoji_scrub.js');
+    const cases = [
+        ['finally, something that worked. I needed that.', 'finally, something that worked. I needed that'],
+        ['ok.', 'ok'],
+        ['lets just go. ', 'lets just go'],        // trailing space, no defensive trim by caller
+        // left alone
+        ['what is even happening right now?', 'what is even happening right now?'],
+        ['ugh, lets go!', 'ugh, lets go!'],
+        ['hey bro!!', 'hey bro!!'],
+        ['...', '...'],                              // deliberate ellipsis
+        ['wait...', 'wait...'],
+        ['a.', 'a.'],
+        ['1.', '1.'],
+        ['e.g.', 'e.g'],
+        ['see example.com.', 'see example.com'],
+        ['bruh. this is fine', 'bruh. this is fine'], // mid-sentence
+    ];
+    let bad = [];
+    for (const [inp, exp] of cases) {
+        const got = stripTrailingPeriod(inp);
+        if (got !== exp) bad.push(`${JSON.stringify(inp)} -> ${JSON.stringify(got)} want ${JSON.stringify(exp)}`);
+    }
+    check(bad.length === 0,
+        'only the trailing sentence period is removed',
+        bad.slice(0, 3).join(' | '));
+
+    check(scrubEmoji('great, now I am starving xD') === 'great, now I am starving',
+        'emoji scrub still works', 'the plain-text rule regressed');
+    check(scrubEmoji('bruh, I am done with this game today xD.') === 'bruh, I am done with this game today',
+        'scrub and period-strip compose',
+        'the face left a period behind, or the period survived the scrub');
+
+    // and it must be on the LAST step of the send path, or later stages
+    // re-append whatever they rewrite
+    const fs31 = await import('node:fs');
+    const ag = fs31.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    const at = ag.indexOf("scrubEmoji(message)");
+    check(at > 0, 'the scrub is called on the outgoing message', 'the send path does not scrub');
+    const after = ag.slice(at, at + 4000);
+    check(!/(applyTypo|translate)\s*\(/.test(after),
+        'nothing rewrites the line after the scrub',
+        'a later stage re-appends what the scrub removed');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
