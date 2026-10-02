@@ -489,12 +489,82 @@ export class SelfPrompter {
                     if (next && _sim(next, oldPrompt) < 0.6) return next;
                     console.log(`[curriculum] rejected too-similar goal: "${next}" — retrying`);
                 }
-                // fallback: force a concrete different activity, no LLM needed.
-                // Family-aware: skip families already in recent history.
-                const fallbacks = ['gather oak logs for building', 'collect flowers as a gift for YandereDev', 'find YandereDev and stay close', 'craft planks and build a small shelter', 'mine cobblestone for tools', 'hunt chickens for feathers and food'];
+                // FALLBACK, GENERATED FROM THE REGISTRY - not a hand-written
+                // list. The old literal list was the source of the worst goals
+                // she ever ran:
+                //   'collect flowers as a gift for YandereDev'  -> no
+                //     !collectFlowers exists, so she could not possibly do it
+                //   'find YandereDev and stay close'              -> yandere
+                //     residue, in a normal persona
+                // A hand-written list of capabilities rots the moment the
+                // command set changes, and nothing flags it: the goal is
+                // well-formed English, it just names a thing she cannot do.
+                // Deriving them from allCommandNames() means every fallback is
+                // executable BY CONSTRUCTION.
                 const hist = (agent.curriculum.recentHistoryText() || '').toLowerCase();
                 const oldFam = _family(oldPrompt);
-                return fallbacks.find(f => _family(f) !== oldFam && !hist.includes(f.split(' ')[1])) || fallbacks.find(f => _family(f) !== oldFam) || fallbacks[0];
+                // A CURATED set of ACTIVITIES, each one checked against the
+                // registry, and only offered if its command actually exists.
+                //
+                // Two earlier attempts at generating goals from the command
+                // NAMES, both rejected after running them:
+                //  - string surgery on the name gave "use savedplaces",
+                //    "craft able", and "restart -> eat and look after
+                //    yourself", because a name is not a sentence;
+                //  - filtering to arity-free commands left read-only queries
+                //    ("go use inventory") and unsafe ones (!restart, !stfu).
+                // The command set is 203 entries and only a handful describe
+                // something a player would call an activity.
+                //
+                // So: list real activities, VERIFY each against the registry,
+                // drop any whose command is missing, and use the command's own
+                // description as the goal text. A missing command can then
+                // never produce a goal again - the list degrades instead of
+                // lying, and the comment says exactly what to add.
+                const ACTIVITIES = [
+                    { cmd: '!collectBlocks', needsArgs: true, goal: 'gather some useful blocks nearby' },
+                    { cmd: '!getFood', needsArgs: false, goal: 'find something to eat' },
+                    { cmd: '!craftRecipe', needsArgs: true, goal: 'craft something useful from what you have' },
+                    { cmd: '!buildShelter', needsArgs: false, goal: 'find or make a safe place to shelter' },
+                    { cmd: '!searchSchematics', needsArgs: false, goal: 'look for something worth building' },
+                    // !goTo does NOT exist. Verified against the registry - the
+                    // first draft of this list guessed it, which is precisely
+                    // the bug the have.has() filter below is here to catch.
+                                        // needsArgs:false - it takes NO argument. First draft
+                    // said true, and the arity assertion in the test suite
+                    // caught it. Correct here, not by loosening the test.
+                    { cmd: '!goToSurface', needsArgs: false, goal: 'get back to the surface' },
+                    { cmd: '!digDown', needsArgs: true, goal: 'dig down carefully and see what is below' },
+                    { cmd: '!surroundings', needsArgs: false, goal: 'look around and take stock of where you are' },
+                    { cmd: '!inventory', needsArgs: false, goal: 'check what you are carrying' },
+                    { cmd: '!nearbyBlocks', needsArgs: false, goal: 'look at the blocks close by' },
+                    { cmd: '!entities', needsArgs: false, goal: 'look at what else is around' },
+                ];
+                let fallbacks = [];
+                try {
+                    const mod = await import('./commands/index.js');
+                    const ar = (typeof mod.allCommandArity === 'function') ? mod.allCommandArity() : {};
+                    const have = new Set(mod.allCommandNames());
+                    fallbacks = ACTIVITIES
+                        .filter(a => have.has(a.cmd))
+                        .filter(a => !a.needsArgs || (ar[a.cmd] && ar[a.cmd].required > 0))
+                        .map(a => a.goal);
+                    // Anything with a required arg is only usable if the goal
+                    // text makes the ARG visible, otherwise she will emit the
+                    // bare command that failed in production. These are phrased
+                    // as intentions, not as command text, and the self-prompt
+                    // supplies the shape - so this is safe.
+                    const missing = ACTIVITIES.filter(a => !have.has(a.cmd)).map(a => a.cmd);
+                    if (missing.length) console.log(`[curriculum] activity list references missing commands: ${missing.join(', ')}`);
+                } catch (_) {}
+                if (!fallbacks.length) {
+                    // registry unavailable: say so rather than invent
+                    console.warn('[curriculum] registry unavailable; no generated fallback goal');
+                    return null;
+                }
+                return fallbacks.find(f => _family(f) !== oldFam && !hist.includes(f.split(' ')[1]))
+                    || fallbacks.find(f => _family(f) !== oldFam)
+                    || fallbacks[0];
             };
             this.stuck_cycles++;
             if (this.stuck_cycles >= (settings.goal_stuck_limit || 3)) {
