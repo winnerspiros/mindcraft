@@ -1274,5 +1274,81 @@ const check = (cond, good, bad) => {
         'the note does not track what she actually has');
 }
 
+// ── 25. BLOCK NAMES SHE ACTUALLY SAYS ─────────────────────────────────
+//
+// She typed `!collectBlocks grass` and got:
+//
+//   Invalid block type: grass. Did you mean: glass?
+//
+// Edit distance, not meaning. She wanted grass_block. "grass" is not a block
+// id, so she was rejected, and then she tried the same word again next turn
+// - the error taught her nothing. Same for log/wood, which she uses constantly.
+{
+    const fs25 = await import('node:fs');
+    const src = fs25.readFileSync(new URL('../src/agent/commands/index.js', import.meta.url), 'utf8');
+    check(/BLOCK_NAME_ALIASES/.test(src), 'the alias table exists',
+        'colloquial block names are still rejected outright');
+
+    const ti = src.indexOf('const BLOCK_NAME_ALIASES');
+    const tbl = src.slice(ti, src.indexOf('};', ti) + 2);
+    for (const [alias, real] of [['grass', 'grass_block'], ['log', 'oak_log'], ['wood', 'oak_log'], ['coal', 'coal_ore']]) {
+        check(new RegExp(`\\b${alias}:\\s*'${real}'`).test(tbl),
+            `"${alias}" maps to the real block id "${real}"`,
+            `"${alias}" is not mapped - she will be told to try something else`);
+    }
+
+    // the rewrite must happen BEFORE the validation, and must reach args[]
+    const bi = src.indexOf("param.type === 'BlockName'");
+    // brace-match the BlockName branch: a fixed 900-char slice cut off the
+    // `args[i] = arg` hand-off that appears just past it.
+    let _bs = src.indexOf('{', bi), _bd = 0, _be = _bs;
+    for (let _k = _bs; _k < src.length; _k++) {
+        if (src[_k] === '{') _bd++;
+        else if (src[_k] === '}') { _bd--; if (_bd === 0) { _be = _k + 1; break; } }
+    }
+    const blk = src.slice(bi, _be);
+    const aliasAt = blk.indexOf('BLOCK_NAME_ALIASES[arg]');
+    const rejectAt = blk.indexOf('return `Invalid block type');
+    check(aliasAt > -1 && rejectAt > -1 && aliasAt < rejectAt,
+        'the alias is applied before the name is rejected',
+        'the alias is applied after the rejection, so it never runs');
+    // `args[i] = arg` is a SIBLING of the whole if/else chain, not inside the
+    // BlockName branch - brace-matching the branch correctly excludes it. So
+    // assert the hand-off exists immediately after the chain closes, which is
+    // what actually lets the rewritten id reach perform().
+    const afterBranch = src.slice(_be, _be + 900);
+    check(/args\[i\] = arg;/.test(afterBranch),
+        'the rewritten name is what gets passed to the command',
+        'the alias resolves but the original bad name is still passed on');
+
+    // exercise the real parser through the real registry
+    const { parseCommandMessage } = await import('../src/agent/commands/index.js');
+    // NOTE: on failure parseCommandMessage returns a *String object* (an object
+    // carrying index keys), so `.error` and `.args` are undefined on it and a
+    // naive `o.error || o.args` helper silently yields undefined. Coerce.
+    const r = (s) => {
+        const o = parseCommandMessage(s);
+        if (o === null) return null;
+        if (typeof o === 'object' && !Array.isArray(o) && typeof o !== 'string'
+            && Object.prototype.toString.call(o) === '[object Object]') {
+            return o.args ?? o.error ?? String(o);
+        }
+        return String(o); // error path
+    };
+    check(JSON.stringify(r('!collectBlocks grass')) === JSON.stringify(['grass_block', 1]),
+        '"!collectBlocks grass" becomes grass_block', 'the alias does not resolve');
+    check(JSON.stringify(r('!collectBlocks log')) === JSON.stringify(['oak_log', 1]),
+        '"!collectBlocks log" becomes oak_log', 'the alias does not resolve');
+    check(JSON.stringify(r('!collectBlocks glass')) === JSON.stringify(['glass', 1]),
+        'a valid block name is untouched by the alias table',
+        'the alias table corrupted a name that was already correct');
+    // parseCommandMessage returns the failure as a STRING (not an object), so
+    // assert the rejection content rather than a typeof I guessed at.
+    const bad = r('!collectBlocks notablock');
+    check(typeof bad === 'string' && bad.includes('Invalid block type'),
+        'a genuinely unknown name is still rejected',
+        `the alias table accepted nonsense: ${JSON.stringify(bad)}`);
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
