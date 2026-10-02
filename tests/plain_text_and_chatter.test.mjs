@@ -767,5 +767,69 @@ const check = (cond, good, bad) => {
         'the rule does not reference the reported wording');
 }
 
+
+// ── 16. THE CHAT BUDGET CANNOT SILENCE HER SELF-PROMPT ───────────────
+//
+// Live, 45 minutes: she was told to do something 20 times and produced a
+// command zero times, because the CHAT budget blocked generation before
+// the model ever wrote:
+//
+//   [gate:monologue] not generating        x72
+//   did not use command in last 3 prompts  x20
+//
+// Interleaved one-for-one in the log:
+//
+//   received message from system : ... MUST contain a command ...
+//   UwU [gate:monologue] not generating
+//   [cadence] solo next turn in 12s
+//   received message from system : ... MUST contain a command ...
+//   UwU [gate:monologue] not generating
+//   Agent did not use command in the last 3 auto-prompts.
+//
+// ChatBudget measures how much she talks to people. A self-prompt turn is
+// not talking to anyone - it is the thing that makes her act, so blocking
+// it starved the loop and the no-command counter then paused the loop on
+// top. Same starvation, one layer up.
+//
+// The cap is NOT deleted: it moved to the output, where it belongs, and
+// only judges text actually about to be spoken. Both halves are asserted
+// below, because the failure mode of this fix is "someone removes the cap"
+// as easily as "someone blocks generation".
+{
+    const fs9 = await import('node:fs');
+    const src = fs9.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+
+    // (a) the pre-generation gate must not return false any more
+    const pre = src.slice(src.indexOf('if (!isYandere() && self_prompt) {\n            try {\n                const { ChatBudget }'),
+        src.indexOf('// Handle other user messages'));
+    check(!!pre, 'the pre-generation budget block was found',
+        'could not locate the pre-generation ChatBudget block');
+    check(!/return false;/.test(pre),
+        'the chat budget no longer returns false before generation',
+        'the chat budget still blocks generation, so a self-prompt turn cannot produce a command (72 monologue blocks, 20 no-command pauses live)');
+
+    // (b) but the cap must survive somewhere
+    check(/canSpeak\(\{ now: Date\.now\(\) \}\)/.test(src),
+        'ChatBudget.canSpeak is still consulted',
+        'the chat cap was deleted instead of relocated - she can now monologue freely');
+    check(/dropped output \(budget\)/.test(src),
+        'the budget still drops over-budget OUTPUT',
+        'the budget no longer drops over-budget output, so the cap is gone entirely');
+
+    // (c) and it must exempt commands - that is the whole point
+    const out = src.slice(src.indexOf('dropped output (budget)') - 700, src.indexOf('dropped output (budget)'));
+    check(/!containsCommand\(message\)/.test(out),
+        'the output cap exempts replies that carry a command',
+        'the output cap judges command-bearing replies too, so acting can still be blocked');
+
+    // (d) ChatBudget's own monotone-share guards must not regress - those are
+    // what stop her talking to an empty room forever
+    const cb = fs9.readFileSync(new URL('../src/utils/chat_budget.js', import.meta.url), 'utf8');
+    check(/why: 'monologue'/.test(cb), "ChatBudget still has the monologue guard",
+        "ChatBudget lost the monologue guard");
+    check(/why: 'over_share'/.test(cb), 'ChatBudget still has the share guard',
+        'ChatBudget lost the share guard');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
