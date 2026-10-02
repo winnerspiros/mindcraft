@@ -39,6 +39,15 @@ import { Curriculum } from './curriculum.js';
 import { LearnedSkillLibrary } from './learned_skill_library.js';
 import Vec3 from 'vec3';
 
+// How long a player must have been gone before their next message is exempt
+// from the turn_taker. The turn_taker models a turn INSIDE a conversation; the
+// first words after an absence are an opening, and answering an opening is not
+// a judgement call. Live evidence 05:16:49 - a bare "hey" from YandereDev
+// scored silence at 70% and sent nothing, while every ordinary opener is
+// already covered as a SPEAK by tests/dyad_engagement.test.mjs. 90s is long
+// enough that mid-conversation silence keeps working exactly as researched.
+const RETURNING_PLAYER_MS = 90_000;
+
 // ── AUTONOMOUS WORK ─────────────────────────────────────────────────────
 //
 // How long before she may re-arm the SAME kind of work after finishing it. Time
@@ -825,6 +834,17 @@ export class Agent {
             // as monologuing. The budget keeps the timestamps, so there is no
             // counter here to drift out of sync with them.
             if (this._budget) this._budget.humanSpoke();
+            // How long since this player last spoke to her. Feeds the returning-
+            // player exemption at the turn_taker below: silence is a calibrated
+            // answer to a turn inside a conversation, and the first turn after a
+            // gap is not that. Undefined before the first message, and the
+            // exemption reads Infinity so the very first word is exempt.
+            if (this._last_speaker === source) {
+                this._humanGapMs = Date.now() - (this._lastHumanAt ?? 0);
+            } else {
+                this._humanGapMs = Infinity;
+            }
+            this._lastHumanAt = Date.now();
             this._last_human_msg_text = String(message || '');
             this._last_speaker = source;
             // Did the message just arriving name somebody other than her? This
@@ -1172,6 +1192,35 @@ export class Agent {
         if (!self_prompt && !from_other_bot && !addressedByName
             && this.turn_taker && this.turn_taker.enabled) {
             try {
+                // THE RETURNING PLAYER EXEMPTION. A turn_taker is a model of
+                // what she would do MID-CONVERSATION, and its own scoring prompt
+                // says so ("at this exact moment in the conversation", "with a
+                // stranger... she is far more likely to go quiet"). Applied to
+                // the first words someone says after a gap, it is simply wrong:
+                // the correct answer to "hey" from someone who has been gone is
+                // to answer it, and the calibrated alternative is only right
+                // once a conversation already exists to calibrate against.
+                //
+                // Live evidence, 05:16:49, and it is the owner's report verbatim:
+                //   received message from YandereDev : hey
+                //   [trigger:someone_is_looking_at_me/speak] engaging (1 human here)
+                //   [turntaker] YandereDev [Relationship: stranger. She is
+                //       mid-activity...] -> silence (70%) f=0.10 b=0.20 s=0.70
+                //   (nothing sent)
+                // The dyad layer had already said SPEAK - every ordinary opener
+                // is covered by tests/dyad_engagement.test.mjs - and this vetoed
+                // it on a distribution built from a scenario string saying
+                // `stranger`, which was itself the decay bug above.
+                //
+                // Silence stays fully available once a reply is due, which is
+                // where the research actually puts it (Hastrdlová 2011: most
+                // join signals go unanswered because nobody has spoken yet).
+                const _returning = this._humanGapMs ?? Infinity;
+                if (_returning >= RETURNING_PLAYER_MS) {
+                    console.log(`${this.name} [turntaker] skipped: ${source} speaking after `
+                        + `${Math.round(_returning / 60000)}min - an opening is not a `
+                        + 'mid-conversation turn, so it is answered');
+                } else {
                 const _dist = await this.turn_taker.score(source, message);
                 if (_dist) {
                     const _d = this.turn_taker.decide(_dist);
@@ -1204,6 +1253,7 @@ export class Agent {
                         }
                         return true;
                     }
+                }
                 }
             } catch (e) {
                 console.warn('[turntaker] gate failed, replying normally:', e.message);
