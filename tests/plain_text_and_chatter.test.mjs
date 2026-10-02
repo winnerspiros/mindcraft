@@ -594,5 +594,115 @@ const check = (cond, good, bad) => {
         'the persona no longer mentions $EXAMPLES, so this whole test is vacuous');
 }
 
+
+// ── 13. SHE DOES NOT DROWN REPEATEDLY ─────────────────────────────────
+//
+// Owner pasted the live log: "UwU drowned", repeated, interleaved with
+// "what just hit me?" and "bruh, what just hit me? this is ridiculous!".
+// Counting 40 minutes of journalctl:
+//
+//   drowned              19
+//   shot by Pillager      9
+//   slain by Drowned      2
+//
+// Nineteen drownings in forty minutes. self_preservation had a water
+// branch and it was inert:
+//
+//   else if (blockAbove.name === 'water') {
+//       if (!bot.pathfinder.goal) bot.setControlState('jump', true);
+//   }
+//
+// The `!bot.pathfinder.goal` guard is the bug. She drowns when she is
+// WALKING somewhere and the path takes her into water - that is the
+// only way it happens in practice - and with a goal active this branch
+// did nothing at all. Holding jump also only helps if she is already
+// rising; skills.swimUp() polls until the head block is dry.
+//
+// Mineflayer tracks air as bot.oxygenLevel (0-15, from entity metadata
+// air_supply). Nothing in src/ read it - grep confirmed zero uses before
+// this fix - so she only reacted once damage had started.
+{
+    const fs5 = await import('node:fs');
+    const src = fs5.readFileSync(new URL('../src/agent/modes.js', import.meta.url), 'utf8');
+
+    const water = src.slice(src.indexOf("blockAbove.name === 'water'"));
+    const branch = water.slice(0, water.indexOf('else if (this.fall_blocks'));
+    check(branch.length > 0, 'the drowning branch exists', 'the drowning branch could not be located');
+    check(!/if \(!bot\.pathfinder\.goal\)\s*\{\s*bot\.setControlState\('jump', true\);/.test(branch),
+        'the drowning branch no longer does nothing while pathfinding',
+        'the drowning branch is still gated on !bot.pathfinder.goal, so it is inert during exactly the walk-into-water case that kills her');
+    check(/oxygenLevel/.test(branch),
+        'the drowning rescue reads her remaining air',
+        'the drowning branch never reads bot.oxygenLevel, so she only reacts after damage starts');
+    check(/swimUp/.test(branch),
+        'the drowning rescue actually surfaces her (swimUp), it does not just hold jump',
+        'the drowning branch never calls swimUp');
+    check(/last_drown/.test(src),
+        'the drowning rescue is throttled',
+        'an unthrottled swimUp fires every tick, stops the self-prompt loop continuously and starves brain + idle modes (same failure as last_flee)');
+
+    // the rescue must be reachable, not merely defined
+    const sk = fs5.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+    check(/export async function swimUp/.test(sk), 'skills.swimUp is exported',
+        'swimUp is not exported, so the mode cannot call it');
+}
+
+// ── 14. SHE DOES NOT SPEAK HER OWN ACTION OUTPUT ──────────────────────
+//
+// Live, verbatim, to players:
+//
+//   SYSTEM: Action output:
+//   Found oak_log nearby.
+//   You harvested oak_log.
+//   You now have 1 oak_log.
+//   SYSTEM: Warning: something is approaching!
+//
+// strictFormat() rewrites system turns into user turns prefixed "SYSTEM: "
+// (utils/text.js:54). The model sometimes echoes that frame back instead
+// of answering. Nothing caught it - looksLikeCommand() sees no bang, the
+// emoji scrub only strips emoji, and the speak gate judges register, not
+// internal leakage.
+{
+    const fs6 = await import('node:fs');
+    const src = fs6.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    const rr = src.slice(src.indexOf('async routeResponse('));
+    check(/leak:system-text/.test(rr.slice(0, 3000)),
+        'routeResponse rejects a message that opens with SYSTEM:/Action output:',
+        'routeResponse does not filter echoed SYSTEM: frames, so action output reaches chat verbatim');
+    check(/^\s*return;\s*$/m.test(rr.slice(0, 3000)),
+        'the system-text leak drops the whole message',
+        'the leak filter does not return early');
+
+    // and the prefix really is what strictFormat writes
+    const txt = fs6.readFileSync(new URL('../src/utils/text.js', import.meta.url), 'utf8');
+    check(/'SYSTEM: ' \+ msg\.content/.test(txt),
+        'the leak filter matches the prefix strictFormat actually writes',
+        'strictFormat no longer writes a SYSTEM: prefix, so the filter targets a string that cannot occur');
+
+    // regression: a real chat line that merely mentions the word system is
+    // not a leak and must survive
+    check(!/^\s*(?:SYSTEM|ACTION OUTPUT)\s*:/i.test('the whole system is down again'),
+        'a normal sentence containing the word system is not filtered',
+        'the leak filter is over-broad and would drop legitimate chat');
+}
+
+// ── 15. SHE DOES NOT ASK WHAT ALREADY TOLD HER ───────────────────────
+//
+// Owner pasted: "what just hit me? this is ridiculous!", "what the hell
+// just hit me?", "again? come on, really?". The death message she is
+// handed names the killer - 'UwU drowned', 'shot by Pillager' - so the
+// question is answerable from her own context.
+{
+    const fs7 = await import('node:fs');
+    const persona = JSON.parse(fs7.readFileSync(new URL('../personas/normal.json', import.meta.url), 'utf8'));
+    const conv = String(persona.conversing);
+    check(/Never ask what just happened to you/.test(conv),
+        'the persona forbids asking what just hit her when she was just told',
+        'the persona does not forbid asking a question its own context already answered');
+    check(/drowned|hit me/.test(conv),
+        'the rule names the actual phrases from the live log',
+        'the rule does not reference the reported wording');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
