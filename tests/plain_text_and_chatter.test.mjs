@@ -1488,20 +1488,56 @@ const check = (cond, good, bad) => {
     // and it must actually work, against the REAL registry and the REAL goals
     const { allCommandNames } = await import('../src/agent/commands/index.js');
     const names = allCommandNames();
-    const wordsOf = (n) => String(n).replace(/^!/, '')
-        .replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    const rank = (g0) => {
-        const g = g0.toLowerCase();
-        const score = (n) => { let h = 0; for (const w of wordsOf(n)) { if (w.length <= 2) continue; if (g.includes(w)) { h += w.length * 2; continue; } if (w.length > 3 && w.includes(g.split(' ')[0])) h += 3; } return h; };
-        return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0).sort((a, b) => b.s - a.s).slice(0, 8).map(x => x.n);
+    // Call the REAL method. An earlier version of this block reimplemented the
+    // scorer inline - and promptly went stale: it kept passing while the
+    // production code ranked differently, which is precisely how a "green" test
+    // hid a broken feature. One source of truth, no copy.
+    const { SelfPrompter } = await import('../src/agent/self_prompter.js');
+    const bare = Object.create(SelfPrompter.prototype);
+    const namesOf = async (goal) => {
+        const out = await bare._realCommandsFor(goal);
+        // split on the sentence boundary the method itself uses
+        const m = out.match(/fit this goal: ([^.]+)\./s);
+        return m ? m[1].split(',').map(x => x.trim()).filter(Boolean) : [];
     };
-    const food = rank('gather food from nearby');
+    const rank = namesOf;
+
+    const food = await rank('gather food from nearby');
     check(food.length > 0 && food.includes('!getFood'),
         'a food goal ranks !getFood first',
         `expected !getFood in ${JSON.stringify(food)}`);
-    check(rank('gather food').includes('!getFood'),
+    check((await rank('gather food')).includes('!getFood'),
         'the bare "gather food" goal also resolves',
         'the shortest goal matched nothing, which is the common case');
+
+    // "mine some coal ore for torches": the material noun (coal/ore) is in the
+    // command's ARGUMENT, never its name, so name-word matching alone puts
+    // !searchForBlock ("for" scores!) and !researchBuild above the right answer.
+    // Stopwords must not score, and the bang must be stripped before prefix
+    // matching - names arrive as "!collectBlocks" so /^collect/ never fired.
+    const coal = await rank('mine some coal ore for torches');
+    check(coal.includes('!collectBlocks'),
+        'a coal-ore goal offers !collectBlocks',
+        `expected !collectBlocks in ${JSON.stringify(coal)}`);
+    check(coal.indexOf('!collectBlocks') < 6,
+        '!collectBlocks is near the TOP for a coal goal, not 11th',
+        `it ranked #${coal.indexOf('!collectBlocks') + 1} of ${coal.length}: ${JSON.stringify(coal)}`);
+    check(coal.includes('!craftRecipe'),
+        'a torch goal also offers !craftRecipe',
+        'she needs coal AND sticks/planks to make torches');
+
+    // and check the raw string the method returns
+    const real = await bare._realCommandsFor('mine some coal ore for torches');
+    check(/!collectBlocks/.test(real),
+        'the real method offers !collectBlocks for coal',
+        `real method returned: ${real}`);
+    check(/Commands that exist and fit this goal/.test(real),
+        'the real method phrases it as a command list',
+        'the real method does not name commands');
+    const none = await bare._realCommandsFor('zzzz qqqq');
+    check(none === '',
+        'an unmatched goal yields nothing rather than noise',
+        'she is handed irrelevant commands');
     // the three names she invented must not exist
     for (const fake of ['!mine', '!gather', '!getCoal', '!dig', '!eat']) {
         check(!names.includes(fake), `${fake} really does not exist (she was inventing it)`,

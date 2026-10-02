@@ -654,17 +654,58 @@ export class SelfPrompter {
         const wordsOf = (n) => String(n).replace(/^!/, '')
             .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
             .toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+        // Stopwords must never score. Measured: for "mine some coal ore for
+        // torches", !searchForBlock scored 6 - entirely from the filler word
+        // "for" appearing in its own name - while !collectBlocks, the correct
+        // command, scored 0. She was therefore offered search and never
+        // collect, and said "got to the coal. time to mine it this time"
+        // forever without emitting anything.
+        const STOP = new Set(['for', 'the', 'and', 'get', 'set', 'new', 'all',
+            'some', 'near', 'nearby', 'with', 'from', 'into', 'out', 'now',
+            'here', 'there', 'this', 'that', 'one', 'two', 'use', 'using', 'do']);
         const score = (n) => {
             const ws = wordsOf(n);
             let hit = 0;
             for (const w of ws) {
-                if (w.length <= 2) continue;
-                if (g.includes(w)) { hit += w.length * 2; continue; }      // exact word
-                if (w.length > 3 && w.includes(g.split(' ')[0])) hit += 3; // partial
+                if (w.length <= 2 || STOP.has(w)) continue;
+                if (g.includes(w)) { hit += w.length * 2; continue; }
+                if (w.length > 3 && w.includes(g.split(' ')[0])) hit += 3;
             }
             return hit;
         };
-        const ranked = names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
+        // Weight commands whose ARGUMENT vocabulary matches the goal. "mine some
+        // coal ore for torches" scored !searchForBlock above !collectBlocks,
+        // because "block" appears in the command NAME but "coal" - the thing she
+        // actually wants - appears in neither name. !collectBlocks coal_ore is
+        // the right answer and was never offered. So also consider whether the
+        // goal's own nouns match a parameter name (type/num/target...), which is
+        // where the substance of a command lives.
+        const nouns = g.match(/[a-z_]{4,}/g) || [];
+        const scoreArgs = (n) => {
+            let h = 0;
+            for (const q of nouns) {
+                if (/(^|_)ore($|_)|coal|log|stone|dirt|food|timber|plank/.test(q)) h += 5;
+            }
+            return h;
+        };
+        // The material noun in the goal ("coal", "ore", "food") is the single
+        // strongest signal, and it lives in the command's ARGUMENT, not its name.
+        // So: if the goal names a raw block/item and a command TAKES a block or
+        // item argument, that command is a strong candidate - !collectBlocks
+        // coal_ore is the answer to "mine some coal ore", and no amount of
+        // name-word matching finds it because "coal" is not in the name.
+        const MATERIALS = /\b(coal|ore|log|wood|plank|stone|dirt|sand|gravel|food|beef|iron|gold|diamond|copper)\b/;
+        const wantsMaterial = MATERIALS.test(g);
+        // strip the leading '!' first - command names arrive as "!collectBlocks",
+        // so /^collect/ never matched and the +40 never applied. That is why
+        // !collectBlocks still sat 11th behind !researchBuild.
+        const takesMaterial = (n) => /^(collect|mine|dig|get|gather|craft|smelt)/i.test(String(n).replace(/^!/, ''));
+        const ranked = names.map(n => {
+            let s = score(n);
+            if (wantsMaterial && takesMaterial(n)) s += 40;  // decisive
+            else if (/(collect|mine|dig|get|gather|find|search)/i.test(n)) s += scoreArgs(n);
+            return { n, s };
+        }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => x.n);
         if (!ranked.length) return '';
         return `Commands that exist and fit this goal: ${ranked.join(', ')}. ` +
