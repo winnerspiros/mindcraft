@@ -1764,5 +1764,67 @@ const check = (cond, good, bad) => {
         'a later stage re-appends what the scrub removed');
 }
 
+// ── 32. FALLBACK GOALS MUST BE REAL ACTIVITIES, AND EXIST ─────────────
+//
+// She ran "collect flowers as a gift for YandereDev". There is no
+// !collectFlowers, so she could not possibly do it, and a goal is exactly what
+// she burns a turn on. It came from a hardcoded list in self_prompter.js - a
+// hand-written list of capabilities rots the moment the command set changes,
+// and nothing flags it, because the goal is well-formed English that merely
+// names a thing she cannot do.
+//
+// Two earlier attempts at GENERATING goals from command names were rejected
+// after running them: string surgery gave "use savedplaces" and "craft able",
+// and arity-filtering gave read-only ("go use inventory") and unsafe
+// (!restart, !stfu) goals. So: a curated list of activities, each VERIFIED
+// against the registry.
+{
+    const { allCommandNames, allCommandArity } = await import('../src/agent/commands/index.js');
+    const have = new Set(allCommandNames());
+    const ar = allCommandArity();
+    const fs32 = await import('node:fs');
+    const src = fs32.readFileSync(new URL('../src/agent/self_prompter.js', import.meta.url), 'utf8');
+
+    const ai = src.indexOf('const ACTIVITIES = [');
+    const bi = src.indexOf('let fallbacks = [];');
+    check(ai > 0 && bi > ai,
+        'the activity list is defined and scoped',
+        'the fallback goal list is missing or misplaced');
+    const block = src.slice(ai, bi);
+
+    // the yandere goals that were actually run in production
+    check(!/yandere/i.test(block),
+        'no yandere residue in the goal list',
+        '"find YandereDev and stay close" is still an offered goal');
+    check(!/flower/i.test(block),
+        'the impossible "collect flowers" goal is gone',
+        'there is no !collectFlowers; she cannot ever do this');
+
+    // EVERY declared command must exist, and arity must match the claim
+    const entries = [...block.matchAll(/cmd:\s*'(!\w+)'/g)].map(m => m[1]);
+    check(entries.length >= 8,
+        'there is a real list of activities',
+        `only ${entries.length} activities`);
+    const missing = entries.filter(c => !have.has(c));
+    check(missing.length === 0,
+        'every activity names a command that EXISTS',
+        `guessed names that do not exist: ${missing.join(', ')} - !goTo was one`);
+
+    // the needsArgs claim must be true, or she emits a bare command again
+    const claims = [...block.matchAll(/cmd:\s*'(!\w+)',\s*needsArgs:\s*(true|false)/g)];
+    const wrongClaim = claims.filter(([, c, v]) => {
+        const req = ar[c] ? ar[c].required : -1;
+        return v === 'true' ? req <= 0 : req < 0;
+    }).map(([m]) => m);
+    check(wrongClaim.length === 0,
+        'needsArgs matches the real arity',
+        `mismatched: ${wrongClaim.join(', ')}`);
+
+    // the registry filter must actually be applied
+    check(/\.filter\(a => have\.has\(a\.cmd\)\)/.test(src),
+        'the list is filtered against the registry at runtime',
+        'a renamed command would silently produce an impossible goal again');
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;
