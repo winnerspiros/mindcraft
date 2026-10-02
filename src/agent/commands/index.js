@@ -202,7 +202,7 @@ function editDistance(a, b) {
 export function explainParamError(commandName, errorText) {
     const cmd = commandMap[String(commandName || '').startsWith('!')
         ? commandName : '!' + commandName];
-    if (!cmd?.params) return null;
+    if (!cmd) return null;
     const err = String(errorText || '');
 
     // A wrong ARG COUNT is the same failure and was left unexplained, which is
@@ -217,21 +217,26 @@ export function explainParamError(commandName, errorText) {
     // model kept guessing because the error never said what it wanted. The
     // type-error branch below was already written for exactly this reason; it
     // just did not match this message shape.
-    const arity = /(?:was given|requires?)\s+.*?(\d+)\s+args?.*?(?:but it only accepts|but requires? at least)\s*(\d+)/.exec(err);
+    const arity = /was given (\d+) args?, but (?:it )?(?:only accepts|requires at least) (\d+)/.exec(err);
     if (arity) {
         const got = Number(arity[1]);
         const want = Number(arity[2]);
-        const sig = Object.entries(cmd.params)
-            .map(([name, s]) => `${name}: ${s.type}${s.default !== undefined ? ` (default ${s.default})` : ''}`)
-            .join(', ');
-        const optional = Object.keys(cmd.params).length < want;
-        return `${commandName} takes (${sig})${optional ? ' — some params are optional.' : '.'} `
-            + `You passed ${got} arg(s); it wants ${want}. `
+        // A command with no declared params (like !tps) still deserves a
+        // correction - "it takes no parameters, you passed 1" is the whole
+        // lesson and it takes one line.
+        const sig = cmd.params && Object.keys(cmd.params).length
+            ? Object.entries(cmd.params)
+                .map(([name, s]) => `${name}: ${s.type}${s.default !== undefined ? ` (default ${s.default})` : ''}`)
+                .join(', ')
+            : '(no parameters)';
+        return `${commandName} takes ${sig}. You passed ${got} arg(s); it wants ${want}. `
             + (got > want
-                ? 'Drop the extra ones and keep only what is listed above.'
+                ? 'Drop the extra ones and call it with nothing after the name.'
                 : 'Supply every listed param, in the order shown.');
     }
 
+    // Wrong TYPE: only reachable for commands that declare params.
+    if (!cmd.params) return null;
     const m = /Param '(\w+)' must be of type (\w+)/.exec(err);
     if (!m) return null;
     const [, badParam, wantedType] = m;
