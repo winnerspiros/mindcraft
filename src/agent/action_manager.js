@@ -241,8 +241,15 @@ export class ActionManager {
         let output = bot.output;
         const MAX_OUT = 500;
         if (output.length > MAX_OUT) {
-            output = `Action output is very long (${output.length} chars) and has been shortened.\n
-          First outputs:\n${output.substring(0, MAX_OUT / 2)}\n...skipping many lines.\nFinal outputs:\n ${output.substring(output.length - MAX_OUT / 2)}`;
+            const half = MAX_OUT / 2;
+            const first = output.substring(0, half);
+            const firstCut = first.lastIndexOf(' ');
+            const keptFirst = firstCut > half * 0.8 ? first.slice(0, firstCut) : first;
+            const lastPart = output.substring(output.length - half);
+            const lastSpace = lastPart.indexOf(' ');
+            const keptLast = lastSpace >= 0 ? lastPart.slice(lastSpace + 1) : lastPart;
+            output = `Action output is very long (${output.length} chars) and has been shortened.\n\n`
+                + `First outputs:\n${keptFirst}\n...skipping many lines.\nFinal outputs:\n ${keptLast}`;
         }
         else {
             output = 'Action output:\n' + output.toString();
