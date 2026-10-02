@@ -1,69 +1,37 @@
 diff --git a/node_modules/mineflayer/lib/plugins/enchantment_table.js b/node_modules/mineflayer/lib/plugins/enchantment_table.js
 --- a/node_modules/mineflayer/lib/plugins/enchantment_table.js
 +++ b/node_modules/mineflayer/lib/plugins/enchantment_table.js
-@@ -72,14 +72,17 @@
+@@ -72,15 +72,27 @@
      }
  
      async function enchant (choice) {
 -      if (!ready) await once(enchantmentTable, 'ready')
        choice = parseInt(choice, 10) // allow string argument
        assert.notStrictEqual(enchantmentTable.enchantments[choice].level, -1)
--      bot._client.write('recipe_book_change_settings', {
--        bookId: 0,
--        bookOpen: false,
--        filterActive: false
--      }) // 26.3: jar 39 place_recipe/enchant slot renamed; enchant table write parked
 +      // 26.3: the server has a dedicated enchant_item packet
 +      // ({ windowId, enchantment }). The old code wrote
 +      // recipe_book_change_settings, which is a DIFFERENT packet and a no-op on
-+      // this build, so the click never registered and this promise hung forever
-+      // waiting for an updateSlot:0 that never arrived. Write the real packet.
-+      bot._client.write('enchant_item', {
-+        windowId: enchantmentTable.id,
-+        enchantment: choice
-+      })
-       const [, newItem] = await once(enchantmentTable, 'updateSlot:0')
-       return newItem
++      // this build, so the click never registered.
+       bot._client.write('enchant_item', {
+         windowId: enchantmentTable.id,
+         enchantment: choice
+       })
+-      const [, newItem] = await once(enchantmentTable, 'updateSlot:0')
+-      return newItem
++      // Do NOT wait on updateSlot:0 indefinitely. When the server declines the
++      // enchant it simply never sends that slot update, so the original
++      // `once(...,'updateSlot:0')` hung for the full 20s and then threw, which
++      // looked like a hard failure even though the enchant may well have been
++      // applied. Bound the wait and let the caller VERIFY from the item's own
++      // components instead.
++      const raced = await Promise.race([
++        once(enchantmentTable, 'updateSlot:0').then(r => r[1]),
++        new Promise(res => setTimeout(() => res(undefined), 3000)),
++      ])
++      return raced
      }
-diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/mineflayer/lib/plugins/physics.js
---- a/node_modules/mineflayer/lib/plugins/physics.js
-+++ b/node_modules/mineflayer/lib/plugins/physics.js
-@@ -239,6 +239,35 @@
-     if ((!shouldUsePhysics || performance.now() - lastPosSend < 2500)) {
-       if (bot._digAimArmed) {
-         lastPosSend = performance.now() // hold clock restarts — next non-dig look still waits
-+      } else if (bot._gazeArmed) {
-+        // 26.3 GAZE FIX: an idle glance must not wait for a position packet.
-+        // The hold above waits for movement, and the movement never comes because
-+        // the hold is active - a deadlock, measured: idle_staring acquired the
-+        // target and bot.lookAt set entity yaw to 1.2357, while the server's yaw
-+        // stayed at the spawn value 109.2 across 30 samples over 60s. The only
-+        // drain for _pendingForceLook is updatePosition (below), a POSITION
-+        // sender, so a stashed glance was never sent.
-+        //
-+        // A glance is exactly the shape the 26.3 notes call safe: a bare 'look'
-+        // never sets receivedPositionThisTick, so it cannot cause the
-+        // invalid_player_movement this hold prevents. Same exemption dig-aim
-+        // already takes. Flush it as a bare look, keeping the jitter so repeated
-+        // glances cannot phase-lock with the server tick.
-+        if (physics._lookJitter && performance.now() < physics._lookJitter) return
-+        physics._lookJitter = performance.now() + Math.random() * 30
-+        if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
-+        lastSentYaw = conv.fromNotchianYaw(yaw)
-+        lastSentPitch = conv.fromNotchianPitch(pitch)
-+        lastSent.yaw = yaw
-+        lastSent.pitch = pitch
-+        lastSent.onGround = onGround
-+        bot._client.write('look', {
-+          yaw,
-+          pitch,
-+          flags: { onGround, hasHorizontalCollision: false }
-+        })
-+        sendTickEnd()
-+        return
-       } else {
-         bot._pendingForceLook = { yaw, pitch, onGround }
-         return
+ 
+     async function takeTargetItem () {
 diff --git a/node_modules/mineflayer/lib/plugins/digging.js b/node_modules/mineflayer/lib/plugins/digging.js
 --- a/node_modules/mineflayer/lib/plugins/digging.js
 +++ b/node_modules/mineflayer/lib/plugins/digging.js
@@ -199,3 +167,808 @@ diff --git a/node_modules/mineflayer/lib/plugins/digging.js b/node_modules/minef
      } catch (_) {}
    })
  
+diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/mineflayer/lib/plugins/physics.js
+--- a/node_modules/mineflayer/lib/plugins/physics.js
++++ b/node_modules/mineflayer/lib/plugins/physics.js
+@@ -60,6 +60,9 @@
+   // see: https://discord.com/channels/413438066984747026/519952494768685086/901948718255833158
+   let timeAccumulator = 0
+   let catchupTicks = 0
++  // 26.3 walk-proof: guards stay, chatter goes. (Verbose 5s [phys-dbg]
++  // dump + per-send counters were TEMP diagnosis for the NaN freeze —
++  // removed 07:3x after walk proof. Only this comment remains.)
+   function doPhysics () {
+     const now = performance.now()
+     const deltaSeconds = (now - lastPhysicsFrameTime) / 1000
+@@ -79,7 +82,20 @@
+     if (!bot.entity?.position || !Number.isFinite(bot.entity.position.x)) return // entity not ready
+     if (bot.blockAt(bot.entity.position) == null) return // check if chunk is unloaded
+     if (bot.physicsEnabled && shouldUsePhysics) {
+-      physics.simulatePlayer(new PlayerState(bot, controlState), world).apply(bot)
++      // 26.3 NaN-CONTAIN (06:4x: pos=NaN,67,NaN for 20+ min while RCON held
++      // her finite — once NaN is applied, every later tick clones NaN and the
++      // poison is forever). Split simulate/apply: if the sim result is
++      // non-finite, LOG the source and SKIP the apply so last-good survives.
++      const _st = new PlayerState(bot, controlState);
++      physics.simulatePlayer(_st, world);
++      if (!Number.isFinite(_st.pos.x) || !Number.isFinite(_st.pos.y) || !Number.isFinite(_st.pos.z)) {
++        // sim went non-finite: skip the apply so last-good survives. Silent
++        // (no log spam) — if she ever freezes again, re-add the one-shot
++        // [nan-src] dump from patchsnap to identify the source.
++      } else {
++        _st.apply(bot);
++      }
++      try { bot._dirtyInputs = false } catch (_) {} // consumed by this tick
+       bot.emit('physicsTick')
+       bot.emit('physicTick') // Deprecated, only exists to support old plugins. May be removed in the future
+     }
+@@ -98,33 +114,202 @@
+     doPhysicsTimer = null
+   }
+ 
++  function sendTickEnd () {
++    if (bot.supportFeature('hasClientTickEnd')) {
++      try { bot._client.write('tick_end', {}) } catch (e) { /* ignore */ }
++      // 26.3: NO player_input here at all. Vanilla sends player_input ONLY
++      // alongside actual movement (position/position_look), never with a bare
++      // look or a solo tick_end. Every earlier theory about riding the tick
++      // stream was wrong: walk-death 17:30:02 shows look+tick_end+player_input
++      // triples with ZERO positions for the whole window -> kick. The ONLY
++      // safe player_input is one sent WITH a position packet (sendInputWithMove
++      // below fires immediately BEFORE the gated position write, so the pair
++      // lands atomically in the same server tick — input first, exactly like
++      // vanilla's ClientTick packet order). The server treats missing input
++      // as all-false anyway (vanilla standing still sends no input). Sneak
++      // state is server-side via setShiftKeyDown persistence — no per-toggle
++      // packet needed while standing.
++    }
++  }
++
++  // 26.3 player_input restore: shape confirmed in generated 26.3
++  // protocol.json (packet_player_input = {inputs: bitflags u8
++  // [forward,backward,left,right,jump,shift,sprint]}). Fires ONLY from
++  // sendPacketPosition/sendPacketPositionAndLook, immediately BEFORE the
++  // position write, never standalone — same-tick pair, vanilla order.
++  // BOTCRAFT PORT (input-on-CHANGE: Botcraft SendPosition sends
++  // ServerboundPlayerInput only when inputs DIFFER from last-sent, never
++  // per-tick. Same re-assert/replay reason as the sprint edge above:
++  // identical inputs re-sent every move packet are replay fuel. Cache and
++  // diff; all-false still skips (server default).
++  bot._lastSentInput = bot._lastSentInput || null;
++  function sendInputWithMove () {
++    if (!bot.entity) return
++    try {
++      const cs = (typeof bot.getControlState === 'function')
++        ? { forward: !!bot.getControlState('forward'), backward: !!bot.getControlState('back'), left: !!bot.getControlState('left'), right: !!bot.getControlState('right'), jump: !!bot.getControlState('jump'), shift: !!bot.getControlState('sneak'), sprint: !!bot.getControlState('sprint') }
++        : { forward: false, backward: false, left: false, right: false, jump: false, shift: false, sprint: false };
++      if (!cs.forward && !cs.backward && !cs.left && !cs.right && !cs.jump && !cs.shift && !cs.sprint) return; // all-false = server default, skip the write
++      try {
++        const l = bot._lastSentInput;
++        if (l && l.forward === cs.forward && l.backward === cs.backward && l.left === cs.left
++            && l.right === cs.right && l.jump === cs.jump && l.shift === cs.shift && l.sprint === cs.sprint) return; // unchanged: skip
++      } catch (_) {}
++      bot._lastSentInput = { ...cs };
++      bot._client.write('player_input', { inputs: cs });
++    } catch (e) { /* input is advisory — never fail movement for it */ }
++  }
++
++  // 26.3: per-tick send gate. The server kills on a second position-bearing
++  // packet (position/position_look) before tick_end closes the window
++  // (handleMovePlayer: receivedPositionThisTick). tick_end is async over the
++  // socket — back-to-back physics ticks (50ms) can emit two position_looks
++  // into one server tick window (walk-death proved: 9ms gaps). So: at most
++  // ONE position-bearing send per 120ms; extra updates are merged into the
++  // next slot. Bare 'look' is exempt (never sets the flag).
++  let lastPosSend = 0
++  function gatePosSend () {
++    const now = performance.now()
++    if (now - lastPosSend < 120) return false
++    lastPosSend = now
++    return true
++  }
+   function sendPacketPosition (position, onGround) {
+     // sends data, no logic
+     if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) return
++    if (!gatePosSend()) return
+     const oldPos = new Vec3(lastSent.x, lastSent.y, lastSent.z)
+     lastSent.x = position.x
+     lastSent.y = position.y
+     lastSent.z = position.z
+     lastSent.onGround = onGround
+     lastSent.flags = { onGround, hasHorizontalCollision: undefined } // 1.21.3+
++    lastSent.time = performance.now() // 26.3: every position send counts for the per-tick gate
++    sendInputWithMove() // 26.3: input rides WITH movement, vanilla order
+     bot._client.write('position', lastSent)
++    sendTickEnd()
+     bot.emit('move', oldPos)
+   }
+ 
+   function sendPacketLook (yaw, pitch, onGround) {
+-    // sends data, no logic
++    // 26.3: send a FRESH minimal look body — NEVER the shared lastSent
++    // object. lastSent carries x/y/z/time (position fields) plus an
++    // ever-mutated flags object; the compiled serializer reads extra keys /
++    // undefined hasHorizontalCollision as a failed match and emits a bare
++    // id-only byte (MFlook proved: 'look wire bytes: 00'), which the jar
++    // reads as NaN rotation -> containsInvalidValues -> instant
++    // invalid_player_movement kick (walk-death 17:51:54: 9 bare looks, zero
++    // positions, kick 27s after login). Fresh {yaw,pitch,flags} every time.
++    // 26.3 jar truth (ServerGamePacketListenerImpl.handleMovePlayer): ONLY
++    // 26.3 jar truth (ServerGamePacketListenerImpl.handleMovePlayer): ONLY
++    // position-bearing packets (position, position_look) set
++    // receivedPositionThisTick — a second one before tick_end = instant
++    // invalid_player_movement kick. Bare 'look' never touches the flag, so
++    // stare/look traffic is unlimited-safe. NEVER fold look into
++    // position_look here (that fold is what kicked on stare).
++    // 26.3: freeze-look. While spawn-frozen (shouldUsePhysics false) the
++    // client must send NOTHING per tick — vanilla sends no look while frozen.
++    // sendPacketLook is called from updatePosition (frozen-gated already) AND
++    // from bot.look()/lookAt() (stare, dig-aim — NOT gated). Stray looks each
++    // open a tick window next to the echo's position_look (walk-death proved
++    // 48s of 49ms looks during freeze -> Invalid move). Swallow while frozen.
++    // 26.3: tick_end rides WITH the look (vanilla pairs them per-tick). A
++    // solo tick_end with no movement STILL resets receivedPositionThisTick on
++    // the server — sent between two tick windows it desyncs the gate's
++    // accounting (walk-death 17:24:53: bare look+tick_end pairs with zero
++    // positions for 21s -> kick). So skip BOTH while frozen.
++    // 26.3: burst-quiet re-arm takes ~5s after the last server teleport; the
++    // first stare looks AFTER unfreeze still collide with the tail of the
++    // placement burst (walk-death 17:31:35: 2 bare looks 1ms apart, zero
++    // positions, kick 21s after login). Hold looks an extra 10s after EVERY
++    // server teleport (echo handler refreshes this clock) so the placement
++    // fully settles before any look goes out. Stare angles still accumulate
++    // in entity yaw/pitch and flush on the first allowed send.
++    // 26.3: look+tick_end PAIRS every ~47ms with zero positions are the kick
++    // shape (18:27:48: 28s of pairs -> Invalid move; vanilla probe 6 jittered
++    // pairs survived because the INTERVALS varied). A fixed-interval pair
++    // train phase-locks with the server tick: the look lands in the same tick
++    // slot every time and the gate's per-tick accounting never sees a
++    // position-bearing packet in the slots it samples -> drift -> kick. Fix:
++    // jitter every stare look by 0-30ms so pairs can't phase-lock.
++    // 26.3 DIG-AIM FIX pt3: an armed dig (START about to go out) needs its
++    // aim on the wire BEFORE the block_dig, not stashed for the next tick —
++    // Panda raycasts the START against the server's CURRENT yaw/pitch, and
++    // the stashed flush always arrived one tick too late (face-away cancels).
++    if ((!shouldUsePhysics || performance.now() - lastPosSend < 2500)) {
++      if (bot._digAimArmed) {
++        lastPosSend = performance.now() // hold clock restarts — next non-dig look still waits
++      } else if (bot._gazeArmed) {
++        // 26.3 GAZE FIX: an idle glance must not wait for a position packet.
++        // The hold above waits for movement, and the movement never comes because
++        // the hold is active - a deadlock, measured: idle_staring acquired the
++        // target and bot.lookAt set entity yaw to 1.2357, while the server's yaw
++        // stayed at the spawn value 109.2 across 30 samples over 60s. The only
++        // drain for _pendingForceLook is updatePosition (below), a POSITION
++        // sender, so a stashed glance was never sent.
++        //
++        // A glance is exactly the shape the 26.3 notes call safe: a bare 'look'
++        // never sets receivedPositionThisTick, so it cannot cause the
++        // invalid_player_movement this hold prevents. Same exemption dig-aim
++        // already takes. Flush it as a bare look, keeping the jitter so repeated
++        // glances cannot phase-lock with the server tick.
++        if (physics._lookJitter && performance.now() < physics._lookJitter) return
++        physics._lookJitter = performance.now() + Math.random() * 30
++        if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
++        lastSentYaw = conv.fromNotchianYaw(yaw)
++        lastSentPitch = conv.fromNotchianPitch(pitch)
++        lastSent.yaw = yaw
++        lastSent.pitch = pitch
++        lastSent.onGround = onGround
++        bot._client.write('look', {
++          yaw,
++          pitch,
++          flags: { onGround, hasHorizontalCollision: false }
++        })
++        sendTickEnd()
++        return
++      } else {
++        bot._pendingForceLook = { yaw, pitch, onGround }
++        return
++      }
++    }
++    if (physics._lookJitter && performance.now() < physics._lookJitter) return
++    physics._lookJitter = performance.now() + Math.random() * 30
++    // 26.3: NaN entity angles (pre-sync) must NEVER reach the wire —
++    // containsInvalidValues kicks on the first null (18:37:19). Skip the
++    // look AND its tick_end (a solo tick_end desyncs the gate the same way).
++    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
+     const oldPos = new Vec3(lastSent.x, lastSent.y, lastSent.z)
+     lastSent.yaw = yaw
+     lastSent.pitch = pitch
+     lastSent.onGround = onGround
+-    lastSent.flags = { onGround, hasHorizontalCollision: undefined } // 1.21.3+
+-    bot._client.write('look', lastSent)
++    bot._client.write('look', {
++      yaw,
++      pitch,
++      flags: { onGround, hasHorizontalCollision: false }
++    })
++    sendTickEnd()
+     bot.emit('move', oldPos)
+   }
+ 
+   function sendPacketPositionAndLook (position, yaw, pitch, onGround) {
+     // sends data, no logic
+     if (!Number.isFinite(position.x) || !Number.isFinite(position.y) || !Number.isFinite(position.z)) return
++    // 26.3 NaN-yaw guard (19:27:40 walk-death: position_look went out with
++    // yaw:null pitch:null at !digDown start -> jar containsInvalidValues ->
++    // instant Invalid-move kick. bot.entity.yaw/pitch can be null/NaN before
++    // first entity sync or after teleport math folds. Never emit NaN/null —
++    // swallow the send; the server already holds last-good from confirms.)
++    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
++    // 26.3: SWALLOW ALL position_look echoes while spawn-frozen. The server's
++    // spawn-placement burst sends 3-4 absolute teleports; the old code echoed
++    // the first (d75-76 snap vs the (0,0,0) lastSent baseline -> kick) and
++    // swallowed the REST — exactly backwards (walk-death 17:12:47: first echo
++    // d75.06, rest swallowed, kick anyway). The server already placed her via
++    // the teleport_confirm acks; echoing position_look adds nothing but a
++    // window for the moved-wrongly gate. Genuine teleports AFTER unfreeze
++    // (different coords, physics live) pass straight through.
++    if (!shouldUsePhysics) return
+     const oldPos = new Vec3(lastSent.x, lastSent.y, lastSent.z)
+     lastSent.x = position.x
+     lastSent.y = position.y
+@@ -132,8 +317,24 @@
+     lastSent.yaw = yaw
+     lastSent.pitch = pitch
+     lastSent.onGround = onGround
+-    lastSent.flags = { onGround, hasHorizontalCollision: undefined } // 1.21.3+
+-    bot._client.write('position_look', lastSent)
++    lastSent.time = performance.now() // 26.3: every position send counts for the per-tick gate
++    // 26.3: send a FRESH minimal body — NEVER the shared lastSent object
++    // (same serializer shape-mismatch disease as look/flying/teleport:
++    // extra time key + undefined hasHorizontalCollision -> the compiled
++    // writer can emit a bare id-only byte -> jar NaN -> kick). Walk-death
++    // 18:32:37: a 40s position_look EVERY 50ms train (bot.entity.position
++    // float-noise vs lastSent made 'moved' true forever) phase-locked with
++    // the tick loop -> Invalid move. Fresh {x,y,z,yaw,pitch,flags} only.
++    sendInputWithMove() // 26.3: input rides WITH movement, vanilla order
++    bot._client.write('position_look', {
++      x: position.x,
++      y: position.y,
++      z: position.z,
++      yaw,
++      pitch,
++      flags: { onGround, hasHorizontalCollision: false }
++    })
++    sendTickEnd()
+     bot.emit('move', oldPos)
+   }
+ 
+@@ -146,6 +347,11 @@
+   }
+ 
+   // returns false if bot should send position packets
++  // 26.3 NaN guard (walk-death 18:37:19): bot.entity.yaw/pitch are NaN
++  // until the first full entity sync — sendPacketLook wrote
++  // {yaw:null,pitch:null} (JSON null = NaN after fround) and the jar's
++  // containsInvalidValues kicked on the FIRST look. Never emit NaN/null.
++  // (finiteLook helper removed — the guard lives inline in sendPacketLook.)
+   function isEntityRemoved () {
+     if (bot.isAlive === true) deadTicks = 0
+     if (bot.isAlive === false && deadTicks <= 20) deadTicks++
+@@ -169,17 +375,51 @@
+     lastSentYaw += math.clamp(-maxDeltaYaw, dYaw, maxDeltaYaw)
+     lastSentPitch += math.clamp(-maxDeltaPitch, dPitch, maxDeltaPitch)
+ 
+-    const yaw = Math.fround(conv.toNotchianYaw(lastSentYaw))
+-    const pitch = Math.fround(conv.toNotchianPitch(lastSentPitch))
++    let yaw = Math.fround(conv.toNotchianYaw(lastSentYaw))
++    let pitch = Math.fround(conv.toNotchianPitch(lastSentPitch))
++
+     const position = bot.entity.position
+     const onGround = bot.entity.onGround
++    // 26.3 DIG-AIM FIX: flush a stashed force-look into the send angles FIRST
++    // (frozen-gated via updatePosition) so dig/place aim always reaches the
++    // wire — the server raycasts from its own yaw/pitch, never local.
++    let _forceFlushed = false
++    if (bot._pendingForceLook) {
++      try {
++        yaw = bot._pendingForceLook.yaw
++        pitch = bot._pendingForceLook.pitch
++        // keep the drift tracker in sync so the next tick sees no phantom delta
++        lastSentYaw = conv.fromNotchianYaw(yaw)
++        lastSentPitch = conv.fromNotchianPitch(pitch)
++        _forceFlushed = true
++      } catch (_) {}
++      bot._pendingForceLook = null
++    }
+ 
+     // Only send a position update if necessary, select the appropriate packet
+-    const positionUpdated = lastSent.x !== position.x || lastSent.y !== position.y || lastSent.z !== position.z ||
+-      // Send a position update every second, even if no other update was made
+-      // This function rounds to the nearest 50ms (or PHYSICS_INTERVAL_MS) and checks if a second has passed.
+-      (Math.round((now - lastSent.time) / PHYSICS_INTERVAL_MS) * PHYSICS_INTERVAL_MS) >= 1000
+-    const lookUpdated = lastSent.yaw !== yaw || lastSent.pitch !== pitch
++    // 26.3: the idle heartbeat (position every 1s while standing still) trips
++    // the per-tick gate when it lands in a tick window already opened by a
++    // look/echo (walk-death log proved: bare 'position' d0.00 right after a
++    // position_look in the same window -> instant kick). Stand-still needs NO
++    // position at all — the server keeps last-known. Only send on real moves.
++    // 26.3: float-noise guard (walk-death 18:32:37) — bot.entity.position
++    // jitters ~0.01-0.03/tick from the physics sim while standing still;
++    // strict !== made 'moved' true FOREVER -> a position_look EVERY 50ms for
++    // 40s straight -> phase-lock with the tick loop -> Invalid move. Deadband
++    // 1mm: anything smaller is sim noise, not walking.
++    const dx = Math.abs((lastSent.x ?? position.x) - position.x)
++    const dy = Math.abs((lastSent.y ?? position.y) - position.y)
++    const dz = Math.abs((lastSent.z ?? position.z) - position.z)
++    // BOTCRAFT PORT (SendPosition minimal-diff: vanilla move threshold is
++    // (dpos)^2 > 4e-8 (~0.2mm); plus a 20-tick heartbeat so a silent client
++    // never looks dead to the server. 1mm deadband was ours; 0.2mm matches
++    // the real client and stops micro-move spam one level lower.
++    const _movedSq = dx * dx + dy * dy + dz * dz
++    bot._moveTickCount = (bot._moveTickCount || 0) + 1
++    const _heartbeat = bot._moveTickCount % 20 === 0
++    const moved = _movedSq > 4e-8 || _heartbeat
++    const positionUpdated = moved
++    const lookUpdated = _forceFlushed || lastSent.yaw !== yaw || lastSent.pitch !== pitch
+ 
+     if (positionUpdated && lookUpdated) {
+       sendPacketPositionAndLook(position, yaw, pitch, onGround)
+@@ -188,21 +428,50 @@
+       sendPacketPosition(position, onGround)
+       lastSent.time = now // only reset if positionUpdated is true
+     } else if (lookUpdated) {
++      // 26.3: folded into position_look inside sendPacketLook always.
++      // 26.3: EXCEPT while spawn-frozen — updatePosition only runs when
++      // shouldUsePhysics, but bot.look()/lookAt() (stare) mutate entity yaw
++      // directly, which makes lookUpdated true here... except this branch is
++      // inside updatePosition so it IS frozen-gated. The stray looks came
++      // from sendPacketLook's OTHER caller path — now gated inside
++      // sendPacketLook itself. Keep this call unconditional.
+       sendPacketLook(yaw, pitch, onGround)
+     } else if (positionUpdateSentEveryTick || onGround !== lastSent.onGround) {
+-      // For versions < 1.12, one player packet should be sent every tick
+-      // for the server to update health correctly
+-      // For versions >= 1.12, onGround !== lastSent.onGround should be used, but it doesn't ever trigger outside of login
++      // 26.3: onGround flips ride a FRESH minimal 'flying' body — NEVER the
++      // shared lastSent object (same serializer shape-mismatch disease as
++      // 'look': extra x/y/z/time keys + undefined hasHorizontalCollision ->
++      // bare id-only byte -> jar NaN -> kick). Walk-death 17:55:55: flying,
++      // flying 49ms apart with zero positions right before the kick.
+       bot._client.write('flying', {
+-        onGround: bot.entity.onGround,
+-        flags: { onGround: bot.entity.onGround, hasHorizontalCollision: undefined } // 1.21.3+
++        flags: { onGround: bot.entity.onGround, hasHorizontalCollision: false }
+       })
++      sendTickEnd()
+     }
+ 
+     lastSent.onGround = bot.entity.onGround // onGround is always set
+   }
+ 
+   bot.physics = physics
++  // 26.3: single gate query for the mode layer (stare/crouch-hold). Returns
++  // false while spawn-frozen or within the 10s look-hold after a server
++  // teleport — callers skip head-turns/inputs and resume automatically.
++  bot.physics.shouldSendLook = () => {
++    if (bot._digAimArmed) return shouldUsePhysics // dig aim: frozen-gated only, never hold-gated
++    if (!shouldUsePhysics && !bot._digAimArmed) return false
++    if (performance.now() - lastPosSend < 2500) return false
++    return true
++  }
++  // 26.3: block_place look-hold. Called by _genericPlace BEFORE the write so
++  // the physics tick's lookUpdated branch stays silent through the placement
++  // window (WIRE-ORDER proof: post-place look+tick_end = type-0 reject).
++  // Same clock the teleport hold uses — one gate, two triggers.
++  bot.physics.holdLooksAfterPlace = () => { lastPosSend = performance.now() }
++  // 26.3: quiet-window queries for interaction gating (viewChest etc).
++  // shouldUsePhysics reports the spawn-freeze; msSinceMove reports ms since
++  // the last position-bearing send (lastSent.time is refreshed on every
++  // position/position_look AND every server-teleport echo).
++  bot.physics.shouldUsePhysics = () => shouldUsePhysics
++  bot.physics.msSinceMove = () => performance.now() - lastPosSend
+ 
+   function getEffectLevel (mcData, effectName, effects) {
+     const effectDescriptor = mcData.effectsByName[effectName]
+@@ -250,6 +519,18 @@
+     if (control === 'jump' && state) {
+       bot.jumpQueued = true
+     } else if (control === 'sprint') {
++      // BOTCRAFT PORT (edge-triggered sprint: Botcraft SendPosition sends
++      // Start/StopSprinting as PlayerCommand on sprint-flag EDGE only, never
++      // per-tick spam — vanilla holds one edge for minutes. Mineflayer
++      // already early-returns on same-state, but legs/ticks/flees re-assert
++      // and stall replays batch those into bursts the AC reads as toggling.
++      // Suppress same-edge re-emits within 500ms; real flips always pass.)
++      bot._lastSprintEmit = bot._lastSprintEmit || { state: null, ms: 0 };
++      try {
++        const nowMs = Date.now();
++        if (bot._lastSprintEmit.state === state && nowMs - bot._lastSprintEmit.ms < 500) return;
++        bot._lastSprintEmit = { state, ms: nowMs };
++      } catch (_) {}
+       bot._client.write('entity_action', {
+         entityId: bot.entity.id,
+         actionId: bot.supportFeature('entityActionUsesStringMapper')
+@@ -258,21 +539,9 @@
+         jumpBoost: 0
+       })
+     } else if (control === 'sneak') {
+-      if (bot.supportFeature('newPlayerInputPacket')) {
+-        // In 1.21.6+, sneak is handled via player_input packet
+-        bot._client.write('player_input', {
+-          inputs: {
+-            shift: state
+-          }
+-        })
+-      } else {
+-        // Legacy entity_action approach for older versions
+-        bot._client.write('entity_action', {
+-          entityId: bot.entity.id,
+-          actionId: state ? 0 : 1,
+-          jumpBoost: 0
+-        })
+-      }
++      // 26.3: mirror vanilla — sneak rides the per-tick player_input stream,
++      // NEVER a standalone write. A solo player_input outside the tick cadence
++      // collides with look/tick_end in one server tick (walk-deat...[truncated]
+     }
+   }
+ 
+@@ -281,10 +550,41 @@
+     return controlState[control]
+   }
+ 
++  // BOTCRAFT PORT (dirtyInputs backpressure: Botcraft AI sets inputs,
++  // physics consumes; Move() yields while GetDirtyInputs(). Without the
++  // flag, kite steps + planner + flee overwrite each other mid-tick and
++  // the wire flaps forward/back between two ticks. Stamp on every write,
++  // clear after each simulated tick; loops yield while dirty.)
++  bot._dirtyInputs = false
++  bot.physics.inputsDirty = () => bot._dirtyInputs === true
++  const _origSetCS = bot.setControlState
++  bot.setControlState = (control, state) => {
++    try { if (controlState[control] !== state) bot._dirtyInputs = true } catch (_) {}
++    return _origSetCS(control, state)
++  }
+   bot.clearControlStates = () => {
+     for (const control in controlState) {
+-      bot.setControlState(control, false)
++      _origSetCS(control, false)
+     }
++    try { bot._dirtyInputs = true } catch (_) {}
++  }
++  // BARITONE PORT (PathingControlManager single-owner: exactly one
++  // non-temporary driver owns movement per tick.)
++  bot._moveOwner = bot._moveOwner || null
++  bot._moveLeaseUntil = bot._moveLeaseUntil || 0
++  bot.moveAcquire = (name, ms = 800) => {
++    try {
++      const now = Date.now()
++      if (bot._moveOwner && bot._moveOwner !== name && now < bot._moveLeaseUntil) return false
++      bot._moveOwner = name; bot._moveLeaseUntil = now + ms
++    } catch (_) {}
++    return true
++  }
++  bot.moveRelease = (name) => {
++    try { if (!name || bot._moveOwner === name) { bot._moveOwner = null; bot._moveLeaseUntil = 0 } } catch (_) {}
++  }
++  bot.moveOwnedByOther = (name) => {
++    try { return !!(bot._moveOwner && bot._moveOwner !== name && Date.now() < bot._moveLeaseUntil) } catch (_) { return false }
+   }
+ 
+   bot.controlState = {}
+@@ -326,12 +626,40 @@
+     }
+   })
+ 
++  // BARITONE PORT (LookBehavior smooth-look: 5-sample moving average on
++  // yaw/pitch before the wire — one snapped frame can't whip the head.
++  // force looks (dig-aim, place-aim) bypass: they need the exact face.)
++  bot._smoothLookBuf = { yaw: [], pitch: [] }
++  bot._smoothLookPush = (buf, v) => {
++    try {
++      buf.push(v)
++      if (buf.length > 5) buf.shift()
++      let s = 0
++      for (const x of buf) s += x
++      return s / buf.length
++    } catch (_) { return v }
++  }
+   bot.look = async (yaw, pitch, force) => {
+     if (!lookingTask.done) {
+       lookingTask.finish() // finish the previous one
+     }
+     lookingTask = createTask()
+ 
++    // 26.3 NaN-CONTAIN: yaw/pitch NaN here (pathfinder dx NaN from NaN nodes,
++    // or a relative server nudge folded wrong) used to poison entity angles
++    // via += NaN, and the sim then turns yaw-NaN into pos-NaN. Drop it.
++    if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) return
++    // BARITONE PORT (LookBehavior smooth-look, correct site: average in
++    // bot.look where `force` is in scope — non-force stares glide,
++    // force dig/place-aim bypasses + clears the buffer.)
++    if (!force) {
++      try {
++        yaw = bot._smoothLookPush(bot._smoothLookBuf.yaw, yaw)
++        pitch = bot._smoothLookPush(bot._smoothLookBuf.pitch, pitch)
++      } catch (_) {}
++    } else {
++      try { bot._smoothLookBuf.yaw.length = 0; bot._smoothLookBuf.pitch.length = 0 } catch (_) {}
++    }
+     // this is done to bypass certain anticheat checks that detect the player's sensitivity
+     // by calculating the gcd of how much they move the mouse each tick
+     const sensitivity = conv.fromNotchianPitch(0.15) // this is equal to 100% sensitivity in vanilla
+@@ -348,6 +676,32 @@
+     if (force) {
+       lastSentYaw = yaw
+       lastSentPitch = pitch
++      // 26.3 DIG-AIM pt5: when a dig is ARMED, the aim must hit the wire NOW
++      // (Panda raycasts START against the server's current angles). The old
++      // stash-and-return path relied on the next updatePosition tick, which
++      // could be swallowed by the hold, jitter, or a mode look — the trace
++      // proved armed aims never reached the wire (stale yaw=90 at START).
++      if (bot._digAimArmed && shouldUsePhysics) {
++        try {
++          sendPacketLook(
++            Math.fround(conv.toNotchianYaw(yaw)),
++            Math.fround(conv.toNotchianPitch(pitch)),
++            bot.entity.onGround)
++          lastPosSend = performance.now()
++        } catch (_) {}
++      }
++      // 26.3 DIG-AIM FIX pt2: force-look (dig/place aim) used to return here
++      // without touching the wire, and updatePosition then saw zero drift so
++      // it sent NOTHING — the server kept the stale spawn-facing yaw and
++      // Panda's canBreak raycast cancelled every dig. Stash the notchian
++      // angles; updatePosition flushes them (frozen-gated already).
++      try {
++        bot._pendingForceLook = {
++          yaw: Math.fround(conv.toNotchianYaw(yaw)),
++          pitch: Math.fround(conv.toNotchianPitch(pitch)),
++          onGround: bot.entity.onGround
++        }
++      } catch (_) {}
+       return
+     }
+ 
+@@ -359,13 +713,26 @@
+     const yaw = Math.atan2(-delta.x, -delta.z)
+     const groundDistance = Math.sqrt(delta.x * delta.x + delta.z * delta.z)
+     const pitch = Math.atan2(delta.y, groundDistance)
++    // 26.3: bare 'look' packets never touch the per-tick position gate
++    // (jar truth), so no throttle needed — stare freely.
+     await bot.look(yaw, pitch, force)
+   }
+ 
+   // 1.21.3+
+   bot._client.on('player_rotation', (packet) => {
+-    bot.entity.yaw = conv.fromNotchianYaw(packet.yaw)
+-    bot.entity.pitch = conv.fromNotchianPitch(packet.pitch)
++    // 26.3: 26.3 packet_player_rotation = {yaw f32, relativeYaw bool, pitch f32,
++    // relativePitch bool} — a RELATIVE turn must fold onto the current entity
++    // yaw, not overwrite it (old code snapped her head to absolute 0 every
++    // server nudge). NaN-safe: never write non-finite angles to the wire path.
++    let y = packet.relativeYaw && Number.isFinite(bot.entity.yaw)
++      ? conv.toNotchianYaw(bot.entity.yaw) + packet.yaw : packet.yaw
++    let p = packet.relativePitch && Number.isFinite(bot.entity.pitch)
++      ? conv.toNotchianPitch(bot.entity.pitch) + packet.pitch : packet.pitch
++    if (!Number.isFinite(y)) y = packet.yaw
++    if (!Number.isFinite(p)) p = packet.pitch
++    if (!Number.isFinite(y) || !Number.isFinite(p)) return
++    bot.entity.yaw = conv.fromNotchianYaw(y)
++    bot.entity.pitch = conv.fromNotchianPitch(p)
+   })
+ 
+   // player position and look (clientbound)
+@@ -379,38 +746,43 @@
+     let newYaw, newPitch
+ 
+     // Note: 1.20.5+ uses a bitflags object, older versions use a bitmask number
+-    if (typeof packet.flags === 'object') {
+-      // Modern path with bitflags object
+-      // Velocity is only set to 0 if the flag is not set, otherwise keep current velocity
+-      vel.set(
+-        packet.flags.x ? vel.x : 0,
+-        packet.flags.y ? vel.y : 0,
+-        packet.flags.z ? vel.z : 0
+-      )
+-      // If flag is set, then the corresponding value is relative, else it is absolute
+-      pos.set(
+-        packet.flags.x ? (pos.x + packet.x) : packet.x,
+-        packet.flags.y ? (pos.y + packet.y) : packet.y,
+-        packet.flags.z ? (pos.z + packet.z) : packet.z
+-      )
+-      newYaw = (packet.flags.yaw ? conv.toNotchianYaw(bot.entity.yaw) : 0) + packet.yaw
+-      newPitch = (packet.flags.pitch ? conv.toNotchianPitch(bot.entity.pitch) : 0) + packet.pitch
+-    } else {
+-      // Legacy path with bitmask number
+-      // Velocity is only set to 0 if the flag is not set, otherwise keep current velocity
+-      vel.set(
+-        packet.flags & 1 ? vel.x : 0,
+-        packet.flags & 2 ? vel.y : 0,
+-        packet.flags & 4 ? vel.z : 0
+-      )
+-      // If flag is set, then the corresponding value is relative, else it is absolute
+-      pos.set(
+-        packet.flags & 1 ? (pos.x + packet.x) : packet.x,
+-        packet.flags & 2 ? (pos.y + packet.y) : packet.y,
+-        packet.flags & 4 ? (pos.z + packet.z) : packet.z
+-      )
+-      newYaw = (packet.flags & 8 ? conv.toNotchianYaw(bot.entity.yaw) : 0) + packet.yaw
+-      newPitch = (packet.flags & 16 ? conv.toNotchianPitch(bot.entity.pitch) : 0) + packet.pitch
++    // 26.3 SHAPE (packet_position): {teleportId, x,y,z f64 ABSOLUTE,
++    // dx,dy,dz f64 DELTAS, yaw/pitch f32, flags: PositionUpdateRelatives
++    // [x,y,z,yaw,pitch,dx,dy,dz,yawDelta]}. There is NO legacy bitmask on
++    // 26.3 — flags is ALWAYS the 9-flag object. The old code read packet.x
++    // as absolute-or-relative (wrong: x is always absolute; dx/dy/dz are the
++    // deltas, applied only when their flags are set) and resolved
++    // pos.x+packet.x for "relative" folds — 26.5+garbage or NaN+garbage.
++    // Correct 26.3 resolution: base = packet.x/y/z, then add ONLY the
++    // deltas whose flags are set. dx/dy/dz yaw/pitch may be non-finite in
++    // edge packets — nanSafe each piece so one bad delta can't NaN-poison
++    // the whole entity position (06:3x: pos=NaN,67,NaN for 20+ min while
++    // RCON held her at 26.5,67,-11.5).
++    const nanSafe = (v, fb) => (Number.isFinite(v) ? v : fb)
++    const f = packet.flags || {}
++    const dxOn = !!(f.dx ?? f.x), dyOn = !!(f.dy ?? f.y), dzOn = !!(f.dz ?? f.z)
++    const yawRel = !!(f.yaw || f.yawDelta), pitchRel = !!f.pitch
++    // velocity: zero the axes the server isn't carrying forward relatively
++    vel.set(
++      dxOn && Number.isFinite(vel.x) ? vel.x : 0,
++      dyOn && Number.isFinite(vel.y) ? vel.y : 0,
++      dzOn && Number.isFinite(vel.z) ? vel.z : 0
++    )
++    // position: absolute base + gated deltas (each piece NaN-safe)
++    pos.set(
++      nanSafe(packet.x + (dxOn ? nanSafe(packet.dx, 0) : 0), packet.x),
++      nanSafe(packet.y + (dyOn ? nanSafe(packet.dy, 0) : 0), packet.y),
++      nanSafe(packet.z + (dzOn ? nanSafe(packet.dz, 0) : 0), packet.z)
++    )
++    // rotation: absolute unless the relative flags fold onto current angles
++    const curYawN = Number.isFinite(bot.entity.yaw) ? conv.toNotchianYaw(bot.entity.yaw) : 0
++    const curPitchN = Number.isFinite(bot.entity.pitch) ? conv.toNotchianPitch(bot.entity.pitch) : 0
++    newYaw = nanSafe(yawRel ? curYawN + packet.yaw : packet.yaw, packet.yaw)
++    newPitch = nanSafe(pitchRel ? curPitchN + packet.pitch : packet.pitch, packet.pitch)
++    // 26.3: never apply a non-finite pos — keep last-good. Silent (no log
++    // spam); re-add the one-shot dump from patchsnap if she ever freezes.
++    if (!Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) {
++      return;
+     }
+ 
+     bot.entity.yaw = conv.fromNotchianYaw(newYaw)
+@@ -418,7 +790,52 @@
+     bot.entity.onGround = false
+ 
+     if (bot.supportFeature('teleportUsesOwnPacket')) {
+-      bot._client.write('teleport_confirm', { teleportId: packet.teleportId })
++      // 26.3: ServerboundAcceptTeleportationPacket is a 6-field Record
++      // (id, x, y, z, yRot, xRot) — ALL required. Two guards:
++      // 1) confirm each teleportId ONCE — the jar kills with
++      //    invalid_player_movement when a confirm id != awaitingTeleport,
++      //    and re-confirming an already-acked id after the server moved on
++      //    trips exactly that (walk-death showed 3 confirms in 70ms).
++      // 2) NaN-sanitize every field — at fresh login bot.entity.yaw/pitch
++      //    can be undefined, and NaN fails the jar's containsInvalidValues
++      //    check -> instant kick before spawn (insta join-leave).
++      bot._lastConfirmId = bot._lastConfirmId ?? -1
++      if (packet.teleportId !== bot._lastConfirmId) {
++        bot._lastConfirmId = packet.teleportId
++        // 26.3: send the confirm as a FRESH object with EXACTLY the 6 Record
++        // fields (teleportId, x, y, z, yaw, pitch) — same serializer disease
++        // as look/flying: extra keys (pos object refs, flags) or undefined
++        // values make the compiled writer emit a bare id-only byte ('00',
++        // MFtele proved), which the jar reads as NaN coords ->
++        // containsInvalidValues -> instant kick (walk-death 17:58:54: 2
++        // confirms + 3 bare looks, zero positions, kick 23s after login).
++        // Echo the SERVER's verbatim x/y/z (absolute placement — never
++        // resolve relative math client-side) and yaw/pitch verbatim; only
++        // fold relative flags against KNOWN-FINITE entity angles.
++        const fx = (v, fb) => (Number.isFinite(v) ? v : fb)
++        const tp = {
++          teleportId: packet.teleportId,
++          x: fx(packet.x, fx(pos.x, 0.5)),
++          y: fx(packet.y, fx(pos.y, 69)),
++          z: fx(packet.z, fx(pos.z, 0.5)),
++          yaw: 0,
++          pitch: 0
++        }
++        if (packet.x !== undefined) {
++          let yaw, pitch
++          if (typeof packet.flags === 'object') {
++            yaw = (packet.flags.yaw && Number.isFinite(bot.entity.yaw) ? bot.entity.yaw * 180 / Math.PI : 0) + packet.yaw
++            pitch = (packet.flags.pitch && Number.isFinite(bot.entity.pitch) ? bot.entity.pitch * 180 / Math.PI : 0) + packet.pitch
++          } else {
++            yaw = (packet.flags & 8 && Number.isFinite(bot.entity.yaw) ? bot.entity.yaw * 180 / Math.PI : 0) + packet.yaw
++            pitch = (packet.flags & 16 && Number.isFinite(bot.entity.pitch) ? bot.entity.pitch * 180 / Math.PI : 0) + packet.pitch
++          }
++          tp.yaw = fx(yaw, 0); tp.pitch = fx(pitch, 0)
++        } else {
++          tp.yaw = fx(packet.yaw, 0); tp.pitch = fx(packet.pitch, 0)
++        }
++        bot._client.write('teleport_confirm', tp)
++      }
+     }
+ 
+     // After death/respawn, delay the forced position_look response.
+@@ -432,7 +849,7 @@
+       const delayedOnGround = bot.entity.onGround
+       setTimeout(() => {
+         sendPacketPositionAndLook(delayedPos, delayedYaw, delayedPitch, delayedOnGround)
+-        shouldUsePhysics = true
++        armBurstQuiet()
+         bot.jumpTicks = 0
+         lastSentYaw = bot.entity.yaw
+         lastSentPitch = bot.entity.pitch
+@@ -442,11 +859,51 @@
+     }
+ 
+     sendPacketPositionAndLook(pos, newYaw, newPitch, bot.entity.onGround)
+-
+-    shouldUsePhysics = true
++    // 26.3: freeze physics until spawn confirms placement. Re-enable happens
++    // on the 'spawn' event (see bottom of this file), NOT per-echo — the old
++    // 1500ms timer re-armed physics mid-burst (7+ spawn teleports in <1s),
++    // whose echo position_look + updatePosition sends collided in one tick
++    // window -> invalid_player_movement kick. (walk-death log proved: 6
++    // same-tick position_looks with 15-45ms gaps right before the kick.)
++    // 26.3 EXTRA: absolute server teleports (all flags false — the spawn
++    // placement, MFpos proved: flags _value 0, x2.5/y69/z3.5) must ALSO sync
++    // lastSentYaw/lastSentPitch to the SERVER's yaw/pitch. updatePosition
++    // sends position_look whenever lastSent.yaw drifts from the entity yaw —
++    // without this sync the first stare/look update after spawn emits a
++    // position_look the server reads as a 70-block snap (walk-death d75.62).
++    // Relative teleports (flags set) skip this: entity-relative math there is
++    // already folded into newYaw/newPitch above.
++    shouldUsePhysics = false
++    armBurstQuiet()
++    lastPosSend = performance.now() // 26.3: look-hold clock — sendPacketLook
++    // holds bare looks 10s after every server teleport so the placement
++    // burst fully settles before any look goes out (walk-death 17:31:35).
++    // 26.3: sync the per-tick gate clock to the echo. The echo's
++    // position_look opens a tick window; without refreshing lastSent.time,
++    // updatePosition's next send lands a second position-bearing packet in
++    // the same window -> instant invalid_player_movement kick. This is the
++    // join-kick: spawn teleports arrive right before updatePosition starts.
++    lastSent.time = performance.now()
++    lastSent.x = pos.x; lastSent.y = pos.y; lastSent.z = pos.z
++    lastSent.onGround = bot.entity.onGround
+     bot.jumpTicks = 0
++    // 26.3 yaw/pitch sync (see EXTRA note above): on absolute teleports the
++    // server OWNS yaw/pitch — lastSent must match the server values, not the
++    // stale pre-login entity angles. conv.toNotchianYaw(newYaw) is what the
++    // echo actually sent; store that so updatePosition sees no drift.
+     lastSentYaw = bot.entity.yaw
+     lastSentPitch = bot.entity.pitch
++    if (packet.x !== undefined) {
++      const rel = (typeof packet.flags === 'object')
++        ? (packet.flags.yaw || packet.flags.pitch)
++        : ((packet.flags & 8) || (packet.flags & 16))
++      if (!rel) {
++        lastSentYaw = conv.fromNotchianYaw(newYaw)
++        lastSentPitch = conv.fromNotchianPitch(newPitch)
++        lastSent.yaw = Math.fround(conv.toNotchianYaw(lastSentYaw))
++        lastSent.pitch = Math.fround(conv.toNotchianPitch(lastSentPitch))
++      }
++    }
+ 
+     bot.emit('forcedMove')
+   })
+@@ -480,6 +937,26 @@
+     respawnTimer = Date.now()
+   })
+   bot.on('respawn', () => { shouldUsePhysics = false })
++  // 26.3 walk-death fix: the client 'position' echo handler re-enables
++  // physics on EVERY server teleport/pos-sync (forcedMove) — including the
++  // spawn-placement burst (7+ teleports in <1s, MFconf proved). Each echo's
++  // position_look opens a tick window; updatePosition's own sends then land
++  // second-in-window -> invalid_player_movement kick. Gate re-enable on the
++  // spawn event (server-confirmed placement) instead of per-echo.
++  // 26.3 BURST-QUIET re-arm (walk-death 09:04:45 proved spawn-event re-arm
++  // is too early: looks flowed 49ms apart for 48s while the server was still
++  // placing). Spawn starts a 5s quiet timer; every further server teleport
++  // resets it. Physics re-arms only after 5s with NO teleports — i.e. the
++  // burst is truly over. Death/respawn/login paths above still freeze first.
++  let burstQuietTimer = null
++  function armBurstQuiet () {
++    if (burstQuietTimer) clearTimeout(burstQuietTimer)
++    burstQuietTimer = setTimeout(() => {
++      burstQuietTimer = null
++      shouldUsePhysics = true
++    }, 5000)
++  }
++  bot.on('spawn', () => { shouldUsePhysics = false; armBurstQuiet() })
+   bot.on('login', () => {
+     shouldUsePhysics = false
+     if (doPhysicsTimer === null) {
