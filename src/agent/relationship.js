@@ -37,6 +37,28 @@ const DECAY_PER_TICK = {
     hate: 0.5, trust: 0.5, respect: 0.5, love: 0.2, madness: 4,
 };
 
+// How long she must be genuinely ABSENT before she starts forgetting a stat.
+// A mood cools in minutes; a fact about a person does not. Without this split
+// one 10-minute window served both, and love decayed on every gap between
+// messages - 752 interactions with YandereDev, rank `stranger`, love 7.6.
+//
+// The fast stats keep a SHORT window on purpose. Decay runs once a minute, so
+// annoyance at 15/min is gone in a few minutes of real absence - the window
+// only says when the clock starts, and lengthening it to hours would turn a
+// mood into a mood that never moves. The sticky four get a week, because
+// those are the ones that were being erased by the pauses in a conversation.
+const STALE_WINDOW_MS = {
+    attention: 30 * 60 * 1000,
+    annoyance: 30 * 60 * 1000,
+    jealousy: 30 * 60 * 1000,
+    fear: 30 * 60 * 1000,
+    madness: 6 * 60 * 60 * 1000,
+    love: 7 * 24 * 60 * 60 * 1000,
+    trust: 7 * 24 * 60 * 60 * 1000,
+    hate: 7 * 24 * 60 * 60 * 1000,
+    respect: 7 * 24 * 60 * 60 * 1000,
+};
+
 function clamp(v, lo = 0, hi = MAX) {
     // one decimal — Math.round() quantized sub-1 decays to zero, which made
     // slow sticky decay a no-op (10 - 0.2 rounded back to 10 forever).
@@ -298,13 +320,30 @@ export class RelationshipManager {
     // All dynamic stats drift back toward neutral (0) on their own for players she
     // hasn't interacted with in a while. Attention/annoyance/jealousy cool fastest;
     // love and hate are stickiest. Called periodically (at most once per minute).
+    //
+    // THE STALE WINDOW IS PER STAT, AND THAT IS THE FIX. It used to be one
+    // 10-minute window for everything, which is right for a feeling and wrong
+    // for a fact. Love bled 0.2/min on any gap over 10 minutes, and `staleMs`
+    // was measured from lastSeen, so a player who chatted every day - never
+    // really gone for a minute - was decayed on every single gap between
+    // messages. Live evidence: 752 interactions with YandereDev and rank
+    // `stranger`, love 7.6. Seven hundred and fifty-two messages, erased by the
+    // pauses between them.
+    //
+    // A sticky's window is how long she has to be genuinely ABSENT before she
+    // starts forgetting. She forgets how she FELT in ten minutes; she does not
+    // forget who someone is in ten minutes. Being offline for an afternoon and
+    // coming back is not the same as being a stranger.
     decay(now = Date.now(), staleMs = 10 * 60 * 1000) {
         if (now - (this._lastDecay || 0) < 60000) return; // run at most once/min
         this._lastDecay = now;
         let changed = false;
         for (const [name, e] of Object.entries(this.players)) {
-            if (now - e.lastSeen <= staleMs) continue;
+            const away = now - e.lastSeen;
             for (const [stat, rate] of Object.entries(DECAY_PER_TICK)) {
+                // STICKY stats need a long absence, not a long conversation.
+                const window = STALE_WINDOW_MS[stat] ?? staleMs;
+                if (away <= window) continue;
                 if (e[stat] > 0) { e[stat] = clamp(e[stat] - rate); changed = true; }
             }
         }
@@ -354,3 +393,5 @@ export class RelationshipManager {
         );
     }
 }
+
+export { STALE_WINDOW_MS, DECAY_PER_TICK };
