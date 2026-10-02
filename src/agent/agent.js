@@ -762,10 +762,23 @@ export class Agent {
             console.warn('Received empty message from', source);
             return false;
         }
+        const self_prompt = source === 'system' || source === this.name;
+        const from_other_bot = convoManager.isOtherAgent(source);
         // Stamp inbound time HERE (not at generation entry): a message that
         // arrives while an older generation is in flight invalidates it, but
         // starting a generation never invalidates itself.
-        if (this.prompter) this.prompter.most_recent_msg_time = Date.now();
+        //
+        // ONLY A REAL INBOUND MESSAGE STAMPS IT. A SELF-PROMPT IS NOT INPUT.
+        // Every self-prompt arrives as source 'system', and stamping on those
+        // meant her own internal turn could land in the middle of a reply she
+        // was already writing to a human and invalidate it. Live evidence, one
+        // exchange: 04:57:16 "where are u uwu?" -> 04:57:25 self-prompt queued ->
+        // "discarding old response" -> full response "" -> "no response" ->
+        // NOTHING SENT, followed by "no response" in history and the next thing
+        // she said being 39s later. That is the owner's report exactly: he says
+        // her name, and she does not answer. The generation is only stale if
+        // something NEWER was actually said to her.
+        if (this.prompter && !self_prompt) this.prompter.most_recent_msg_time = Date.now();
 
         let used_command = false;
         if (max_responses === null) {
@@ -775,8 +788,6 @@ export class Agent {
             max_responses = Infinity;
         }
 
-        const self_prompt = source === 'system' || source === this.name;
-        const from_other_bot = convoManager.isOtherAgent(source);
 
         // Feed the human cadence tracker: a real player's message length is the
         // only honest signal of how engaged the channel is. See
@@ -891,7 +902,26 @@ export class Agent {
                 behavior_log = '...' + behavior_log.substring(behavior_log.length - MAX_LOG);
             }
             behavior_log = 'Recent behaviors log: \n' + behavior_log;
-            await this.history.add('system', behavior_log);
+            // HER OWN GAMEPLAY, NOT SOMEBODY SAYING SOMETHING. This is pushed as
+            // role 'system' so it never becomes a user turn, but it still goes
+            // into the same turn list that summarizeMemories() later compresses
+            // into long-term memory, and the summarizer reads third-person
+            // notes like "I'm stuck!" as things that HAPPENED TO THE PLAYER.
+            //
+            // Live evidence: 6 consecutive "I'm stuck!" behavior lines
+            // (modes.js `say(agent, "I'm stuck!")`, the unstuck mode giving up)
+            // were summarized into "player frequently reports being stuck", and
+            // the memory field still reads it today. That is where the nonsense
+            // comes from: she is a bot telling a human they are stuck, forever,
+            // because her own pathfinding failing was stored as a fact about
+            // him. Her memory has to be about HIM, not about her own chores.
+            //
+            // Noted rather than added: it is the right place to see it, and
+            // summarizers need the context, so it stays in the turn list - but
+            // it is labelled as her own so it cannot be mistaken for his words.
+            await this.history.add('system',
+                `${behavior_log}(These are ${this.name}'s own bot actions and problems, not `
+                + 'anything the player said. Never record these as facts about the player.)');
         }
 
         // ── BEFORE SHE GENERATES ANYTHING ─────────────────────────────────
