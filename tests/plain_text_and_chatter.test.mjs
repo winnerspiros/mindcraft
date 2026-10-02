@@ -851,5 +851,103 @@ const check = (cond, good, bad) => {
         'ChatBudget lost the share guard');
 }
 
+
+// ── 17. A COMMAND MUST NOT BE ABLE TO KILL THE BOT ─────────────────
+//
+// 13 restarts in 3h, every one from the same line:
+//
+//   TypeError: undefined is not an object
+//     (evaluating 'agent.task.blueprint.explain')
+//     at perform (src/agent/commands/queries.js:581)
+//     at executeCommand (src/agent/commands/index.js:541)
+//     at async startLoop (src/agent/self_prompter.js:340)
+//   Main process exited, code=exited, status=1/FAILURE
+//
+// agent.task.blueprint is only set while a blueprint task is active. The four
+// blueprint commands are unconditional, so asking when it is undefined threw,
+// and the rejection propagated out of executeCommand through startLoop into
+// the process exit. One command, 13 outages.
+//
+// Fixed at both layers, and both are asserted: the four commands explain
+// themselves instead of throwing, AND the dispatcher catches anything a
+// command throws, because perform() reaches arbitrary task code.
+{
+    const fs10 = await import('node:fs');
+    const idx = fs10.readFileSync(new URL('../src/agent/commands/index.js', import.meta.url), 'utf8');
+    const q = fs10.readFileSync(new URL('../src/agent/commands/queries.js', import.meta.url), 'utf8');
+
+    // (a) the dispatcher catches. A throw here is a process exit.
+    const perf = idx.slice(idx.indexOf('await command.perform(agent, ...parsed.args)') - 300,
+        idx.indexOf('await command.perform(agent, ...parsed.args)') + 300);
+    check(/try\s*{/.test(perf),
+        'executeCommand wraps command.perform in try/catch',
+        'a throwing command can still kill the process (13 restarts from one command)');
+    check(/catch\s*\([^)]*\)\s*{/.test(perf) && /failed:/i.test(perf),
+        'the catch returns a message to the model instead of throwing',
+        'the catch does not report the failure back to the model');
+
+    // (b) all four blueprint commands guard, not just !getBlueprint
+    for (const name of ['!getBlueprint', '!getBlueprintLevel', '!checkBlueprint', '!checkBlueprintLevel']) {
+        const i = q.indexOf(`name: '${name}'`);
+        check(i !== -1, `${name} exists`, `${name} not found in queries.js`);
+        if (i === -1) continue;
+        const body = q.slice(i, q.indexOf('perform:', i) + 700);
+        check(/noBlueprint\(agent\)/.test(body.slice(0, 400)),
+            `${name} guards against a missing blueprint`,
+            `${name} dereferences agent.task.blueprint without checking, so it throws when no blueprint is active`);
+    }
+    check(/function noBlueprint\(agent\)/.test(q),
+        'the shared noBlueprint guard exists',
+        'the noBlueprint guard helper is missing');
+    check(/agent\.task\?\.blueprint/.test(q),
+        'the guard itself is null-safe',
+        'the noBlueprint guard would itself throw if agent.task is undefined');
+
+    // (c) the trigger: she recites the command docs, then acts on them
+    const a = fs10.readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
+    // Lift the LIVE leak patterns and run the real leaked strings through
+    // them. Asserting on source substrings proved worthless here: the words
+    // "valid" and "commands" are separated by an alternation in the real
+    // pattern, so a literal grep passes on a filter that never fires - which
+    // is exactly the false pass I just hit while writing this.
+    // Lift BOTH live leak patterns and run the real leaked strings through
+    // them. Asserting on source substrings proved worthless here: the words
+    // "valid" and "commands" are separated by an alternation in the real
+    // pattern, so a literal grep passes on a filter that never fires - which
+    // is exactly the false pass I hit while writing this. Testing one pattern
+    // then hid that the other ("commands like !x") was never exercised.
+    const lift = (needle) => {
+        const line = a.split('\n').find(l => l.includes(needle));
+        if (!line) return null;
+        const lit = line.match(/(\/.*\/[gimsuy]*)/);
+        return lit ? eval(lit[1]) : null;
+    };
+    const docRe = lift('remember|note|note that');
+    const likeRe = lift('such as');
+    check(!!docRe, 'the "remember valid commands" leak pattern is liftable',
+        'she can still recite the command list at players');
+    check(!!likeRe, 'the "commands like !x" leak pattern is liftable',
+        'the doc-recitation leak is not fully filtered');
+
+    // the strings actually seen in the live log, each against BOTH patterns
+    const leaked = [
+        'Remember valid commands like !getFood or !getBlueprint',
+        'note that the valid commands are listed below',
+        'commands like !mineOaks, !cutWood are invalid',
+    ];
+    for (const t of leaked) {
+        check(!!docRe?.test(t) || !!likeRe?.test(t),
+            `doc recitation is caught: "${t.slice(0, 44)}"`,
+            `neither leak pattern catches "${t}"`);
+    }
+    for (const re of [docRe, likeRe]) if (re) re.lastIndex = 0;
+    for (const legit of ['i could mine some oak logs', 'brb', 'do you want to build something?',
+        'i like this server', 'notes are in my inventory']) {
+        check(!(docRe?.test(legit) || likeRe?.test(legit)),
+            `ordinary speech is not flagged: "${legit.slice(0, 32)}"`,
+            `the doc-recitation filters are too broad, they eat ordinary messages like "${legit}"`);
+    }
+}
+
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
 if (failed) process.exitCode = 1;

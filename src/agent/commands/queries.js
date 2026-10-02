@@ -6,6 +6,19 @@ import { researchBuildTopic, searchSchematics } from '../../utils/research.js';
 import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
+
+// agent.task.blueprint is only set while a blueprint task is active. These four
+// commands are unconditional, so asking when it is undefined threw a TypeError -
+// and an uncaught throw in perform() propagated out of executeCommand and killed
+// the process. 13 restarts in 3h, every one from !getBlueprint, which she kept
+// choosing because the command-error hint lists it as a "valid command" example.
+//
+// So: say so, and name the way out, rather than throwing.
+function noBlueprint(agent) {
+    const has = agent.task?.blueprint;
+    if (has) return null;
+    return 'There is no active blueprint to describe. Blueprints only exist while a building task is running, so stop looking for one and do something that works without it - check !inventory, !getFood, or talk to someone.';
+}
 import { load } from 'cheerio';
 
 const pad = (str) => {
@@ -561,6 +574,8 @@ export const queryList = [
             'levelNum': { type: 'int', description: 'The level number to check.', domain: [0, Number.MAX_SAFE_INTEGER] }
         },
         perform: function (agent, levelNum) {
+            const missing = noBlueprint(agent);
+            if (missing) return missing;
             let res = checkLevelBlueprint(agent, levelNum);
             console.log(res);
             return pad(res);
@@ -570,6 +585,8 @@ export const queryList = [
         name: '!checkBlueprint',
         description: 'Check what blocks still need to be placed for the blueprint',
         perform: function (agent) {
+            const missing = noBlueprint(agent);
+            if (missing) return missing;
             let res = checkBlueprint(agent);
             return pad(res);
         }
@@ -578,6 +595,8 @@ export const queryList = [
         name: '!getBlueprint',
         description: 'Get the blueprint for the building',
         perform: function (agent) {
+            const missing = noBlueprint(agent);
+            if (missing) return missing;
             let res = agent.task.blueprint.explain();
             return pad(res);
         }
@@ -589,6 +608,8 @@ export const queryList = [
             'levelNum': { type: 'int', description: 'The level number to check.', domain: [0, Number.MAX_SAFE_INTEGER] }
         },
         perform: function (agent, levelNum) {
+            const missing = noBlueprint(agent);
+            if (missing) return missing;
             let res = agent.task.blueprint.explainLevel(levelNum);
             console.log(res);
             return pad(res);
