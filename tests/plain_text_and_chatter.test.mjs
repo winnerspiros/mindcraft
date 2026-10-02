@@ -252,7 +252,12 @@ const check = (cond, good, bad) => {
     const COMMAND_SITES = ['opChat(', 'bot.chat(msg);', 'bot.chat(command);',
         'bot.chat(`/tp ', 'bot.chat(`/fill ', 'bot.chat(`/give ', 'bot.chat(`/item ',
         'bot.chat(`/clear', 'bot.chat(`/kit', 'bot.chat(`/login', 'bot.chat(`/register',
-        'bot.chat(who ?', 'bot.chat(`${send} ${who}`);', 'bot.chat(`I need'];
+        'bot.chat(who ?', 'bot.chat(`${send} ${who}`);', 'bot.chat(`I need',
+        // requestItems' fallback: the same message is sent via routeResponse()
+        // when an agent is present, and that path is asserted separately. Matching
+        // on the call instead of a LINE NUMBER - the number moved the moment any
+        // code was inserted above it, which is how this silently started failing.
+        'bot.chat(ask);'];
     const suspicious = src.split('\n')
         .map((l, i) => [i + 1, l.trim()])
         .filter(([, l]) => l.includes('bot.chat(') && !l.startsWith('//'))
@@ -261,7 +266,6 @@ const check = (cond, good, bad) => {
             if (/\//.test(l) && !/["'`][A-Za-z]/.test(l)) return false;
             return !COMMAND_SITES.some((site) => l.includes(site));
         })
-        .filter(([n]) => n !== 2603);   // the guarded fallback, asserted above
     check(suspicious.length === 0,
         'every bot.chat() in the skills library is a command or the declared helper',
         `${suspicious.length} unclassified send(s): ${JSON.stringify(suspicious)}`);
@@ -921,6 +925,63 @@ const check = (cond, good, bad) => {
                 'bot.oxygenLevel may work again, so the head-block-only rescue should be reviewed');
         }
     }
+}
+
+// ── 20. A SEALED WATER POCKET MUST HAVE AN ESCAPE, NOT JUST JUMP ─────
+//
+// The rescue fired for the first time ever (2 runs), and she still drowned:
+//
+//   Still underwater - swim failed (blocked above? dig up or pearl out).
+//   self prompt loop stopped
+//   received message from system : something just hit YOU!
+//   Agent died:  UwU drowned
+//
+// swimUp only ever held jump. That works when there is air above her. She
+// was mining a flooded pocket at y=54 with stone on top, so the pocket was
+// capped and holding jump moved her nowhere - oxygen was never the problem,
+// geometry was. The log even says so, and then she died anyway.
+//
+// Water is not always capped, so the last resort is to go sideways to a
+// neighbour column that is not water.
+{
+    const fs14 = await import('node:fs');
+    const sk = fs14.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
+    const body = sk.slice(sk.indexOf('export async function swimUp'),
+        sk.indexOf('export async function diveDown'));
+    check(body.length > 0, 'swimUp was located in skills.js', 'swimUp not found');
+
+    // the jump-only wait must not be the last word
+    check(/swimToNearestAir/.test(body),
+        'swimUp falls back to a sideways escape when jump cannot help',
+        'swimUp only holds jump, so a capped pocket kills her every time');
+    check(/const escape = await swimToNearestAir/.test(body) && /if \(escape\)/.test(body),
+        'the escape result is checked before giving up',
+        'the escape attempt runs but its result is ignored');
+
+    // the helper must actually move her, and must not leak control states
+    const esc = sk.slice(sk.indexOf('async function swimToNearestAir'),
+        sk.indexOf('async function swimToNearestAir') + 2200);
+    check(esc.length > 0, 'swimToNearestAir was located', 'the escape helper is missing');
+    check(/setControlState\('forward', true\)/.test(esc),
+        'the escape drives her forward (lookAt alone only turns her)',
+        'the escape helper turns but never moves');
+    check(/setControlState\('jump', true\)/.test(esc),
+        'the escape keeps her rising while it moves',
+        'the escape moves sideways without rising');
+    check(/finally[\s\S]{0,400}setControlState\('forward', false\)/.test(esc),
+        'the escape releases forward in a finally',
+        'a failed escape would leave her walking into a wall forever');
+    check(/setControlState\('forward', false\)/.test(body),
+        'swimUp itself releases control states',
+        'swimUp leaves jump held after returning');
+
+    // and it must pick a real neighbour, not a fixed direction
+    check(/\[\s*\[1,\s*0\]\s*,\s*\[-1,\s*0\]/.test(esc),
+        'the escape considers all 8 neighbour columns',
+        'the escape only tries one direction, which may be the solid wall');
+    check(/offsets\.length === 0\) return false/.test(esc),
+        'the escape gives up when she is genuinely walled in',
+        'the escape loops even with nowhere to go');
 }
 
 console.log(`\nplain_text_and_chatter: ${pass} passed, ${failed} failed`);
