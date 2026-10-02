@@ -2877,50 +2877,38 @@ export class Agent {
     }
 
     async _reArmor() {
-        // Called on every respawn. keep_inventory is OFF for everyone, so the kit
-        // drops on death — if no diamond armor is in inventory, re-/give the full
-        // kit (she's op, /give resolves). Equip-only path covers armor that somehow
-        // survived (e.g. player gifted her some).
-        // Survival server: op=false — no re-/give, ever. Equip what she (or a
-        // kind player) actually has, then back to honest play.
-        //
-        // 26.3/combat: the gate was ARMOR ONLY. She respawned holding a helmet
-        // but no sword, took the "armor survived" branch, and stayed unarmed
-        // forever — isArmed() false meant assessThreats resolved every threat to
-        // "flee", so she ran from every mob and could never fight back. That is
-        // the gear gap, and it was never about the /give path (rconEnsureKit
-        // grants diamond_sword); it was about never checking for a weapon.
+        // Called on every respawn. keep_inventory is OFF, so the kit drops on
+        // death. The re-kit gate is armor OR weapon OR food - it was armor alone,
+        // so a respawn holding a helmet but no sword took the "armor survived"
+        // branch and she stayed unarmed forever, and isArmed() false resolves
+        // EVERY threat to "flee". Armor is also WORN not carried (verified over
+        // RCON: Inventory has zero armor pieces, equipment has all four), so
+        // equippedArmorNames has to be part of the read.
         const items = () => { try { return this.bot.inventory.items(); } catch (_) { return []; } };
-        // One pure predicate decides the re-kit, so the regression can exercise
-        // the real rule instead of grepping this call site's shape.
-        // Armor is worn, not carried: inventory.items() never reports it.
-        const equipped = equippedArmorNames(this.bot);
-        const { hasArmor, hasWeapon, hasFood } = respawnKitNeeds(items(), equipped);
-        // A weapon is a SEPARATE requirement from armor. Fighting needs a sword
-        // or axe; armor alone does not make her able to fight, and being unable
-        // to fight means assessThreats resolves EVERY threat to "flee" — she runs
-        // from every mob and can never fight back.
-        const needsKit = !hasArmor || !hasWeapon || !hasFood;
-        if (needsKit) {
-            if (!canOp()) {
-                console.log(`${this.name} survival server: respawned without armor/weapon/food, no re-kit — honest rebuild.`);
-                // Even on a survival server, equip what she HAS. Respawning with a
-                // sword in the pack but bare hands is the same bug, smaller.
-                try { this.bot.armorManager.equipAll(); } catch (_) {}
-                const sw = items().find(i => /sword$/.test(i.name) || /_axe$/.test(i.name));
-                if (sw) { try { await this.bot.equip(sw, 'hand'); } catch (_) {} }
-                return;
-            }
-            const missing = [!hasArmor && 'armor', !hasWeapon && 'weapon', !hasFood && 'food'].filter(Boolean);
-            console.log(`${this.name} kit incomplete after respawn (missing ${missing.join('+')}) — full gear-up.`);
+        const { hasArmor, hasWeapon, hasFood } = respawnKitNeeds(items(), equippedArmorNames(this.bot));
+        const missing = [!hasArmor && 'armor', !hasWeapon && 'weapon', !hasFood && 'food'].filter(Boolean);
+
+        // Survival server: no re-/give, ever. But still equip what she has -
+        // a sword in the pack and bare hands is the same bug, smaller.
+        if (missing.length && !canOp()) {
+            console.log(`${this.name} survival server: respawned without ${missing.join('+')}, no re-kit - honest rebuild.`);
+            return this._equipWhatSheHas();
+        }
+        if (missing.length) {
+            console.log(`${this.name} kit incomplete after respawn (missing ${missing.join('+')}) - full gear-up.`);
             return this._gearUp();
         }
+        await this._equipWhatSheHas();
+        console.log(`${this.name} re-armored after respawn.`);
+    }
+
+    async _equipWhatSheHas() {
         try { this.bot.armorManager.equipAll(); } catch (_) {}
+        const items = () => { try { return this.bot.inventory.items(); } catch (_) { return []; } };
         const sword = items().find(i => /sword$/.test(i.name));
         if (sword) await this.bot.equip(sword, 'hand');
         const shield = items().find(i => i.name === 'shield');
         if (shield) await this.bot.equip(shield, 'off-hand');
-        console.log(`${this.name} re-armored after respawn.`);
     }
 
     // Guest-server join flow: AuthMe-style /register-/login prompts + one

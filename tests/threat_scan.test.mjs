@@ -49,6 +49,12 @@ check('mobName rejects unknown/unresolved types',
 // A player is NEVER a mob. If this guard is weakened she will punch humans,
 // which is the worst possible regression here - so it gets a direct check on
 // the live-shaped entity, not just the type string.
+//
+// Note on the two guards: mobName tests NON_MOB_TYPES *and* MOB_TYPES, and
+// they are deliberately redundant. Removing EITHER one alone leaves players
+// rejected by the other, so a single-guard mutation is not a real regression
+// and correctly does not fail the suite. Only removing BOTH is, and that
+// mutation is caught. Do not "simplify" this to one check.
 check('mobName never returns a player name',
   mobName({ type: 'player', name: 'Steve' }) === null)
 // Pin the guard itself. Every mobName() case above also passes when the

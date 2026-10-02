@@ -131,15 +131,33 @@ const method = (src, name) => {
 }
 const reArmor = method(agentSrc, 'async _reArmor')
 check('_reArmor was found', reArmor.length > 200)
-check('_reArmor calls the shared predicate', /respawnKitNeeds\(items\(\), equipped\)/.test(reArmor))
+check('_reArmor calls the shared predicate', /respawnKitNeeds\(items\(\), equippedArmorNames\(this\.bot\)\)/.test(reArmor))
 check('_reArmor reads worn armor, not just carried', /equippedArmorNames\(this\.bot\)/.test(reArmor))
 check('equippedArmorNames is imported by agent.js',
   /import \{[^}]*equippedArmorNames[^}]*\} from '\.\.\/utils\/threat\.js'/.test(agentSrc))
-check('the re-kit triggers on any of the three gaps',
-  /needsKit = !hasArmor \|\| !hasWeapon \|\| !hasFood/.test(reArmor))
+// The gate is `missing.length`, where `missing` names all three gaps. Assert
+// that all three are enumerated - a check for the old `!hasArmor ||` shape
+// would have failed a refactor that changed nothing.
+check('the re-kit gate considers all three gaps',
+  /\[!hasArmor && 'armor', !hasWeapon && 'weapon', !hasFood && 'food'\]/.test(reArmor) &&
+  /missing\.length/.test(reArmor))
 check('the log names what is missing',
   /missing \$\{missing\.join\('\+'\)\}/.test(reArmor))
 check('the old armor-only gate is gone', !/if \(!hasArmor\) \{/.test(reArmor))
+check('the equip path is shared, not duplicated', (() => {
+  const m = method(agentSrc, 'async _equipWhatSheHas')
+  return m.length > 100 && /_equipWhatSheHas\(\)/.test(reArmor)
+})())
+// The survival-server policy: she is op here, but the rule is that on a
+// survival server she never re-/gives. Removing that branch entirely would
+// silently start handing out kit.
+check('the survival-server no-re-give branch survives',
+  /missing\.length && !canOp\(\)/.test(reArmor) &&
+  /survival server: respawned without/.test(reArmor))
+check('the survival branch still equips what she has',
+  /return this\._equipWhatSheHas\(\);/.test(reArmor))
+check('_equipWhatSheHas anchors the sword name (no pickaxe)',
+  /\/sword\$\//.test(method(agentSrc, 'async _equipWhatSheHas')))
 check('respawnKitNeeds is imported by agent.js',
   /import \{[^}]*respawnKitNeeds[^}]*\} from '\.\.\/utils\/threat\.js'/.test(agentSrc))
 
@@ -165,8 +183,15 @@ check('the attack preempt path calls _preempt()', (() => {
   const i = amSrc.indexOf("actionLabel === 'action:attack'")
   return i >= 0 && /_preempt\(\)/.test(amSrc.slice(i, i + 1600))
 })())
+// Flatten comments to a single line before matching prose: a sentence wrapped
+// across two `//` lines must still match, or every re-wrap breaks the check and
+// it gets quietly weakened into checking something else. Two passes - drop the
+// marker, then collapse the newline the marker left behind.
+const prose = amSrc.replace(/^\s*\/\/\s?/gm, ' ').replace(/\s+/g, ' ')
 check('the combat preempt is documented in-file',
-  /COMBAT PREEMPT/.test(amSrc) && /Never wait out a fight/.test(amSrc))
+  /COMBAT PREEMPT/.test(prose) && /Never wait out a fight\./.test(prose))
+check('the combat preempt cites the measured log',
+  /action:collectBlocks/.test(amSrc) && /done=false/.test(amSrc))
 check('mode: still preempts too', /actionLabel\.startsWith\('mode:'\)/.test(amSrc))
 
 // ── interrupt_code is STICKY and the scan bypasses the clearer ───────────
