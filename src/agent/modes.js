@@ -118,11 +118,19 @@ const modes_list = [
                                     // is the actual outcome that matters. She may
                                     // already have had a water_bucket (so that
                                     // check is not evidence) - world is.
-                                    // NOTE: world.getBlockName does not exist;
-                                    // the real helper is getBlockAtPosition.
-                                    const after = world.getBlockAtPosition
-                                        ? world.getBlockAtPosition(bot, feet.x, feet.y, feet.z)
-                                        : null;
+                                    //
+                                    // Use bot.blockAt on the ABSOLUTE position.
+                                    // world.getBlockAtPosition is a RELATIVE-offset
+                                    // helper (world.js: bot.entity.position.offset(x,y,z)),
+                                    // so passing feet.x/feet.y/feet.z offsets by her
+                                    // absolute coords, lands in unloaded void, and
+                                    // returns {name:'air'}. That made `breathed` true
+                                    // on a rescue that had done nothing, so the branch
+                                    // returned early and never called swimUp - 124
+                                    // silent rescues in 10 min while her head stayed
+                                    // underwater. Measured in a 2-deep pocket:
+                                    //   y=48 dirt, y=49 water (feet), y=50 water (head), y=51 air
+                                    const after = bot.blockAt(feet) || bot.blockAt(feet.offset(0, 0, 0.5));
                                     const name = after?.name;
                                     breathed = name != null && name !== 'water';
                                 } catch (_) {}
@@ -135,7 +143,49 @@ const modes_list = [
                             return;
                         }
                         const ok = await skills.swimUp(bot, 8000);
-                        if (!ok) say(agent, 'stuck underwater, this is not great');
+                        if (ok) return;
+                        // HOLDING JUMP CANNOT CLEAR A 1x1 SHAFT. Measured: she sat
+                        // in a pocket with dirt walls at x/z -1..+2, water at her
+                        // feet (y49) and head (y50), air only at y51. swimUp reached
+                        // the surface then she sank straight back - the soak log shows
+                        // y oscillating 49 -> 51.6 -> 49.6 -> 49.0 over 12 minutes,
+                        // 124 rescue cycles, zero escapes. She can rise; she cannot
+                        // move sideways out of a 1-wide column.
+                        //
+                        // The scoop above cannot help either: it needs an EMPTY
+                        // bucket, and she is RCON-kitted with water_bucket, which
+                        // findInventoryItem('bucket') does not match. So the branch
+                        // was dead in practice and everything fell through to a jump
+                        // that cannot work.
+                        //
+                        // DIG THE WALL. Break the adjacent block at foot or head
+                        // height so there is somewhere to move TO. This is what
+                        // actually unsticks a mined pocket, and it is the mechanic
+                        // the `unstuck` mode already uses for solid rock - it just
+                        // is not reachable from the drowning branch.
+                        try {
+                            const feet = bot.entity.position.floored();
+                            const spots = [
+                                feet.offset(1, 0, 0), feet.offset(-1, 0, 0),
+                                feet.offset(0, 0, 1), feet.offset(0, 0, -1),
+                                feet.offset(1, 1, 0), feet.offset(-1, 1, 0),
+                                feet.offset(0, 1, 1), feet.offset(0, 1, -1),
+                            ];
+                            let freed = 0;
+                            for (const p of spots) {
+                                const b = bot.blockAt(p);
+                                if (!b || b.name === 'air' || b.name === 'water') continue;
+                                try {
+                                    if (await skills.breakBlockAt(bot, p.x, p.y, p.z, 8000)) freed++;
+                                    if (freed >= 2) break;
+                                } catch (_) {}
+                            }
+                            if (freed > 0) {
+                                say(agent, `Dug ${freed} block${freed === 1 ? '' : 's'} underwater to get out`);
+                                await skills.swimUp(bot, 4000);
+                            }
+                        } catch (_) {}
+                        say(agent, 'stuck underwater, this is not great');
                     });
                 } else if (!bot.pathfinder.goal) {
                     // rescue already in flight or recently done: drift up gently
