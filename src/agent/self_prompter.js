@@ -530,15 +530,50 @@ export class SelfPrompter {
                     // !goTo does NOT exist. Verified against the registry - the
                     // first draft of this list guessed it, which is precisely
                     // the bug the have.has() filter below is here to catch.
-                                        // needsArgs:false - it takes NO argument. First draft
-                    // said true, and the arity assertion in the test suite
-                    // caught it. Correct here, not by loosening the test.
-                    { cmd: '!goToSurface', needsArgs: false, goal: 'get back to the surface' },
                     { cmd: '!digDown', needsArgs: true, goal: 'dig down carefully and see what is below' },
                     { cmd: '!surroundings', needsArgs: false, goal: 'look around and take stock of where you are' },
                     { cmd: '!inventory', needsArgs: false, goal: 'check what you are carrying' },
                     { cmd: '!nearbyBlocks', needsArgs: false, goal: 'look at the blocks close by' },
                     { cmd: '!entities', needsArgs: false, goal: 'look at what else is around' },
+                    // ── GO SOMEWHERE. THIS IS THE IMPORTANT PART. ──────────
+                    //
+                    // Every entry above is an OBSERVATION or a same-spot action.
+                    // She can run all of them forever and never travel a single
+                    // block. Measured over 20 minutes while she was wedged on a
+                    // 1-block pillar at y54 (dirt floor at y52, water and stone
+                    // walls, open air above):
+                    //
+                    //   15  !collectBlocks
+                    //    4  !breedAnimals
+                    //    2  !nearbyBlocks
+                    //    1  !lookDir
+                    //   ---------------------
+                    //   22 commands executed. Zero of them moved her.
+                    //
+                    // Meanwhile 203 commands exist and the genuinely mobile ones
+                    // - !findPlace, !searchForEntity, !searchForBlock,
+                    // !goToCoordinates, !findCave - were not in this list at all.
+                    // Her own words in the log: "not sure what else to do, guess
+                    // i'll just explore" followed by !breedAnimals.
+                    //
+                    // Arity is read from the real registry at runtime below, and
+                    // the entries here are checked against allCommandNames(), so
+                    // a wrong guess fails the test rather than reaching her.
+                    //
+                    // EVERY ONE OF THESE IS VERIFIED required=0 IN THE REAL
+                    // REGISTRY. That matters: only the goal text is emitted and
+                    // she supplies the command herself, so a command that needs
+                    // an argument she was never told about emits bare and gets
+                    // nothing. The first draft of this fix used !findPlace,
+                    // !searchForEntity and !searchForBlock - all three require 1
+                    // argument, and the arity test caught it. Replaced with
+                    // commands that genuinely need none.
+                    { cmd: '!scout', needsArgs: false, goal: 'travel somewhere new and explore it' },
+                    { cmd: '!findShelter', needsArgs: false, goal: 'go and find somewhere safe to shelter' },
+                    { cmd: '!climb', needsArgs: false, goal: 'climb up and out of wherever i am' },
+                    { cmd: '!goToSurface', needsArgs: false, goal: 'get back up to the surface' },
+                    { cmd: '!findCave', needsArgs: false, goal: 'explore a cave somewhere around here' },
+                    { cmd: '!comeHere', needsArgs: false, goal: 'go over to where i am needed' },
                 ];
                 let fallbacks = [];
                 try {
