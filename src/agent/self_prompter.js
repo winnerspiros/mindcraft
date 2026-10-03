@@ -863,6 +863,28 @@ export class SelfPrompter {
                 // shelter/cave commands are about hiding, not feeding
                 if (/^!(findshelter|findcave|buildshelter|findsaf(e|er)place)/i.test(n)) s -= 20;
             }
+            // ── A GOAL TO GO SOMEWHERE MUST REACH A COMMAND THAT GOES ────
+            //
+            // The scorer above only matches words in a command's NAME. For the
+            // goal "explore the nearby forest for animals and resources" no
+            // command name contains "explore" or "forest", so exactly ONE thing
+            // scored:
+            //
+            //   Commands that exist and fit this goal: !breedAnimals
+            //
+            // She was told to breed animals, and bred them 15 times in 20
+            // minutes without travelling a single block, while saying "guess
+            // I'm moving on then" and emitting no command at all.
+            //
+            // The verb is the whole point of these goals and it lives nowhere.
+            // Score the actual movers when the goal is about going somewhere,
+            // and push away anything that only observes or breeds in place.
+            if (/(explore|wander|travel|scout|roam|venture|walk around|go somewhere|move on|new ground|find animals|look for animals|hunt)/i.test(g)) {
+                const MOVERS = /^!(scout|goTosurface|findcave|findshelter|climb|comehere|searchForEntity|searchForBlock|fish|parkour|goTocordinates|goToPlayer|goTorememberedplace|recall|ridehorse|boat)/i;
+                const IN_PLACE = /^!(breedAnimals|pickupItems|nearbyBlocks|entities|surroundings|inventory|lookDir|stats|chunk|map|terrainScan|entities)/i;
+                if (MOVERS.test(n)) s += 45;
+                if (IN_PLACE.test(n)) s -= 35;
+            }
             return { n, s };
         }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {
