@@ -349,7 +349,30 @@ const modes_list = [
             // when she actually intended to go somewhere.
             const _goalActive = !!(agent.self_prompter?.prompt
                 && agent.self_prompter?.state !== 'STOPPED');
-            if (agent.isIdle() && !_goalActive) {
+            // STILLNESS COUNTS WHILE SHE HAS A GOAL TOO.
+            //
+            // The idle branch used to require `agent.isIdle() && !_goalActive`.
+            // But being "not stuck" was then defined as "standing still with no
+            // goal", which is exactly the opposite of being stuck: stuck means
+            // she HAS a goal and is not making progress toward it. Instrumented
+            // live, wedged in a 1x1 shaft at y51 with air one block to her left:
+            //
+            //   [stuck-dbg] in update idle=true goalActive=true state=1 idleStill=0
+            //   [stuck-dbg] in update idle=true goalActive=true state=1 idleStill=0
+            //   [stuck-dbg] in update idle=true goalActive=true state=1 idleStill=0
+            //
+            // idleStill never left 0, because isIdle() was true and _goalActive
+            // was true, so the gate was false and the counter was never reached.
+            // She had a live goal ("still stuck? guess i'll have to dig up then"),
+            // she was not moving, and the rescue that would have dug the wall was
+            // mathematically unreachable. 53 update ticks, 0 rescues.
+            //
+            // So: track stillness whenever she is idle OR working toward a goal,
+            // and leave the "chatting is not stuck" protection to the separate
+            // followPlayer guard below, which is the case that protection was
+            // actually written for.
+            const _tracking = agent.isIdle() || _goalActive;
+            if (_tracking) {
                 // IDLE-STILL WATCH (2026-09-27): the old code reset here, so an
                 // idle bot in a hole never accrued stuck_time and the rescue
                 // below never fired. Track stillness separately: unmoved for a

@@ -111,11 +111,22 @@ const GOAL = { has_goal: true, threat: false, human_present: false };
 {
     const modes = readFileSync('src/agent/modes.js', 'utf8');
     const i = modes.indexOf("name: 'unstuck'");
-    const block = modes.slice(i, i + 1400);
+    // Wide enough to reach the _tracking gate past its explanatory comment.
+    const block = modes.slice(i, i + 3000);
     check(/_goalActive/.test(block), 'unstuck requires an active goal to consider itself stuck',
         'unstuck still fires on plain stillness');
-    check(/if \(agent\.isIdle\(\) && !_goalActive\)/.test(block),
-        'the idle-still rescue is gated on a goal', 'the rescue is not gated');
+    // The gate used to be `isIdle() && !_goalActive`, which made "not stuck" mean
+    // "standing still with no goal" - the opposite of stuck, and it pinned
+    // _idleStill at 0 forever. Instrumented live: 53 update ticks, 0 rescues,
+    // while she narrated "still stuck?". The guard is now that stillness requires
+    // at least ONE of idle-or-goal; what it must never do is fire on a plain
+    // stillness with neither.
+    check(/const _tracking = agent\.isIdle\(\) \|\| _goalActive;/.test(block),
+        'the idle-still rescue tracks stillness while idle OR goal-active',
+        'the rescue is not gated');
+    check(!/if \(agent\.isIdle\(\) && !_goalActive\)/.test(block),
+        'the rescue no longer requires the ABSENCE of a goal, which made it unreachable',
+        'the old unreachable gate is back');
 }
 
 // ── wired at the single choke point, and it must not latch ────────────

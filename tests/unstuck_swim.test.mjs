@@ -92,3 +92,28 @@ test('swimUp only reports success when the HEAD is dry too', () => {
     assert.match(after, /bubble_column/,
         'a bubble column is water; treating it as dry would hide a real hazard');
 });
+
+// STILLNESS MUST COUNT WHILE SHE IS WORKING TOWARD A GOAL.
+//
+// The idle branch required `agent.isIdle() && !_goalActive`, which defines
+// "not stuck" as standing still with no goal - the opposite of being stuck.
+// Stuck means she HAS a goal and is not progressing toward it. Instrumented
+// live, wedged in a 1x1 shaft at y51 with air one block to her left:
+//
+//   [stuck-dbg] in update idle=true goalActive=true state=1 idleStill=0
+//   [stuck-dbg] in update idle=true goalActive=true state=1 idleStill=0
+//
+// idleStill never left 0, so the rescue that digs the wall was unreachable:
+// 53 update ticks, 0 rescues, while she narrated "still stuck? guess i'll have
+// to dig up then". After the fix still climbs 8 -> 9 -> 10 -> 11 and she moved
+// y51 -> y44.
+test('stillness is tracked while she has a goal, not only while idle', () => {
+    const start = code.indexOf('const _goalActive =');
+    const gate = code.slice(start, code.indexOf('_idleRescueAt', start) + 400);
+    assert.match(gate, /const _tracking = agent\.isIdle\(\) \|\| _goalActive;/,
+        'the stillness counter must run when she is working toward a goal');
+    assert.doesNotMatch(gate, /if \(agent\.isIdle\(\) && !_goalActive\)/,
+        'requiring NO goal means a goal-driven stuck state can never accrue stillness');
+    assert.match(gate, /_idleStill/,
+        'the rescue counter must still be the thing that gates the dig-out');
+});
