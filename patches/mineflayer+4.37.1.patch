@@ -1,3 +1,245 @@
+diff --git a/node_modules/mineflayer/lib/plugins/entities.js b/node_modules/mineflayer/lib/plugins/entities.js
+--- a/node_modules/mineflayer/lib/plugins/entities.js
++++ b/node_modules/mineflayer/lib/plugins/entities.js
+@@ -298,10 +298,39 @@
+     })
+   })
+ 
++  // 26.3+: VecDelta wire format (entityId + props + raw delta bytes).
++  function decodeVecDelta (raw, stepCount) {
++    let dx = 0; let dy = 0; let dz = 0
++    if (!raw || !raw.length) return [dx, dy, dz]
++    if (stepCount === 0) {
++      if (raw.length < 6) return [dx, dy, dz]
++      dx = raw.readInt16BE(0); dy = raw.readInt16BE(2); dz = raw.readInt16BE(4)
++    } else {
++      let off = 0
++      for (let s = 0; s < stepCount && off < raw.length; s++) {
++        // ticks varint (skip), then xa/ya/za i16 (accumulate last step)
++        let shift = 0; let b = 0
++        do {
++          if (off >= raw.length) break
++          b = raw[off++]
++          shift += 7
++        } while ((b & 128) !== 0 && shift < 35)
++        if (off + 6 > raw.length) break
++        dx = raw.readInt16BE(off); dy = raw.readInt16BE(off + 2); dz = raw.readInt16BE(off + 4)
++        off += 6
++      }
++    }
++    return [dx, dy, dz]
++  }
+   bot._client.on('rel_entity_move', (packet) => {
+     // entity relative move
+     const entity = fetchEntity(packet.entityId)
+-    if (bot.supportFeature('fixedPointDelta')) {
++    if (packet.deltaRaw !== undefined && packet.props !== undefined) {
++      // 26.3 VecDelta: unit is 1/4096 block (same scale as old fixedPointDelta128)
++      const steps = packet.props >> 1
++      const [dx, dy, dz] = decodeVecDelta(packet.deltaRaw, steps)
++      entity.position.translate(dx / (128 * 32), dy / (128 * 32), dz / (128 * 32))
++    } else if (bot.supportFeature('fixedPointDelta')) {
+       entity.position.translate(packet.dX / 32, packet.dY / 32, packet.dZ / 32)
+     } else if (bot.supportFeature('fixedPointDelta128')) {
+       entity.position.translate(packet.dX / (128 * 32), packet.dY / (128 * 32), packet.dZ / (128 * 32))
+@@ -320,35 +349,97 @@
+   bot._client.on('entity_move_look', (packet) => {
+     // entity look and relative move
+     const entity = fetchEntity(packet.entityId)
+-    if (bot.supportFeature('fixedPointDelta')) {
+-      entity.position.translate(packet.dX / 32, packet.dY / 32, packet.dZ / 32)
+-    } else if (bot.supportFeature('fixedPointDelta128')) {
+-      entity.position.translate(packet.dX / (128 * 32), packet.dY / (128 * 32), packet.dZ / (128 * 32))
++    if (packet.tail !== undefined && packet.props !== undefined) {
++      // 26.3: tail = delta bytes + yaw i8 + pitch i8
++      const tail = packet.tail
++      const yaw = tail.length >= 2 ? tail[tail.length - 2] : 0
++      const pitch = tail.length >= 2 ? tail[tail.length - 1] : 0
++      const delta = tail.length >= 2 ? tail.slice(0, tail.length - 2) : tail
++      const steps = packet.props >> 1
++      const [dx, dy, dz] = decodeVecDelta(delta, steps)
++      entity.position.translate(dx / (128 * 32), dy / (128 * 32), dz / (128 * 32))
++      entity.yaw = conv.fromNotchianYawByte(yaw)
++      entity.pitch = conv.fromNotchianPitchByte(pitch)
++    } else {
++      if (bot.supportFeature('fixedPointDelta')) {
++        entity.position.translate(packet.dX / 32, packet.dY / 32, packet.dZ / 32)
++      } else if (bot.supportFeature('fixedPointDelta128')) {
++        entity.position.translate(packet.dX / (128 * 32), packet.dY / (128 * 32), packet.dZ / (128 * 32))
++      }
++      entity.yaw = conv.fromNotchianYawByte(packet.yaw)
++      entity.pitch = conv.fromNotchianPitchByte(packet.pitch)
+     }
+-    entity.yaw = conv.fromNotchianYawByte(packet.yaw)
+-    entity.pitch = conv.fromNotchianPitchByte(packet.pitch)
+     bot.emit('entityMoved', entity)
+   })
+ 
+   bot._client.on('entity_teleport', (packet) => {
+     // entity teleport
+     const entity = fetchEntity(packet.entityId)
+-    if (bot.supportFeature('fixedPointPosition')) {
+-      entity.position.set(packet.x / 32, packet.y / 32, packet.z / 32)
+-    }
+-    if (bot.supportFeature('doublePosition')) {
++    if (packet.flags !== undefined) {
++      // 26.3+: f64 absolute pos + f32 degree yaw/pitch (dx/dy/dz deltas + onGround ignored)
+       entity.position.set(packet.x, packet.y, packet.z)
++      entity.yaw = packet.yaw
++      entity.pitch = packet.pitch
++    } else {
++      if (bot.supportFeature('fixedPointPosition')) {
++        entity.position.set(packet.x / 32, packet.y / 32, packet.z / 32)
++      }
++      if (bot.supportFeature('doublePosition')) {
++        entity.position.set(packet.x, packet.y, packet.z)
++      }
++      entity.yaw = conv.fromNotchianYawByte(packet.yaw)
++      entity.pitch = conv.fromNotchianPitchByte(packet.pitch)
+     }
+-    entity.yaw = conv.fromNotchianYawByte(packet.yaw)
+-    entity.pitch = conv.fromNotchianPitchByte(packet.pitch)
+     bot.emit('entityMoved', entity)
+   })
+ 
+   // 1.21.3 - merges the packets above
++
++// 26.3 moved the absolute position out of flat x/y/z fields and into a
++// `position` field of type PositionPath:
++//
++//   packet_sync_entity_position:
++//     { entityId, position: { typeId, steppedSteps: [{ position: {x,y,z}, tickOffset }] },
++//       yaw, pitch, onGround }
++//
++// Mineflayer's handler reads `packet.x / packet.y / packet.z`, which on 26.3
++// are simply undefined. `Vec3.set(undefined, undefined, undefined)` writes
++// nulls into the entity, and from then on `position.distanceTo(...)` is NaN -
++// so assessThreats() discarded the mob and she could not see, track or fight
++// anything. Measured live: 3 of 18 entities had {x:null,y:null,z:null} while
++// the other 15 (spawned by spawn_entity, which still carries flat f64 x/y/z)
++// were fine. Those 3 were exactly the ones last touched by
++// sync_entity_position.
++//
++// Read whichever shape arrived, and apply the most recent step. The relative
++// move packets (rel_entity_move / entity_move_look / entity_move) carry an
++// opaque restBuffer instead of x/y/z and are handled separately below.
++function absolutePositionOf (packet) {
++  if (packet && typeof packet.x === 'number' && Number.isFinite(packet.x)) {
++    if (bot.supportFeature('fixedPointPosition')) {
++      return { x: packet.x / 32, y: packet.y / 32, z: packet.z / 32 }
++    }
++    return { x: packet.x, y: packet.y, z: packet.z }
++  }
++  const path = packet && packet.position
++  const steps = path && (path.steppedSteps || path.steps)
++  if (!Array.isArray(steps) || steps.length === 0) return null
++  const last = steps[steps.length - 1]
++  const pos = (last && (last.position || last)) || null
++  if (!pos || !Number.isFinite(pos.x) || !Number.isFinite(pos.y) || !Number.isFinite(pos.z)) return null
++  // PositionPath is already in world units - no /32 scaling.
++  return { x: pos.x, y: pos.y, z: pos.z }
++}
++
+   bot._client.on('sync_entity_position', (packet) => {
+     const entity = fetchEntity(packet.entityId)
+-    entity.position.set(packet.x, packet.y, packet.z)
+-    entity.velocity.set(packet.dx, packet.dy, packet.dz)
++    const abs = absolutePositionOf(packet)
++    // Fall back to the last known good position rather than writing nulls: a
++    // half-known entity is far more useful than one whose distance is NaN.
++    if (abs) entity.position.set(abs.x, abs.y, abs.z)
++    // 26.3 dropped dx/dy/dz from this packet; velocity arrives via
++    // entity_velocity instead, so only apply it when it is actually present.
++    if (packet.dx !== undefined) entity.velocity.set(packet.dx, packet.dy, packet.dz)
+     entity.yaw = conv.fromNotchianYaw(packet.yaw)
+     entity.pitch = conv.fromNotchianPitch(packet.pitch)
+     bot.emit('entityMoved', entity)
+@@ -475,13 +566,20 @@
+         }
+       }
+ 
+-      if (metas.shared_flags != null) {
++      // Fall back to the raw key-0 bitfield when the entity data lacks a name for
++      // shared_flags (some forks omit metadataKeys). Fixes elytra/crouch detection.
++      let sharedFlags = metas.shared_flags
++      if (sharedFlags == null) {
++        const bitField = packet.metadata.find(p => p.key === 0)
++        if (bitField !== undefined) sharedFlags = bitField.value
++      }
++      if (sharedFlags != null) {
+         if (bot.supportFeature('hasElytraFlying')) {
+-          const elytraFlying = metas.shared_flags & 0x80
++          const elytraFlying = sharedFlags & 0x80
+           setElytraFlyingState(entity, Boolean(elytraFlying))
+         }
+ 
+-        if (metas.shared_flags & 2) {
++        if (sharedFlags & 2) {
+           entity.crouching = true
+           bot.emit('entityCrouch', entity)
+         } else if (entity.crouching) { // prevent the initial entity_metadata packet from firing off an uncrouch event
+@@ -825,10 +923,8 @@
+   bot.moveVehicle = moveVehicle
+ 
+   function swingArm (arm = 'right', showHand = true) {
+-    const hand = arm === 'right' ? 0 : 1
+-    const packet = {}
+-    if (showHand) packet.hand = hand
+-    bot._client.write('arm_animation', packet)
++    // 26.3: arm swing is the empty punch packet (jar id 46).
++    bot._client.write('punch', {})
+   }
+ 
+   function useOn (target) {
+@@ -870,11 +966,14 @@
+         }
+       })
+     } else {
+-      bot._client.write('steer_vehicle', {
+-        sideways: left,
+-        forward,
+-        jump: 0x01
+-      })
++      bot._client.write('player_input', {
++        inputs: {
++          forward: forward > 0,
++          backward: forward < 0,
++          left: left > 0,
++          right: left < 0
++        }
++      }) // 26.3: steer_vehicle removed; player_input covers it
+     }
+   }
+ 
+@@ -900,19 +999,18 @@
+ 
+   function useEntity (target, leftClick, x, y, z) {
+     const sneaking = bot.getControlState('sneak')
+-    if (x && y && z) {
+-      bot._client.write('use_entity', {
+-        target: target.id,
+-        mouse: leftClick,
+-        x,
+-        y,
+-        z,
+-        sneaking
+-      })
++    if (leftClick) {
++      // 26.2 splits attack into its own packet (entityId only)
++      bot._client.write('attack', { entityId: target.id })
+     } else {
++      const location = (x !== undefined && y !== undefined && z !== undefined)
++        ? { x, y, z }
++        : { x: 0, y: 0, z: 0 }
++      // 26.3 sneaking field (hand is a mapper: 0 = main_hand)
+       bot._client.write('use_entity', {
+         target: target.id,
+-        mouse: leftClick,
++        hand: 0,
++        location,
+         sneaking
+       })
+     }
 diff --git a/node_modules/mineflayer/lib/plugins/enchantment_table.js b/node_modules/mineflayer/lib/plugins/enchantment_table.js
 --- a/node_modules/mineflayer/lib/plugins/enchantment_table.js
 +++ b/node_modules/mineflayer/lib/plugins/enchantment_table.js
