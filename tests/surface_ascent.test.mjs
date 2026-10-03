@@ -104,6 +104,40 @@ test('digUp reports honestly when it stops short', () => {
         'partial climb must be reported as partial, not as the full distance');
 });
 
+test('digUp STEPS UP, it does not merely press forward for a fixed sleep', () => {
+    // MEASURED FAILURE, invisible to every other assertion in this file:
+    //
+    //     Pathfinding could not climb from y=14; tunnelling to y=63.
+    //     Climbed 0 blocks, then made no further progress.
+    //
+    // twice. The step was `setControlState('forward', true)`, sleep 350ms, then
+    // release. setControlState only presses a key - it does not walk her. She
+    // cleared the block above, pressed forward into thin air, and stayed put.
+    const step = digUp.slice(digUp.indexOf('Step into the cleared space'));
+    assert.match(step, /setControlState\('jump', true\)/,
+        'a 1-block step needs a jump; forward alone will not raise her');
+    assert.match(step, /setControlState\('sneak', true\)/,
+        'without sneak she can drift off the block she is climbing from');
+    assert.match(step, /while \(Date\.now\(\) - t0 < \d+\)/,
+        'the step must HOLD the control states until her Y changes, not for a fixed sleep');
+    assert.match(step, /Math\.floor\(bot\.entity\.position\.y\) > yBefore\) break/,
+        'the hold loop must poll her actual height - the exit condition is "she is higher now"');
+    // And every state it presses, it must release. The release is a loop over
+    // ['jump', 'forward', 'sneak'], so match the loop rather than a literal
+    // setControlState('jump', false) that the code never writes.
+    assert.match(step, /for \(const s of \[[^\]]*'jump'[^\]]*'forward'[^\]]*'sneak'[^\]]*\]\)/,
+        'the step must release jump, forward AND sneak - the array must name all three');
+    assert.match(step, /setControlState\(s, false\)/,
+        'the release loop must actually clear the state it pressed');
+});
+
+test('digUp measures the step against the height it started the step at', () => {
+    // It used to diff against the block read at the top of the iteration, which
+    // conflated "this step gained nothing" with "this whole call gained nothing".
+    assert.match(digUp, /const yBefore = Math\.floor\(bot\.entity\.position\.y\)/);
+    assert.match(digUp, /const gain = nowY - yBefore;/);
+});
+
 test('!digUp is registered and mirrors !digDown arity', async () => {
     if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
     const mod = await import('../src/agent/commands/index.js');

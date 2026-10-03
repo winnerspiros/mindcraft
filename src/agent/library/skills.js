@@ -9809,14 +9809,36 @@ export async function digUp(bot, distance = 6) {
             const ok = await breakBlockAt(bot, newFeet.position.x, newFeet.position.y, newFeet.position.z, 12000);
             if (!ok) return climbed > 0;
         }
-        // Look up so she actually steps into the cleared space.
-        try { await bot.look(bot.entity.position.offset(0, 1, 0), true); } catch (_) {}
+        // Step into the cleared space.
+        //
+        // MEASURED FAILURE: this used to be
+        //     bot.setControlState('forward', true); sleep(350); ...(false)
+        // which climbed 0 blocks, twice, every time. Logged:
+        //     Pathfinding could not climb from y=14; tunnelling to y=63.
+        //     Climbed 0 blocks, then made no further progress.
+        //
+        // setControlState alone does not walk anyone - it only presses the key.
+        // Nothing steers, nothing jumps, and without sneak she can drift off the
+        // block she is standing on. The working pattern is already in this file
+        // (_parkEdgeAhead): sneak + forward held in a LOOP that polls for the
+        // condition, releasing on interrupt. Hold them until her Y actually
+        // changes rather than for a fixed sleep, because 350ms of forward on a
+        // 1-block step is a coin flip.
+        const yBefore = Math.floor(bot.entity.position.y);
+        try { bot.setControlState('sneak', true); } catch (_) {}
         try { bot.setControlState('forward', true); } catch (_) {}
-        await new Promise(r => setTimeout(r, 350));
-        try { bot.setControlState('forward', false); } catch (_) {}
-        await new Promise(r => setTimeout(r, 150));
+        try { bot.setControlState('jump', true); } catch (_) {}
+        const t0 = Date.now();
+        while (Date.now() - t0 < 1200) {
+            if (bot.interrupt_code) break;
+            if (Math.floor(bot.entity.position.y) > yBefore) break;
+            await new Promise(r => setTimeout(r, 60));
+        }
+        for (const s of ['jump', 'forward', 'sneak']) {
+            try { bot.setControlState(s, false); } catch (_) {}
+        }
         const nowY = Math.floor(bot.entity.position.y);
-        const gain = nowY - Math.floor(feet.position.y);
+        const gain = nowY - yBefore;
         if (gain <= 0) {
             log(bot, `Climbed ${climbed} blocks, then made no further progress.`);
             return climbed > 0;
