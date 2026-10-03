@@ -208,6 +208,23 @@ export function isArmed(bot) {
     });
 }
 
+// A bow plus at least one arrow is a weapon too. Without this the whole ranged
+// path was unreachable: assessThreats() gates on isArmed() (melee only) and
+// returns 'ignore' for a bow-only survivor, so the agent's _hasBowFor branch -
+// which exists and works - was dead code, and a husk 12 blocks away produced no
+// reaction at all. Verified by reproduction: with only bow+arrow she reported
+// "unarmed, no reason to start a fight with a husk".
+const ARROWS = /^(arrow|spectral_arrow|tipped_arrow)$/;
+
+export function isRangedArmed(bot) {
+    const items = bot?.inventory?.items?.() || [];
+    const hasBow = items.some(i => i.name === 'bow');
+    const arrows = items
+        .filter(i => ARROWS.test(String(i?.name || '')))
+        .reduce((n, i) => n + (i.count || 0), 0);
+    return hasBow && arrows > 0;
+}
+
 export function hasShield(bot) {
     const items = bot?.inventory?.items?.() || [];
     return items.some((i) => /shield/i.test(String(i?.name || '')));
@@ -282,7 +299,12 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
         const self = bot?.entity?.position;
         if (!self) return { action: 'ignore', reason: 'no position', urgency: 0 };
 
+        // Melee and ranged are different weapons with different ranges: a bow
+        // answers at 30 blocks and is useless in a grapple. armAt() says what
+        // she can actually do about a threat at that distance.
         const armed = isArmed(bot);
+        const ranged = isRangedArmed(bot);
+        const armAt = (d) => armed || (ranged && d > MELEE_RANGE);
         let worst = null;
 
         for (const e of entities || []) {
@@ -324,12 +346,12 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
                 urgency: worst.urgency,
             };
         }
-        if (armed) {
+        if (armAt(worst.distance)) {
             return {
                 action: 'fight',
                 target: worst.entity,
                 goal: `deal with the ${worst.name} before it gets to me`,
-                reason: `armed, ${worst.name} at ${worst.distance.toFixed(1)} blocks`,
+                reason: `${armed ? 'armed' : 'bow armed'}, ${worst.name} at ${worst.distance.toFixed(1)} blocks`,
                 urgency: worst.urgency,
             };
         }

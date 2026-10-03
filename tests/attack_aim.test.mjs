@@ -323,7 +323,7 @@ check('a lost bow is re-equipped, not ignored',
 check('shootBow does not claim a shot it never drew',
   /no arrow was consumed - not counting it/.test(sb) &&
   // The gate must be the arrow stack dropping, NOT the bow still being held.
-  /arrowsAfter < arrowsBefore/.test(sb) &&
+  /arrowSpent\(/.test(sb) &&
   !/bot\.heldItem && bot\.heldItem\.name === 'bow'\) fired\+\+/.test(sb))
 check('the false-signal rationale is documented in-file',
   /the only defence is to check and to not lie about it/.test(sb))

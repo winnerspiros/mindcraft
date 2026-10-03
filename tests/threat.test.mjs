@@ -288,3 +288,68 @@ nanVec.x = NaN
 console.log(failed
     ? `\nFAIL — ${pass} passed, ${failed} failed`
     : `\n${pass - failed} passed, ${failed} failed — threat assertions`);
+
+
+// ── a bow is a weapon: ranged combat must be reachable ───────────────
+// Until this existed the whole ranged path was dead code. assessThreats()
+// gated on isArmed() (melee only) and returned 'ignore' for a bow-only
+// survivor, so the agent's _hasBowFor branch could never be reached.
+// Reproduced live: a husk 12 blocks away produced no reaction at all and she
+// logged "unarmed, no reason to start a fight with a husk".
+{
+    const kit = [{ name: 'bow' }, { name: 'arrow', count: 30 }];
+    const far = assessThreats({ bot: botWith(kit), entities: [mob('husk', 12, 64, 0)] });
+    check(far.action === 'fight' && /bow armed/.test(far.reason),
+        'a bow with arrows engages at range',
+        `bow-only survivor is reported unarmed: got ${far.action} (${far.reason})`);
+
+    const close = assessThreats({ bot: botWith(kit), entities: [mob('husk', 2, 64, 0)] });
+    // The bow answers at 30 blocks and is useless at 2. Engaging there would be
+    // worse than standing off.
+    check(close.action === 'ignore' && /unarmed/.test(close.reason),
+        'a bow does not get her into a melee grapple it cannot win',
+        `bow-only survivor should decline at 2 blocks, got ${close.action}`);
+
+    const dry = assessThreats({ bot: botWith([{ name: 'bow' }, { name: 'arrow', count: 0 }]), entities: [mob('husk', 12, 64, 0)] });
+    check(dry.action === 'ignore',
+        'an empty quiver is not a weapon',
+        `bow with 0 arrows must not count as armed, got ${dry.action}`);
+
+    const noBow = assessThreats({ bot: botWith([{ name: 'arrow', count: 30 }]), entities: [mob('husk', 12, 64, 0)] });
+    check(noBow.action === 'ignore',
+        'arrows with no bow are not a weapon',
+        `arrows alone must not count as armed, got ${noBow.action}`);
+
+    for (const ammo of ['spectral_arrow', 'tipped_arrow']) {
+        const r = assessThreats({ bot: botWith([{ name: 'bow' }, { name: ammo, count: 4 }]), entities: [mob('husk', 12, 64, 0)] });
+        check(r.action === 'fight', `${ammo} counts as a quiver`, `${ammo} did not count as ammo (${r.action})`);
+    }
+
+    const melee = assessThreats({ bot: botWith([{ name: 'diamond_sword' }]), entities: [mob('husk', 12, 64, 0)] });
+    check(melee.action === 'fight' && /^armed, /.test(melee.reason),
+        'melee keeps its own reason string so the logs stay readable',
+        `expected "armed, ...", got ${melee.reason}`);
+
+    const bare = assessThreats({ bot: botWith([]), entities: [mob('husk', 12, 64, 0)] });
+    check(bare.action === 'ignore',
+        'a bare survivor still declines - the fix is not "always fight"',
+        `bare survivor must stay passive, got ${bare.action}`);
+
+    const pick = assessThreats({ bot: botWith([{ name: 'diamond_pickaxe' }]), entities: [mob('husk', 12, 64, 0)] });
+    check(pick.action === 'ignore',
+        'a pickaxe still does not count as a melee weapon',
+        `pickaxe must not count as armed, got ${pick.action}`);
+
+    // A creeper at range is exactly what a bow is FOR - shooting it from 12
+    // blocks is the correct answer. Only a PRIMING one outranks the bow, and
+    // priming means it is already on top of her.
+    const farCreeper = assessThreats({ bot: botWith(kit), entities: [mob('creeper', 12, 64, 0)] });
+    check(farCreeper.action === 'fight',
+        'a bow handles a distant creeper - that is what it is for',
+        `expected fight at 12 blocks, got ${farCreeper.action} (${farCreeper.reason})`);
+
+    const primed = assessThreats({ bot: botWith(kit), entities: [mob('creeper', 2, 64, 0)] });
+    check(primed.action === 'avoid',
+        'a priming creeper still outranks the bow',
+        `explodes must beat fight at melee range, got ${primed.action}`);
+}

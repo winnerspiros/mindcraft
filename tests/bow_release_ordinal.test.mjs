@@ -111,7 +111,7 @@ test('shootBow counts a shot only when an arrow is actually consumed', () => {
   // Holding the bow afterwards is not evidence a projectile was loosed.
   assert.ok(!/if \(bot\.heldItem && bot\.heldItem\.name === 'bow'\) fired\+\+/.test(body),
     'must not infer a shot from the bow still being held')
-  assert.ok(/const spent =/.test(body) && /arrowsAfter < arrowsBefore/.test(body),
+  assert.ok(/const spent =/.test(body) && /arrowSpent\(/.test(body),
     'must gate fired++ on the arrow stack decreasing')
 })
 
@@ -126,8 +126,36 @@ test('hawkeyeShot also reports a real shot, not an unconditional true', () => {
   )
   assert.ok(/Hawkeye: drew and released, but no arrow was consumed/.test(body),
     'hawkeyeShot must report an unconsumed arrow')
-  assert.ok(/arrowsAfter < arrowsBefore/.test(body),
+  assert.ok(/arrowSpent\(/.test(body),
     'hawkeyeShot must gate its result on the arrow stack decreasing')
+})
+
+test('hawkeyeShot snapshots arrows BEFORE activateItem, never mid-draw', () => {
+  const start = SKILLS.indexOf('export async function hawkeyeShot')
+  const body = SKILLS.slice(start, start + 6000)
+  // Reading the count after the draw starts lets the delta straddle the release
+  // and score a shot that never resolved. Order is the whole point.
+  const snap = body.indexOf('const arrowsBefore = countArrows(bot)')
+  const draw = body.indexOf('await bot.activateItem()')
+  const rel = body.indexOf('await bot.deactivateItem()')
+  assert.ok(snap >= 0 && draw >= 0 && rel >= 0, 'hawkeyeShot must snapshot, draw and release')
+  assert.ok(snap < draw, 'snapshot must precede activateItem')
+  assert.ok(snap < rel, 'snapshot must precede the release')
+})
+
+test('arrowSpent is the single shared predicate, and never treats unknown as spent', () => {
+  const start = SKILLS.indexOf('function arrowSpent(')
+  assert.ok(start >= 0, 'arrowSpent helper missing')
+  const body = SKILLS.slice(start, start + 400)
+  assert.ok(/after < before/.test(body), 'must require the stack to decrease')
+  assert.ok(/before !== null && after !== null/.test(body),
+    'an unreadable inventory is unknown, never evidence of a shot')
+  // One rule, two callers - not a copy pasted into each. Count call sites only,
+  // not the "See arrowSpent()" prose in the comment above one of them.
+  const defs = (SKILLS.match(/^function arrowSpent\(/gm) || []).length
+  const calls = (SKILLS.replace(/\/\/[^\n]*/g, '').match(/\barrowSpent\(/g) || []).length
+  assert.strictEqual(defs, 1, 'exactly one definition')
+  assert.strictEqual(calls - defs, 2, 'exactly two call sites: shootBow and hawkeyeShot')
 })
 
 test('countArrows totals every arrow stack and distinguishes unknown from zero', () => {
