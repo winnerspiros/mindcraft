@@ -14,6 +14,15 @@ import { dirname, resolve } from 'path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(resolve(here, '../src/agent/library/skills.js'), 'utf8')
+// attackEntity, bounded by its own closing brace line. Declared up here because
+// checks above reference it. The gate's rationale comment lives with the
+// MELEE_REACH constant at the top of the file, so it is checked against
+// `reachDoc` rather than this slice - an earlier version looked for it here and
+// passed vacuously on an empty slice.
+const aeStart2 = src.indexOf('export async function attackEntity')
+const ae = src.slice(aeStart2, src.indexOf('\n}\n', aeStart2))
+const reachIdx = src.indexOf('const MELEE_REACH')
+const reachDoc = src.slice(Math.max(0, reachIdx - 500), reachIdx)
 
 let ok = 0, failed = 0
 const check = (name, cond, extra = '') => {
@@ -95,8 +104,18 @@ for (const [name, cond] of sites) check(`${name} is aimed`, cond)
 // --- the kill branch must RE-SWING, not fire once and poll ---
 // Regression for the original bug: one rejected swing ended the whole fight.
 const killIdx = src.indexOf('while (world.getNearbyEntities(bot, 24).includes(entity))')
+// Search the whole kill branch (`ae`), not a fixed 1200-char window: the stall
+// abort added ~20 lines and pushed the in-loop re-aim outside it. A window here
+// silently degrades to checking a different thing.
+// There are TWO attackAimed calls: the opening swing before the loop, and the
+// in-loop re-aim. indexOf finds the first, so search for the SECOND occurrence -
+// a naive "does it appear after the while" check matched the opening call and
+// would pass even if the in-loop re-aim were deleted.
+const whileAt = ae.indexOf('while (world.getNearbyEntities(bot, 24).includes(entity))')
+const firstSwing = ae.indexOf('attackAimed(bot, entity,')
+const loopReaim = ae.indexOf('attackAimed(bot, entity,', firstSwing + 1)
 check('kill branch re-aims inside the poll loop',
-  killIdx > 0 && /attackAimed\(/.test(src.slice(killIdx, killIdx + 1200)))
+  whileAt > 0 && loopReaim > whileAt && firstSwing < whileAt)
 // The poll must be BOUNDED. An unbounded while means a lost fight hangs the
 // promise forever and the 1s threat scan can never start another one - which is
 // how she ended up "fighting" a zombie that was hitting her, at 4.2 blocks,
@@ -105,9 +124,13 @@ check('the kill poll is bounded by a deadline',
   /const deadline = Date\.now\(\) \+ \d+/.test(src.slice(killIdx - 600, killIdx + 400)) &&
   /if \(Date\.now\(\) > deadline\)/.test(src.slice(killIdx, killIdx + 600)))
 // and it must actually CLOSE the distance, not swing at air from detection range
+// Both closing steps now key off MELEE_REACH rather than a hardcoded 2.5, and
+// the opening one is behind a reach check - so this asserts the GATED form.
+// It used to pin the literal 2.5, which silently stopped matching when the
+// threshold became a named constant.
 check('the kill branch closes distance before swinging',
-  /goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\)/.test(src.slice(killIdx - 800, killIdx)) &&
-  /distanceTo\(entity\.position\) > 2\.5/.test(src.slice(killIdx, killIdx + 1200)))
+  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n\s*await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae) &&
+  /distanceTo\(entity\.position\) > MELEE_REACH/.test(ae))
 
 // --- no unaided pvp.attack may remain on a hostile target ---
 const unaided = [...src.matchAll(/^\s*bot\.pvp\.attack\(([^)]*)\)/gm)].map(m => m[1])
@@ -117,6 +140,82 @@ check('no bare unaided bot.pvp.attack(...) call remains', unaided.length === 0,
 // --- the derivation must stay documented so it is not "simplified" back ---
 check('the 70deg / Panda derivation is documented in-file',
   /INVALID ANGLE/.test(src) && /70 degrees/.test(src) && /bounding-box centre/.test(src))
+
+// --- a fight in reach must NOT depend on the pathfinder ------------------
+// Measured 2026-10-03: a zombie in CONTACT (she 300.50, mob 300.77) still
+// logged "No path found after retries - staying put (26.3 movement gate)"
+// and the fight never started. attackEntity called goToPosition
+// unconditionally, so a planner failure skipped a fight she could win standing
+// still. The path is only for mobs that are genuinely out of reach.
+// Widen to include the doc comment above the guard, not just from the
+// signature line - a narrow slice made the documentation check pass vacuously.
+check('MELEE_REACH is defined', /const MELEE_REACH = [\d.]+/.test(src))
+check('the opening path is gated on reach',
+  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n\s*await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae))
+// Count the gated path steps: the opening one AND the per-round re-close. A
+// single regex matches both, so deleting only the re-close still satisfied it -
+// this is why the per-round guard needs its own occurrence.
+check('the per-round re-close is gated on reach too',
+  [...ae.matchAll(/distanceTo\(entity\.position\) > MELEE_REACH/g)].length >= 2)
+check('the unconditional goToPosition is gone from the kill branch',
+  !/\n\s*await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);\s*\n\s*await attackAimed/.test(ae))
+check('MELEE_REACH is smaller than sword reach (3.0)', (() => {
+  const m = src.match(/const MELEE_REACH = ([\d.]+)/)
+  return m && Number(m[1]) > 0 && Number(m[1]) <= 3.0
+})())
+check('a melee swing always happens regardless of pathing',
+  /await attackAimed\(bot, entity, \(\) => bot\.pvp\.attack\(entity\)\);/.test(ae) &&
+  ae.indexOf('attackAimed(bot, entity, () => bot.pvp.attack(entity))') >
+    ae.indexOf('if (bot.entity.position.distanceTo(entity.position) > MELEE_REACH)'))
+check('the reach-gate rationale is documented in-file',
+  /planning a path to it is wasted work/.test(reachDoc))
+
+// --- an unreachable target must not hold the single fight slot -----------
+// There is ONE fight slot. Measured 2026-10-03: a phantom hovering at 1.7
+// blocks held it for the full 30s bound, 3 zombies survived untouched, and she
+// was at full health unable to start any of them. The poll must abort when the
+// gap stops closing, so the next scan can pick a reachable target.
+// bestGap must be INITIALISED from the real current distance, not a constant -
+// `let bestGap = 0` would make the first poll always look like progress and
+// never start the stall timer.
+check('the fight loop tracks its best gap',
+  /let bestGap = bot\.entity\.position\.distanceTo\(entity\.position\);/.test(ae) &&
+  /let stallSince = null;/.test(ae))
+check('a stalled close-out aborts early', /stallSince - ?\)? \|\| Date\.now\(\) - stallSince > 8000|stallSince\) ?\|\| Date\.now\(\) - stallSince > 8000/.test(ae) || /Date\.now\(\) - stallSince > 8000/.test(ae))
+check('the abort releases the slot (pvp.stop + return false)',
+  /breaking off \$\{entity\.name\}/.test(ae) &&
+  /break[\s\S]{0,300}bot\.pvp\.stop\(\);[\s\S]{0,120}return false;/.test(ae))
+check('progress resets the stall timer',
+  /\} else \{ bestGap = nowGap; stallSince = null; \}/.test(ae))
+check('being in reach resets the stall timer',
+  /if \(nowGap <= MELEE_REACH\) \{ bestGap = nowGap; stallSince = null; \}/.test(ae))
+check('the 30s hard bound survives as a backstop',
+  /const deadline = Date\.now\(\) \+ 30000/.test(ae))
+check('the stall-abort rationale is documented in-file',
+  /ONE fight slot/.test(ae) && /starves every ground mob/.test(ae))
+
+// --- every identifier used in the kill branch must exist in this file -----
+// Caught a real shipped bug: the stall check used MELEE_RANGE, which is
+// exported from utils/threat.js and NOT imported here, so every fight threw
+// "MELEE_RANGE is not defined" and returned false the instant it started. All
+// 31 checks above still passed, because they never evaluate the code. Free
+// identifiers that look like constants are the one thing a regex suite cannot
+// see, so resolve them against this module's own imports/declarations.
+const declaredHere = new Set([
+  ...[...src.matchAll(/^\s*(?:const|let|var|function)\s+([A-Za-z_$][\w$]*)/gm)].map(m => m[1]),
+  ...[...src.matchAll(/^\s*(?:const|let|var)\s*\{([^}]*)\}/gm)].flatMap(m => m[1].split(',').map(x => x.trim().split(/\s+as\s+/).pop()).filter(Boolean)),
+  ...[...src.matchAll(/^import\s+(?:\*\s+as\s+([\w$]+)|\{([^}]*)\}|([\w$]+))/gm)].flatMap(m => m[1] ? [m[1]] : (m[2] ? m[2].split(',').map(x => x.trim().split(/\s+as\s+/).pop()).filter(Boolean) : [m[3]])),
+])
+// Strip comments first: prose is full of SCREAMING_CASE words (ONE, CLOSED),
+// which are not identifiers and would drown the real signal.
+const aeCode = ae
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/^\s*\/\/.*$/gm, ' ')
+const localCaps = [...new Set([...aeCode.matchAll(/\b([A-Z][A-Z0-9_]{2,})\b/g)].map(m => m[1]))]
+const undefinedCaps = localCaps.filter(c => !declaredHere.has(c))
+check('every SCREAMING_CASE constant in the kill branch is actually declared',
+  undefinedCaps.length === 0,
+  undefinedCaps.length ? 'undefined in this module: ' + undefinedCaps.join(', ') : undefined)
 
 console.log(`\n${ok} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

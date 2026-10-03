@@ -8,6 +8,13 @@ import * as SL from './station_ledger.js';
 import * as ENC from '../../utils/mcenchant.js';
 import { isArmed } from '../../utils/threat.js';
 
+// Sword reach, not detection range. A mob inside this is already hittable, so
+// planning a path to it is wasted work - and when the planner fails it would
+// otherwise skip the fight entirely (measured 2026-10-03: a zombie in contact
+// still logged "No path found - 26.3 movement gate" and the fight never began).
+// Just under the 3.0 sword reach, so a mob at exactly 3.0 still gets a step-in.
+const MELEE_REACH = 2.8;
+
 // Hostile mob types, as a Set. Declared up here (not next to defendBlind)
 // because both the combat paths AND the perception survey need it, and RCON
 // rows carry no `type` field for mc.isHostile() to judge. Sorted-ish order is
@@ -3453,17 +3460,48 @@ export async function attackEntity(bot, entity, kill=true) {
             // block sword reach, so she swung at air, never stepped in, and the
             // `while` below spun forever with no `done=` ever logged - the zombie
             // stood there hitting her while she "fought" it at 4.2 blocks.
-            await goToPosition(bot, pos.x, pos.y, pos.z, 2);
+            // Only path when the mob is genuinely out of reach. Measured on
+            // 2026-10-03: a zombie in CONTACT (she 300.50, mob 300.77) still
+            // logged "No path found after retries - staying put (26.3 movement
+            // gate)" and the fight never started, because this call was
+            // unconditional. Planning is unnecessary work when the mob is
+            // already in melee range, and a planner failure must not be allowed
+            // to skip a fight she can win standing still.
+            if (bot.entity.position.distanceTo(entity.position) > MELEE_REACH) {
+                await goToPosition(bot, pos.x, pos.y, pos.z, 2);
+            }
             await attackAimed(bot, entity, () => bot.pvp.attack(entity));
             // Bounded: an unbounded poll means a lost fight (mob unreachable,
             // knocked out of reach, respawns, another mob interleaves) hangs this
             // promise forever and the 1s threat scan can never start the next one.
             const deadline = Date.now() + 30000;
+            // Stall tracking for the abort below: the best (smallest) gap seen so
+            // far, and when the gap last failed to improve.
+            let bestGap = bot.entity.position.distanceTo(entity.position);
+            let stallSince = null;
             while (world.getNearbyEntities(bot, 24).includes(entity)) {
                 if (Date.now() > deadline) {
                     log(bot, `gave up on ${entity.name}, it stayed out of reach.`);
                     return false;
                 }
+                // Stall detection. There is ONE fight slot, so a target she can
+                // never actually reach (a phantom hovering, a mob across a
+                // chasm) holds it for the full 30s and starves every ground mob
+                // behind it. Measured 2026-10-03: a phantom at 1.7 blocks held
+                // the slot, 3 zombies survived untouched, and she was at full
+                // health with no way to start them. If the gap has not improved
+                // at all in ~8s, release the slot for a reachable target.
+                const nowGap = bot.entity.position.distanceTo(entity.position);
+                if (nowGap <= MELEE_REACH) { bestGap = nowGap; stallSince = null; }
+                else if (bestGap - nowGap < 0.5) {
+                    // no meaningful progress this poll
+                    if (stallSince === null) stallSince = Date.now();
+                    else if (Date.now() - stallSince > 8000) {
+                        log(bot, `breaking off ${entity.name}, not closing the gap (${nowGap.toFixed(1)} blocks).`);
+                        bot.pvp.stop();
+                        return false;
+                    }
+                } else { bestGap = nowGap; stallSince = null; }
                 await new Promise(resolve => setTimeout(resolve, 1000))
                 if (bot.interrupt_code) {
                     bot.pvp.stop();
@@ -3471,7 +3509,7 @@ export async function attackEntity(bot, entity, kill=true) {
                 }
                 // close again each round: the mob backs off and she faces travel
                 try {
-                    if (bot.entity.position.distanceTo(entity.position) > 2.5) {
+                    if (bot.entity.position.distanceTo(entity.position) > MELEE_REACH) {
                         await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, 2);
                     }
                     await attackAimed(bot, entity, () => bot.pvp.attack(entity));
