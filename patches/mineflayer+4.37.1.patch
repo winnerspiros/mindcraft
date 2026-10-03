@@ -409,6 +409,125 @@ diff --git a/node_modules/mineflayer/lib/plugins/digging.js b/node_modules/minef
      } catch (_) {}
    })
  
+diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/mineflayer/lib/plugins/inventory.js
+--- a/node_modules/mineflayer/lib/plugins/inventory.js
++++ b/node_modules/mineflayer/lib/plugins/inventory.js
+@@ -192,7 +192,7 @@
+     const directionNum = vectorToDirection(direction) // The packet needs a number as the direction
+     cursorPos = cursorPos ?? new Vec3(0.5, 0.5, 0.5)
+     // TODO: tell the server that we are not sneaking while doing this
+-    await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), false)
++    await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true)
+     // place block message
+     // TODO: logic below can likely be simplified
+     if (bot.supportFeature('blockPlaceHasHeldItem')) {
+@@ -223,6 +223,12 @@
+         cursorZ: cursorPos.z
+       })
+     } else if (bot.supportFeature('blockPlaceHasInsideBlock')) {
++      // 26.3: sequence MUST be the live block-change ack counter, not 0.
++      // ServerboundUseItemOn.ackBlockChangesUpTo(sequence) advances the
++      // client's ack watermark; a stale 0 rewinds it and the server's
++      // subsequent movement validation runs against a desynced world view
++      // -> "Invalid move" kick right after any block activation (jar truth:
++      // handleUseItemOn line 1 calls ackBlockChangesUpTo FIRST).
+       bot._client.write('block_place', {
+         location: block.position,
+         direction: directionNum,
+@@ -231,7 +237,7 @@
+         cursorY: cursorPos.y,
+         cursorZ: cursorPos.z,
+         insideBlock: false,
+-        sequence: 0, // 1.19.0+
++        sequence: (bot._blockPlaceSeq = (bot._blockPlaceSeq || 0) + 1),
+         worldBorderHit: false // 1.21.3+
+       })
+     }
+@@ -243,25 +249,24 @@
+   async function activateEntity (entity) {
+     // TODO: tell the server that we are not sneaking while doing this
+     await bot.lookAt(entity.position.offset(0, 1, 0), false)
++    // 26.3 sneaking field (hand is a mapper: 0 = main_hand)
+     bot._client.write('use_entity', {
+       target: entity.id,
+-      mouse: 0, // interact with entity
+-      sneaking: false,
+-      hand: 0 // interact with the main hand
++      hand: 0,
++      location: { x: 0, y: 0, z: 0 },
++      sneaking: false
+     })
+   }
+ 
+   async function activateEntityAt (entity, position) {
+     // TODO: tell the server that we are not sneaking while doing this
+     await bot.lookAt(position, false)
++    // 26.3 sneaking field (hand is a mapper: 0 = main_hand)
+     bot._client.write('use_entity', {
+       target: entity.id,
+-      mouse: 2, // interact with entity at
+-      sneaking: false,
+-      hand: 0, // interact with the main hand
+-      x: position.x - entity.position.x,
+-      y: position.y - entity.position.y,
+-      z: position.z - entity.position.z
++      hand: 0,
++      location: { x: position.x - entity.position.x, y: position.y - entity.position.y, z: position.z - entity.position.z },
++      sneaking: false
+     })
+   }
+ 
+@@ -483,13 +488,7 @@
+     // Also reject transactions that aren't sent from mineflayer
+     let click = windowClickQueue[0]
+     if (click === undefined || !windowClickQueue.some(clicks => clicks.id === actionId)) {
+-      // mimic vanilla client and send a rejection for faulty transaction packets
+-      bot._client.write('transaction', {
+-        windowId,
+-        action: actionId,
+-        accepted: true
+-        // bot.emit(`confirmTransaction${click.id}`, false)
+-      })
++      // 26.3: transaction packet no longer exists; just drop
+       return
+     }
+     // shift it later if packets are sent out of order
+@@ -517,11 +516,7 @@
+     }
+ 
+     function onRejected () {
+-      bot._client.write('transaction', {
+-        windowId: click.windowId,
+-        action: click.id,
+-        accepted: true
+-      })
++      // 26.3: transaction packet no longer exists; just drop
+       bot.emit(`confirmTransaction${click.id}`, false)
+     }
+   }
+@@ -666,14 +661,18 @@
+     }
+   }
+ 
++  // 26.3: server never sends transaction; listener kept as guard only
+   bot._client.on('transaction', (packet) => {
+-    // confirm transaction
+-    confirmTransaction(packet.windowId, packet.action, packet.accepted)
++    if (!packet) return
++    try { confirmTransaction(packet.windowId, packet.action, packet.accepted) } catch (e) { /* ignore */ }
+   })
+ 
+   bot._client.on('held_item_slot', (packet) => {
+-    // held item change
+-    bot.setQuickBarSlot(packet.slot)
++    // 26.3: server sends slot as varint (ClientboundSetHeldSlotPacket.slot),
++    // mineflayer reads .slot (fixed in our data). Only echo if it differs
++    // from what we already hold — never write during login/config.
++    const s = (typeof packet.slot === 'number') ? packet.slot : packet.slotId
++    if (typeof s === 'number' && s >= 0 && s < 9) bot.setQuickBarSlot(s)
+   })
+ 
+   function prepareWindow (window) {
 diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/mineflayer/lib/plugins/physics.js
 --- a/node_modules/mineflayer/lib/plugins/physics.js
 +++ b/node_modules/mineflayer/lib/plugins/physics.js
