@@ -72,6 +72,31 @@ export class SelfPrompter {
         // many minutes alone is correct and she has nobody to keep company.
         this.gear_solo_min = 30000;
         this.gear_solo_max = 600000;
+        // ...but NOT while she is holding an unfinished goal. The long silence
+        // above is right when she has nothing to do; it is wrong when she has a
+        // live objective and is merely waiting to be allowed to act on it.
+        //
+        // Measured over 11 minutes with a goal of "explore the nearby forest",
+        // alone, with open air on every side and 2 blocks of headroom - she was
+        // never stuck and never needed rescuing:
+        //
+        //     Awaiting openrouter api response...   x22
+        //     advanced to new goal                   x1
+        //     commands executed                      x3
+        //
+        // with gaps of 62s and 146s between consecutive LLM calls. The cadence
+        // log explained why: solo TURNS are paced at 4-22s, but the gear that
+        // RESTARTS the loop after a turn ends is the solo idle gear above, drawn
+        // from 30s to 600s. So the fast pacing applied only while a turn was
+        // already running; between turns she waited up to 10 minutes. Movement
+        // soak over the same window: 1.0 blocks horizontal, 2.0 vertical, 19 of
+        // 23 samples byte-identical.
+        //
+        // She was not stuck, not idle by choice, and not failing. She was
+        // waiting out a dice roll before she was permitted to do anything.
+        // While a goal is live and unachieved, cap the wait near the turn gear
+        // so pacing cannot exceed the time she is actually willing to act.
+        this.gear_solo_goal_max = 25000;
         this._recent_human_chars = 0;
 
         // Autonomous goal lifecycle (Voyager-style critic + curriculum): counts
@@ -629,7 +654,16 @@ export class SelfPrompter {
                 this.idle_time = 0;
 
             const gear = this._otherPlayersOnline() ? this._engagementGear() : this._jitteredGear(true);
-            if (this.idle_time >= gear) {
+            // An unfinished goal means she is waiting to be ALLOWED to act, not
+            // choosing to idle. Cap the solo idle wait so it cannot exceed the
+            // 4-22s turn gear - otherwise pacing, not capability, sets how often
+            // she moves. See gear_solo_goal_max for the measurement.
+            // this.prompt is the live goal; empty means she has nothing to do.
+            const holdingGoal = !!this.prompt;
+            const wait = (this._otherPlayersOnline() || !holdingGoal)
+                ? gear
+                : Math.min(gear, this.gear_solo_goal_max);
+            if (this.idle_time >= wait) {
                 console.log('Restarting self-prompting...');
                 this.startLoop();
                 this.idle_time = 0;
