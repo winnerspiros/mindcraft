@@ -652,6 +652,34 @@ export class SelfPrompter {
         this.interrupt = false;
     }
 
+    // A MODE BORROWED THE HAND. GIVE IT BACK.
+    //
+    // Every mode calls stopLoop() through modes.execute() so it can take the hand,
+    // and the only thing that used to restart the loop was update()'s
+    // `if (this.agent.isIdle())` gate - which stays false for as long as the
+    // mode's own action is running, and forever if the mode never finishes
+    // cleanly. Measured while she was wedged: stopped twice, restarted once,
+    // with goals still being proposed and advanced while zero commands executed.
+    //
+    // So the borrower returns it. Deliberately NOT immediate: the mode has just
+    // released its action, and the loop would otherwise re-enter on the same
+    // tick it was displaced. This is idempotent - if the loop is already running
+    // (the normal idle-gear path got there first) it does nothing.
+    resumeAfterMode(delayMs = 1000) {
+        if (this.state !== ACTIVE) return false;   // stopped/paused on purpose
+        if (this._modeResumeTimer) clearTimeout(this._modeResumeTimer);
+        this._modeResumeTimer = setTimeout(() => {
+            this._modeResumeTimer = null;
+            if (this.state !== ACTIVE) return;
+            if (this.loop_active) return;           // already running; nothing owed
+            this.idle_time = 0;
+            console.log('Restarting self-prompting after mode released the hand');
+            this.startLoop();
+        }, delayMs);
+        if (this._modeResumeTimer.unref) this._modeResumeTimer.unref();
+        return true;
+    }
+
     async stop(stop_action=true) {
         this.interrupt = true;
         if (stop_action)

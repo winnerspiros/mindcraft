@@ -1766,9 +1766,35 @@ const GLANCE_BUDGET_COOLDOWN_MS = 45000;
 ];
 
 async function execute(mode, agent, func, timeout=-1) {
-    if (agent.self_prompter.isActive())
-        agent.self_prompter.stopLoop();
-    let interrupted_action = agent.actions.currentActionLabel;
+    // A MODE MUST NOT LEAVE THE GOAL LOOP DEAD.
+    //
+    // Every mode runs through here, and it used to stop the self-prompt loop
+    // whenever the loop was active. The loop's own restart path (update(), around
+    // self_prompter.js:625) only fires once agent.isIdle() is true again - but a
+    // mode is an ACTION, so while this action runs she is not idle. If the mode
+    // then fails to finish cleanly she never goes idle, and the restart never
+    // comes.
+    //
+    // Measured while she was wedged: "self prompt loop stopped" twice,
+    // "Restarting self-prompting" once. Goals kept being proposed and advanced
+    // ("find something to eat", "explore the nearby forest for animals and
+    // resources") while ZERO commands executed, because the loop that would
+    // have acted on them was down. She was narrating progress into a dead
+    // channel.
+    //
+    // Stop the loop to let this mode take the hand, then guarantee the restart
+    // once the mode releases it, whatever happened inside. `finally`, so a mode
+    // that throws or times out still returns the loop.
+    const _yieldedGoalLoop = agent.self_prompter.isActive();
+    if (_yieldedGoalLoop) agent.self_prompter.stopLoop();
+    try {
+        return await runMode(mode, agent, func, timeout);
+    } finally {
+        if (_yieldedGoalLoop) agent.self_prompter.resumeAfterMode();
+    }
+}
+
+async function runMode(mode, agent, func, timeout=-1) {
     mode.active = true;
     let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
         await func();

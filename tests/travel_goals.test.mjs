@@ -25,6 +25,15 @@ const code = sp.slice(start, end);
 const activities = [...code.matchAll(/cmd: '(![a-zA-Z_]+)', needsArgs: (true|false)/g)]
     .map(m => ({ cmd: m[1], needsArgs: m[2] }));
 
+// Importing src/agent/commands/index.js transitively loads undici, which reads
+// the global File at module scope and crashes on Node 19 (it landed in Node 20).
+// This is the same shim tests/plain_text_and_chatter.test.mjs applies, and for
+// the same documented reason - mindcraft's own runtime provides the global, a
+// bare `node tests/...` does not. Shim the one global it wants rather than
+// skipping the cross-check: verifying these commands exist and take no argument
+// is the entire point of this file.
+if (typeof globalThis.File === 'undefined') globalThis.File = class File {};
+
 test('the activity list is parseable and non-trivial', () => {
     assert.ok(activities.length >= 10, `only ${activities.length} activities found`);
 });
