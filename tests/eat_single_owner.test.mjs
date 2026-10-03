@@ -11,9 +11,15 @@
 // The invariant is that agent.js must disable auto-eat at startup, because
 // _maybeEat is a strict superset: auto-eat only fires below food 14, whereas
 // _maybeEat also tops saturation, which is what buys regeneration.
+import { Vec3 } from 'vec3';
 import { test } from 'node:test';
 import assert from 'node:assert';
 import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+// eatNow needs the real module (it is behaviour under test here, not a string).
+const { eatNow } = await import(pathToFileURL(
+    new URL('../src/agent/library/skills.js', import.meta.url).pathname).href);
 
 const agent = readFileSync(new URL('../src/agent/agent.js', import.meta.url), 'utf8');
 const skills = readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
@@ -160,4 +166,51 @@ test('consumption is proven by the stack shrinking, never by activateItem', () =
         /return true;/.test(fn[0]),
         'eatNow must report success'
     );
+});
+
+// The pvp shield raise was the real cause of the melee eating failure.
+// A regression here would silently reintroduce 2-ate/5-failed, so pin the
+// behaviour rather than the text: eatNow must stop a live pvp engagement and
+// hand it back afterwards.
+test('a chew stops mineflayer-pvp and resumes it after', async () => {
+    const events = [];
+    let target = { id: 7 };
+    const bot = {
+        entity: { position: new Vec3(0, 64, 0) },
+        heldItem: null,
+        inventory: { slots: [], items: () => [item] },
+        _eating: false, _eatingHand: null,
+        _log() {},
+        _releaseHand: async () => { events.push('release'); },
+        pvp: {
+            get target() { return target; },
+            stop() { events.push('pvp.stop'); target = null; },
+            async attack(t) { events.push('pvp.attack'); void t; },
+        },
+        async equip(item) { this.heldItem = item; events.push('equip'); },
+        async activateItem() { events.push('activate'); },
+        async deactivateItem() { events.push('deactivate'); },
+        blockAt() { return null; },
+    };
+    const item = { name: 'cooked_beef', count: 1 };
+    // Never consume: we only care about the pvp handshake, and a fake that
+    // fails to consume must not be able to skip the pause.
+    const res = await eatNow(bot, item);
+
+    assert.ok(events.includes('pvp.stop'),
+        `pvp must be stopped for the bite, got: ${events.join(',')}`);
+    const stopAt = events.indexOf('pvp.stop');
+    const activateAt = events.indexOf('activate');
+    assert.ok(stopAt >= 0 && activateAt > stopAt,
+        `pvp must be stopped BEFORE activating the food, got: ${events.join(',')}`);
+    assert.ok(events.includes('pvp.attack'),
+        `the fight must be handed back after the bite, got: ${events.join(',')}`);
+    const attackAt = events.indexOf('pvp.attack');
+    const releaseAt = events.indexOf('release');
+    assert.ok(attackAt > activateAt,
+        `pvp must not resume mid-chew, got: ${events.join(',')}`);
+    assert.ok(releaseAt > attackAt,
+        `queued equips drain after the fight resumes, got: ${events.join(',')}`);
+    assert.strictEqual(res, false, 'a fake that never consumes must not report success');
+    assert.strictEqual(bot._eating, false, 'the chew must release its lock on the way out');
 });

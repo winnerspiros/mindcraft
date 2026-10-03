@@ -228,6 +228,18 @@ const modes_list = [
                         } catch (_) { return; }
                     }
                     execute(this, agent, async () => {
+                        // A chew in progress outranks this branch. This is a
+                        // SECOND, independent eater with its own 6s gate, firing
+                        // at food < 11 — the same window _maybeEat acts in. It
+                        // equips food and calls bot.consume(), which cancels the
+                        // in-flight bite server-side: claimHand() stops the equip,
+                        // but consume() drives the item itself. Measured on the
+                        // live server while a zombie hit her, once per attempt:
+                        //   use_item [eatNow] -> use_item [this branch] ->
+                        //   block_dig [release] -> nothing consumed
+                        // _maybeEat is the superset (it also tops saturation,
+                        // which is what buys regeneration), so this yields to it.
+                        if (bot._eating) return;
                         await bot.equip(food, 'hand');
                         await bot.consume();
                         await new Promise(r => setTimeout(r, 1500));
