@@ -427,6 +427,54 @@ const modes_list = [
                                         return;
                                     }
                                 }
+                                // ── CHECK FOR A WAY OUT BEFORE BREAKING ONE ──
+                                //
+                                // Measured live, twice: she stalled with OPEN AIR on
+                                // every side - a 7-wide pocket at y54, clear from
+                                // offset -3 to +2, and later a corridor clear at
+                                // +2/+3. She was never walled in. She had somewhere
+                                // to walk the whole time.
+                                //
+                                // But the rescue only knew how to DIG. Its candidate
+                                // filter keeps only solid blocks, so with air all
+                                // round it found nothing, freed stayed 0, and it
+                                // reported nothing and changed nothing - while the
+                                // goal loop kept handing her !scout and
+                                // !searchForBlock, which cannot path out of a
+                                // one-block pocket. 4-minute sample: 0 blocks of
+                                // travel, 11 commands executed.
+                                //
+                                // So: if a lateral neighbour at her own level is
+                                // open air, that IS the exit. Walk it. Digging is
+                                // only correct when the walls really are the
+                                // problem, and it costs nothing to prefer the exit
+                                // she already has.
+                                const lateral = [[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dz]) => {
+                                    try { return { dx, dz, b: bot.blockAt(fp.offset(dx, 1, dz)) }; }
+                                    catch { return null; }
+                                }).filter(Boolean);
+                                const openSides = lateral.filter(({ b }) =>
+                                    b && (b.name === 'air' || b.name === 'cave_air'));
+                                // Try EVERY open side, not just the first: one may be a
+                                // 1-block dead end while another is the corridor out.
+                                for (const { dx, dz } of openSides) {
+                                    const before = bot.entity.position.clone();
+                                    const t = fp.offset(dx * 3, 1, dz * 3);
+                                    let walked = false;
+                                    try {
+                                        walked = await skills.goToPosition(
+                                            bot, t.x, t.y, t.z, 2, 'walk');
+                                    } catch (_) { /* best-effort */ }
+                                    const moved = walked
+                                        ? bot.entity.position.distanceTo(before) > 0.8
+                                        : false;
+                                    if (moved) {
+                                        say(agent, 'Found my way out~');
+                                        return;
+                                    }
+                                    // She could not walk that one. Try the next; if
+                                    // none work, fall through and dig.
+                                }
                                 const cands = [[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dz]) => {
                                     try { return bot.blockAt(fp.offset(dx, 1, dz)); } catch { return null; }
                                 }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava'
