@@ -9646,7 +9646,17 @@ export async function digDown(bot, distance = 10) {
     // leg per block wedged past the 3min action timeout (20:00/20:05 suicides).
     // 6 blocks max per call — the brain re-issues to continue deeper.
     const capped = Math.min(Math.max(distance, 1), 6);
-    let start_block_pos = bot.blockAt(bot.entity.position).position;
+    // blockAt() returns null when the chunk is not loaded yet (fresh teleport,
+    // just-respawned, or a view distance boundary). The loop below already
+    // guards a null block; this one threw first and took the whole command with
+    // it - measured live as `TypeError: null is not an object (evaluating
+    // 'bot.blockAt(bot.entity.position).position')`.
+    const startBlock = bot.blockAt(bot.entity.position);
+    if (!startBlock) {
+        log(bot, 'Cannot dig down: the chunk here is not loaded yet.');
+        return false;
+    }
+    let start_block_pos = startBlock.position;
     for (let i = 1; i <= capped; i++) {
         if (bot.interrupt_code) {
             log(bot, `Dig interrupted after ${i-1} blocks.`);
