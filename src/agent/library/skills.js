@@ -6696,13 +6696,26 @@ export async function swimUp(bot, timeoutMs = 8000) {
             const feet = bot.blockAt(bot.entity.position);
             const head = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             const wet = (b) => b && (b.name === 'water' || b.name === 'bubble_column');
-            if (!wet(feet) && !wet(head)) return true; // air — breathe
             try { bot.setControlState('jump', true); } catch (_) {}
             await new Promise(r => setTimeout(r, 200));
         }
     } finally { try { bot.setControlState('jump', false); } catch (_) {} }
-    const feet = bot.blockAt(bot.entity.position);
-    if (feet && feet.name !== 'water') return true;
+    // CHECK THE HEAD, NOT JUST THE FEET.
+    //
+    // This said `true` while she was still drowning, and that is what made the
+    // whole rescue inert. Measured in a 5-deep pool (feet y52, head y53, surface
+    // y54): the jump-hold floated her until her FEET cleared y52, this feet-only
+    // test then returned true, the caller returned early, and the lateral swim
+    // that would actually have freed her never ran. 15 rescue fires, 0 escapes,
+    // position byte-identical across a 45s sample.
+    //
+    // Floating does not mean breathing. She is only out of danger when the block
+    // at her HEAD is dry - bubbles run out on head-under, so head-under is the
+    // whole condition, exactly as the caller's own branch already treats it.
+    const feetEnd = bot.blockAt(bot.entity.position);
+    const headEnd = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+    const dry = (b) => b && b.name !== 'water' && b.name !== 'bubble_column';
+    if (dry(feetEnd) && dry(headEnd)) return true;
 
     // Sealed in. Holding jump cannot move her through rock, and she drowned
     // that way: "Still underwater - swim failed (blocked above?)" immediately
@@ -6728,7 +6741,7 @@ export async function swimUp(bot, timeoutMs = 8000) {
  * Returns true if she got out. Deliberately simple - this runs with almost
  * no air left, so anything that costs time to plan is worse than useless.
  */
-async function swimToNearestAir(bot, timeoutMs = 3000) {
+export async function swimToNearestAir(bot, timeoutMs = 3000) {
     const t0 = Date.now();
     const wet = (b) => b && (b.name === 'water' || b.name === 'bubble_column');
     try {

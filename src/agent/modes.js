@@ -175,6 +175,23 @@ const modes_list = [
                         // is not reachable from the drowning branch.
                         try {
                             const feet = bot.entity.position.floored();
+                            // A LATERAL EXIT BEATS DIGGING, ALWAYS.
+                            //
+                            // Measured: she stood in a 5-deep pool (feet y52, head
+                            // y53, surface y54) and the wall-dig ran uselessly -
+                            // there is nothing to dig in open water, and every
+                            // neighbour at eye level is either stone or water. But
+                            // (-1,+1) and (-1,-1) were AIR AT HER OWN LEVEL, one
+                            // block over. swimToNearestAir goes straight there;
+                            // digging a pool wall does not.
+                            //
+                            // The jump-hold above already failed (that is why we
+                            // are here), so try to move sideways before we try to
+                            // remove rock.
+                            if (await skills.swimToNearestAir(bot, 4000)) {
+                                say(agent, 'Swam sideways out of the water~');
+                                return;
+                            }
                             const spots = [
                                 feet.offset(1, 0, 0), feet.offset(-1, 0, 0),
                                 feet.offset(0, 0, 1), feet.offset(0, 0, -1),
@@ -354,6 +371,39 @@ const modes_list = [
                         execute(this, agent, async () => {
                             try {
                                 const fp = bot.entity.position.floored();
+                                // IF SHE IS IN WATER, SWIM - DO NOT DIG.
+                                //
+                                // The candidate filter below rejects water, so in a
+                                // pool every candidate is dropped, freed stays 0, and
+                                // the rescue does nothing at all. Measured live: she
+                                // stood in a 5-deep pool (feet y52, head y53, surface
+                                // y54), position byte-identical across a 45s sample,
+                                // while `unstuck` fired every 15s and its entire log
+                                // output was "Unpausing mode unstuck" / "elbow_room".
+                                // The goal-active path below only ever prints "I'm
+                                // stuck!" and does nothing, by design.
+                                //
+                                // Measured geometry at the time: (-1,+1) and (-1,-1)
+                                // were AIR AT HER OWN LEVEL - a real exit, one block
+                                // over. swimToNearestAir finds exactly that, but it is
+                                // only reached after swimUp's 8s jump-hold gives up,
+                                // which just hovers her in place. Try the directional
+                                // swim FIRST, straight to a real exit.
+                                const wet = (n) => n && (n.name === 'water' || n.name === 'bubble_column');
+                                const inWater = wet(bot.blockAt(bot.entity.position))
+                                    || wet(bot.blockAt(bot.entity.position.offset(0, 1, 0)));
+                                if (inWater) {
+                                    const ok = await skills.swimToNearestAir(bot, 4000);
+                                    if (ok) {
+                                        say(agent, 'Swam out of the water~');
+                                        return;
+                                    }
+                                    // No lateral exit in reach. Rise, then try again.
+                                    if (await skills.swimUp(bot, 3000)) {
+                                        say(agent, 'Swam up to the surface~');
+                                        return;
+                                    }
+                                }
                                 const cands = [[1,0],[-1,0],[0,1],[0,-1]].map(([dx,dz]) => {
                                     try { return bot.blockAt(fp.offset(dx, 1, dz)); } catch { return null; }
                                 }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava'
