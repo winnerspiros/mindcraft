@@ -412,7 +412,28 @@ diff --git a/node_modules/mineflayer/lib/plugins/digging.js b/node_modules/minef
 diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/mineflayer/lib/plugins/inventory.js
 --- a/node_modules/mineflayer/lib/plugins/inventory.js
 +++ b/node_modules/mineflayer/lib/plugins/inventory.js
-@@ -192,7 +192,7 @@
+@@ -139,7 +139,19 @@
+ 
+   function deactivateItem () {
+     const body = {
+-      status: 5,
++      // 26.3 RELEASE_USE_ITEM ordinal. Mineflayer's literal 5 was written for the
++      // old enum where 5 meant "stop using item". Verified against the server jar
++      // we actually run (/home/ubuntu/kenoi-fabric/versions/26.3/server-26.3.jar),
++      // ServerboundPlayerActionPacket$Action.<clinit>:
++      //   0 START_DESTROY_BLOCK    1 CHANGE_DESTROY_DIRECTION
++      //   2 ABORT_DESTROY_BLOCK     3 STOP_DESTROY_BLOCK
++      //   4 DROP_ALL_ITEMS         5 DROP_ITEM
++      //   6 RELEASE_USE_ITEM       7 SWAP_ITEM_WITH_OFFHAND   8 STAB
++      // Sending 5 made the server run DROP_ITEM: the bow draw began (use_item was
++      // accepted, arrows in the slot satisfied BowItem.use) and then the release
++      // dropped the held item instead of loosing the arrow. Same class of bug as
++      // the digging.js ABORT/STOP shift - an enum that gained members.
++      status: 6,
+       location: new Vec3(0, 0, 0),
+       face: 5
+     }
+@@ -192,7 +204,7 @@
      const directionNum = vectorToDirection(direction) // The packet needs a number as the direction
      cursorPos = cursorPos ?? new Vec3(0.5, 0.5, 0.5)
      // TODO: tell the server that we are not sneaking while doing this
@@ -421,7 +442,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
      // place block message
      // TODO: logic below can likely be simplified
      if (bot.supportFeature('blockPlaceHasHeldItem')) {
-@@ -223,6 +223,12 @@
+@@ -223,6 +235,12 @@
          cursorZ: cursorPos.z
        })
      } else if (bot.supportFeature('blockPlaceHasInsideBlock')) {
@@ -434,7 +455,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
        bot._client.write('block_place', {
          location: block.position,
          direction: directionNum,
-@@ -231,7 +237,7 @@
+@@ -231,7 +249,7 @@
          cursorY: cursorPos.y,
          cursorZ: cursorPos.z,
          insideBlock: false,
@@ -443,7 +464,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
          worldBorderHit: false // 1.21.3+
        })
      }
-@@ -243,25 +249,24 @@
+@@ -243,25 +261,24 @@
    async function activateEntity (entity) {
      // TODO: tell the server that we are not sneaking while doing this
      await bot.lookAt(entity.position.offset(0, 1, 0), false)
@@ -477,7 +498,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
      })
    }
  
-@@ -483,13 +488,7 @@
+@@ -483,13 +500,7 @@
      // Also reject transactions that aren't sent from mineflayer
      let click = windowClickQueue[0]
      if (click === undefined || !windowClickQueue.some(clicks => clicks.id === actionId)) {
@@ -492,7 +513,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
        return
      }
      // shift it later if packets are sent out of order
-@@ -517,11 +516,7 @@
+@@ -517,11 +528,7 @@
      }
  
      function onRejected () {
@@ -505,7 +526,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/inventory.js b/node_modules/min
        bot.emit(`confirmTransaction${click.id}`, false)
      }
    }
-@@ -666,14 +661,18 @@
+@@ -666,14 +673,18 @@
      }
    }
  

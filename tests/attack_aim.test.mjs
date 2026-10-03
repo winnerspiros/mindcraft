@@ -229,11 +229,19 @@ const Vec3 = (await import('vec3')).default
 // A minimal bot stand-in. `stealAtLookAt` makes the rival win the slot during
 // the aim - which is what equipHighestAttack() inside a concurrent
 // attackEntity() does in the real bot.
-function makeBowBot({ stealAtLookAt = false, stealAtDraw = false, alwaysLose = false } = {}) {
+//
+// `arrows` models the SERVER decrementing the stack when a projectile really
+// spawns. That is the only ground truth for "an arrow left the bow": holding
+// the bow afterwards proves the draw was accepted, not that anything flew. The
+// 26.3 release-ordinal bug (DROP_ITEM instead of RELEASE_USE_ITEM) kept the bow
+// in hand forever while nothing ever flew, which is why counting on the held
+// item was wrong. The default decrements, so a clean shot reads true.
+function makeBowBot({ stealAtLookAt = false, stealAtDraw = false, alwaysLose = false, arrows = 8 } = {}) {
+  let arrowCount = arrows
   const b = {
     username: 'T', heldItem: null, interrupt_code: false, output: '',
     entity: { position: new Vec3(0, 0, 0) },
-    inventory: { items: () => [{ name: 'bow' }, { name: 'arrow' }] },
+    inventory: { items: () => [{ name: 'bow' }, { name: 'arrow', count: arrowCount }] },
     supportFeature: () => true,
     equips: 0,
     equip: async (item) => {
@@ -242,7 +250,13 @@ function makeBowBot({ stealAtLookAt = false, stealAtDraw = false, alwaysLose = f
     },
     lookAt: async () => { if (stealAtLookAt) b.heldItem = { name: 'diamond_sword' } },
     activateItem: async () => { if (stealAtDraw) b.heldItem = { name: 'diamond_sword' } },
-    deactivateItem: async () => {},
+    // The server only consumes an arrow when the release really looses one.
+    deactivateItem: async () => {
+      // The server only spends an arrow when the held item really is the bow.
+      if (stealAtDraw || alwaysLose) return
+      if (b.heldItem && b.heldItem.name !== 'bow') return
+      if (arrowCount > 0) arrowCount--
+    },
     hawkEye: undefined, chat: () => {},
   }
   return b
@@ -265,8 +279,8 @@ const targetAt = (d) => ({ position: new Vec3(d, 0, 0), height: 1.8 })
   const res = await shootBowFn(b, targetAt(8), 1, false)
   check('shootBow refuses to count a shot drawn with the wrong item',
     res === false, `res=${res}`)
-  check('shootBow says a drawn arrow never left the hand',
-    /nothing left the hand - not counting it/.test(b.output), JSON.stringify(b.output))
+  check('shootBow says no arrow left the bow',
+    /no arrow was consumed - not counting it/.test(b.output), JSON.stringify(b.output))
 }
 
 // 3. The rival wins the slot during the aim and then holds it. The guards must
@@ -307,8 +321,10 @@ check('the bow is re-checked AFTER the aim too',
 check('a lost bow is re-equipped, not ignored',
   /re-equipping/.test(sb) && /await bot\.equip\(bow, 'hand'\)/.test(sb))
 check('shootBow does not claim a shot it never drew',
-  /nothing left the hand - not counting it/.test(sb) &&
-  /if \(bot\.heldItem && bot\.heldItem\.name === 'bow'\) fired\+\+;/.test(sb))
+  /no arrow was consumed - not counting it/.test(sb) &&
+  // The gate must be the arrow stack dropping, NOT the bow still being held.
+  /arrowsAfter < arrowsBefore/.test(sb) &&
+  !/bot\.heldItem && bot\.heldItem\.name === 'bow'\) fired\+\+/.test(sb))
 check('the false-signal rationale is documented in-file',
   /the only defence is to check and to not lie about it/.test(sb))
 check('equipHighestAttack (the sword swapper) is called from attackEntity',

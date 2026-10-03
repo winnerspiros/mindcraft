@@ -4267,9 +4267,34 @@ export async function hawkeyeShot(bot, entity, weapon='bow') {
     await bot.look(sol.yaw, sol.pitch, true);
     await new Promise(r => setTimeout(r, 100));   // let the view settle
     await bot.activateItem();                     // start drawing
+    // Ground truth for "did an arrow leave the bow": the server decrements the
+    // stack when the projectile spawns. An unconditional `return true` here
+    // reported success for every release the server silently ignored (26.3 sent
+    // DROP_ITEM instead of RELEASE_USE_ITEM, so nothing ever flew).
+    const arrowsBefore = countArrows(bot);
     await new Promise(r => setTimeout(r, 1250));  // full draw (bow/crossbow/trident waitTime)
     try { await bot.deactivateItem(); } catch {}  // release -> projectile flies
+    await new Promise(r => setTimeout(r, 250));   // let the stack update
+    const arrowsAfter = countArrows(bot);
+    const spent = arrowsBefore !== null && arrowsAfter !== null && arrowsAfter < arrowsBefore;
+    if (!spent) { log(bot, 'Hawkeye: drew and released, but no arrow was consumed.'); return false; }
     return true;
+}
+
+// Total arrows carried across every stack (main inventory + off-hand).
+// Returns null when the inventory cannot be read, so callers can tell
+// "no arrows" apart from "unknown" instead of silently reporting zero.
+function countArrows(bot) {
+    const types = ['arrow', 'spectral_arrow', 'tipped_arrow'];
+    try {
+        const items = bot.inventory.items();
+        if (!Array.isArray(items)) return null;
+        let total = 0;
+        for (const it of items) if (types.includes(it.name)) total += it.count || 0;
+        return total;
+    } catch (_) {
+        return null;
+    }
 }
 
 export async function shootBow(bot, target, shots=1, fullCharge=true) {
@@ -4331,6 +4356,11 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     await bot.equip(bow, 'hand');
 
     let fired = 0;
+    // Ground truth for "did an arrow actually leave the bow". The server
+    // decrements the arrow stack when the projectile spawns, so a decrease
+    // across the draw is the only reliable signal. null = unknown, which is
+    // reported as "not counted" rather than optimistically as a hit.
+    let arrowsBefore = countArrows(bot);
     for (let i = 0; i < shots; i++) {
         if (bot.interrupt_code) break;
         const pos = entity.position;
@@ -4382,11 +4412,21 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         await bot.activateItem();                     // start drawing the bow
         await new Promise(r => setTimeout(r, fullCharge ? 1000 : 320));
         try { await bot.deactivateItem(); } catch {}  // release -> arrow flies
-        // Count only what actually left the bow. `fired++` unconditionally made
-        // shootBow report success while the server consumed no arrow, which is
-        // exactly the false signal that hid this for hours of live testing.
-        if (bot.heldItem && bot.heldItem.name === 'bow') fired++;
-        else log(bot, 'Drew the bow but nothing left the hand - not counting it.');
+        // Count only what actually left the bow.
+        //
+        // Holding the bow afterwards proves only that the draw was accepted; it
+        // says nothing about whether an arrow was loosed. The 26.3 release-ordinal
+        // bug (block_dig status 5 = DROP_ITEM instead of RELEASE_USE_ITEM) made
+        // every release do nothing while the bow stayed in hand, so this check
+        // reported success for hours of shots that consumed no arrow.
+        //
+        // Arrow count is the only ground truth: the server decrements the stack
+        // when the projectile actually spawns. Count the delta around the draw.
+        const arrowsAfter = countArrows(bot);
+        const spent = arrowsBefore !== null && arrowsAfter !== null && arrowsAfter < arrowsBefore;
+        if (spent) fired++;
+        else log(bot, 'Drew and released, but no arrow was consumed - not counting it.');
+        arrowsBefore = arrowsAfter;
         await new Promise(r => setTimeout(r, fullCharge ? 220 : 130));
     }
     log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);
