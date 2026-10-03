@@ -1843,6 +1843,18 @@ async function execute(mode, agent, func, timeout=-1) {
 }
 
 async function runMode(mode, agent, func, timeout=-1) {
+    // The action this mode displaced, captured BEFORE the mode runs. Used below
+    // to tell her an action was interrupted by a mode rather than by nothing.
+    //
+    // This declaration lived in execute() and was lost when execute() was split
+    // into execute() + runMode() to guarantee the goal loop is returned from a
+    // finally. The 519-test suite passed and the bot ran fine for several
+    // minutes, so nothing caught it - the reference only resolves when a mode
+    // actually interrupts an existing action, which is rare. Then the service
+    // died with "ReferenceError: interrupted_action is not defined" and
+    // systemd crash-looped it 9 times into "Failed to start". The 10-minute
+    // movement soak taken during that window measured a dead process.
+    let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;
     let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
         await func();
