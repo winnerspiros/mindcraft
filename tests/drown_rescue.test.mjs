@@ -35,6 +35,16 @@ test('a scoop that did not remove water falls through to swimUp', () => {
         'water under her feet must NOT count as having breathed');
 });
 
+// Head-under is a PERSISTENT condition, so the rescue throttle decides how
+// often the goal loop gets torn down. At 5s it fired 90 times in 6 minutes and
+// starved every goal: curriculum advanced 2 goals, 0 commands executed.
+// last_flee already used 15s for this exact reason; drowning must match it.
+test('the drowning rescue throttle matches the flee throttle', () => {
+    const code = body.replace(/\/\/[^\n]*/g, '');
+    assert.match(code, /if \(Date\.now\(\) - this\.last_drown > 15000\)/,
+        'a 5s drown throttle re-fires 12x/min while submerged and starves the goal loop');
+});
+
 // Holding jump cannot clear a 1x1 shaft - she rises then sinks straight back.
 // Measured: y oscillated 49 -> 51.6 -> 49.6 -> 49.0 over 12 min, 124 rescues,
 // zero escapes. The empty-bucket scoop cannot save her either, because she is

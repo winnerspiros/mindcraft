@@ -904,8 +904,8 @@ const check = (cond, good, bad) => {
     // (c) it must still act
     check(/swimUp\(bot, 8000\)/.test(sp),
         'the rescue surfaces her via swimUp', 'the drowning rescue no longer surfaces');
-    check(/last_drown > 5000/.test(sp),
-        'the rescue is throttled',
+    check(/last_drown > 15000/.test(sp),
+        'the rescue is throttled, and no tighter than last_flee',
         'an unthrottled rescue stops the self-prompt loop every tick');
 
     // (d) the reason, recorded where the next person will read it

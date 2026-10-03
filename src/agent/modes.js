@@ -82,7 +82,17 @@ const modes_list = [
                 // Throttled on last_drown, same reason as last_flee: a rescue
                 // that re-fires every tick would stop the self-prompt loop
                 // continuously and starve brain + idle modes.
-                if (Date.now() - this.last_drown > 5000) {
+                //
+                // 15s, not 5s. Head-under is a PERSISTENT condition - she stays
+                // submerged until she escapes - so a 5s throttle re-fires 12x/min
+                // for as long as she is stuck, and each fire stops the goal loop.
+                // Measured in a water pocket: 90 self_preservation fires in 6
+                // minutes, 23 self-prompt loop teardowns, curriculum advanced 2
+                // goals and 0 commands executed. She picked "gather useful
+                // blocks", emitted !nearbyBlocks, and was torn down before it ran.
+                // last_flee already uses 15s for exactly this reason; drowning had
+                // been left at 5s and was starving every goal it was trying to save.
+                if (Date.now() - this.last_drown > 15000) {
                     this.last_drown = Date.now();
                     execute(this, agent, async () => {
                         // BUCKET FIRST. She is RCON-kitted with a water_bucket on
