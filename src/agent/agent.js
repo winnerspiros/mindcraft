@@ -8,7 +8,7 @@ import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { scrubOutput } from '../utils/scrub.js';
-import { reactToHurt, assessThreats, respawnKitNeeds, equippedArmorNames } from '../utils/threat.js';
+import { reactToHurt, assessThreats, respawnKitNeeds, equippedArmorNames, MELEE_RANGE } from '../utils/threat.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -2335,6 +2335,27 @@ export class Agent {
                     // fight bails out with done=false - so three zombies produced
                     // three aborted fights and zero kills. Never preempt a fight
                     // with a fight: if one is in flight, let it finish.
+                    // Bow it, if she can. The whole point of carrying a bow is
+                    // not having to walk into a pillager's sword range - and
+                    // this scan was melee-only, so a hostile at 14 blocks was
+                    // met by her pathing straight into it and eating hits on the
+                    // way (measured: 13.9 blocks, HP 20 -> 12). This check has to
+                    // live INSIDE the fight branch: avoid and fight both end in
+                    // a return, so a bow block placed after them never runs.
+                    // shootBow already handles hawkeye lead-aim for long shots,
+                    // refuses cleanly with no bow/arrows, and never /give-spams.
+                    // It was reachable only from the explicit !shoot commands,
+                    // never from this reflex - the capability existed unused at
+                    // exactly the moment it was worth having.
+                    if (this._hasBowFor(r.target)) {
+                        const gap = this.bot.entity.position.distanceTo(r.target.position).toFixed(1);
+                        console.log(`[threat] scan: SHOOTING ${r.target.name || 'mob'} at ${gap} blocks`);
+                        this.self_prompter.start(r.goal);
+                        skills.shootBow(this.bot, r.target, 2, true)
+                            .then((fired) => console.log(`[threat] scan shot result: fired=${fired}`))
+                            .catch((e) => console.warn('[threat] scan shot failed:', e?.message));
+                        return;
+                    }
                     if (this._fightInFlight) return;
                     this._fightInFlight = true;
                     console.log(`[threat] scan: FIGHTING ${r.target.name || 'mob'} @ ${r.target.position?.toString?.() || '?'}`);
@@ -2874,6 +2895,23 @@ export class Agent {
         } catch (e) {
             console.warn('gear-up failed (non-fatal):', e.message);
         }
+    }
+
+    // Can she handle this one with a bow instead of walking into it? Needs a
+    // bow and at least one arrow actually in hand - asking otherwise makes
+    // shootBow log "no arrows" every second and fight with the melee path for
+    // the same target.
+    _hasBowFor(entity) {
+        try {
+            const items = this.bot?.inventory?.items?.() || [];
+            const hasBow = items.some(i => i.name === 'bow');
+            const hasArrow = items.some(i => /^(arrow|spectral_arrow|tipped_arrow)$/.test(i.name));
+            if (!hasBow || !hasArrow) return false;
+            // Only worth it if it saves her walking in: inside sword range the
+            // melee path is faster and does not risk wasting an arrow.
+            const d = this.bot.entity.position.distanceTo(entity.position);
+            return d > MELEE_RANGE;
+        } catch (_) { return false; }
     }
 
     async _reArmor() {
