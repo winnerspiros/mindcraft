@@ -1179,8 +1179,17 @@ const check = (cond, good, bad) => {
 
     // and confirm the skill really is weapon-optional
     const sk = fs23.readFileSync(new URL('../src/agent/library/skills.js', import.meta.url), 'utf8');
-    const eq = sk.slice(sk.indexOf('async function equipHighestAttack'),
-        sk.indexOf('async function equipHighestAttack') + 900);
+    // slice the whole method, not a fixed length: at 900 chars an insertion
+    // (here, the comment explaining why a chew outranks a weapon swap) pushed
+    // the guard out of range and the assertion silently scanned text that was
+    // never there. Match to the closing brace at the function's indent level.
+    const _eqs = sk.indexOf('async function equipHighestAttack');
+    let _ed = 0, _ee = _eqs;
+    for (; _ee < sk.length; _ee++) {
+        if (sk[_ee] === '{') _ed++;
+        else if (sk[_ee] === '}') { _ed--; if (_ed === 0) { _ee++; break; } }
+    }
+    const eq = sk.slice(_eqs, _ee);
     check(/weapons\.length === 0\)\s*return;/.test(eq),
         'equipping with an empty inventory is a clean no-op, not a crash',
         'bare-handed combat would throw instead of swinging');

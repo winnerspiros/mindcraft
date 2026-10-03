@@ -8,7 +8,7 @@ import { initBot } from '../utils/mcdata.js';
 import { containsCommand, commandExists, nearestCommandNames, explainParamError, executeCommand, truncCommandMessage, isAction, blacklistCommands, getCommandInfo, isRetryableError, looksLikeCommand } from './commands/index.js';
 import { Tilt } from '../utils/tilt.js';
 import { scrubOutput } from '../utils/scrub.js';
-import { reactToHurt, assessThreats, respawnKitNeeds, equippedArmorNames, MELEE_RANGE } from '../utils/threat.js';
+import { reactToHurt, assessThreats, respawnKitNeeds, equippedArmorNames, decideEat, MELEE_RANGE } from '../utils/threat.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -631,6 +631,18 @@ export class Agent {
             startAt: 14,
             bannedFood: ["rotten_flesh", "spider_eye", "poisonous_potato", "pufferfish", "chicken"]
         };
+        // Hand eating over to _maybeEat entirely. auto-eat registers its own
+        // bot.on('health') that calls eat() on the same event we use, and its
+        // isEating lock cannot see ours - so the two of them equip food into one
+        // hand at once and mineflayer cancels the chew on the slot change. That
+        // is the actual cause of the "failed to consume" run, not combat:
+        // isolated against an unfightable zombie she ate 4 in a row, and against
+        // a live one she failed 5 of 7. Keeping it enabled guarantees the race.
+        // We superset it anyway - it only fires below food 14, whereas _maybeEat
+        // also tops saturation, which is what buys regeneration.
+        this.bot.autoEat.disable();
+        // Make a chew own the hand outright - see skills.claimHand().
+        skills.claimHand(this.bot);
 
         if (save_data?.self_prompt) {
             if (init_message) {
@@ -660,6 +672,51 @@ export class Agent {
         // (which is how the normal persona stopped introducing itself on every
         // boot) silently rerouted her into a hardcoded "Hello world! I am
         // Elena" instead. Silence is the default; there is nothing to do here.
+    }
+
+    // Keep saturation topped up, which is the only thing that regenerates
+    // health (ServerPlayer.tickRegeneration heals only while saturation < 20).
+    // Serialized the same way fights are: the 2s poll and the health event can
+    // both see the same shortfall and would eat the same stack twice.
+    _maybeEat() {
+        if (this._eatInFlight) return;
+        const choice = decideEat(this.bot);
+        if (!choice) return;
+        // One chew at a time.
+        //
+        // A chew owns the hand outright, enforced at bot.equip itself. That is
+        // the only chokepoint that catches every caller, and there turned out to
+        // be many: equipHighestAttack (melee), shootBow (bow), and - the one
+        // that actually kept winning - mineflayer-pathfinder's monitorMovement,
+        // which auto-equips a digging tool whenever a goal targets a block, with
+        // no way to ask permission first. Guarding individual call sites kept
+        // missing one; every attempt still logged "failed to consume". A stack
+        // trace on the stolen slot settled it:
+        //   heldItemChanged <- updateHeldItem <- setQuickBarSlot <- equip <-
+        //   monitorMovement (mineflayer-pathfinder/index.js)
+        // Because the hand is contended, eatNow re-checks and retries rather
+        // than trusting the first equip to have stuck.
+        this.bot._eating = true;
+        this._eatInFlight = true;
+        const label = `${choice.item.name} x${choice.item.count}`;
+        const sat = this.bot.foodSaturation;
+        console.log(`[eat] saturation ${Number(sat).toFixed(1)}/20 ` +
+            `(health ${this.bot.health}, food ${this.bot.food}) - eating ${label}`);
+        // Being hurt does NOT cancel a chew: LivingEntity calls stopUsingItem()
+        // only from die(), completeUsingItem() and releaseUsingItem(). So the
+        // old preempt here was self-inflicted damage - clearControlStates() and
+        // pvp.stop() reach in and drop the item mid-bite. Measured under a
+        // zombie: 5 of 7 attempts logged "failed to consume" and health still ran
+        // 18.6 -> 1.3 before one landed. Take the hand, then leave it alone and
+        // let eatNow() re-draw once if something steals it.
+        this.bot.interrupt_code = false;
+        skills.eatNow(this.bot, choice.item)
+            .then((ok) => {
+                if (ok) console.log(`[eat] ate ${label} (saturation now ${Number(this.bot.foodSaturation).toFixed(1)})`);
+                else console.warn(`[eat] failed to consume ${label}`);
+            })
+            .catch((e) => console.warn('[eat] error:', e?.message))
+            .finally(() => { this._eatInFlight = false; });
     }
 
     checkAllPlayersPresent() {
@@ -2407,9 +2464,25 @@ export class Agent {
                 // attacker from `source`, so it was always undefined and the
                 // branch that started a fight goal could never run. That is why a
                 // phantom produced a complaint and no command.
+                //
+                // Eating IS here, because it needs no attacker: it is a decision
+                // about her own bars. autoEat's health handler fires, but eat()
+                // returns false while bot.food > startAt, and the server refuses
+                // to consume food at full hunger anyway (Player.canEat ->
+                // FoodData.needsFood -> foodLevel < 20). Measured: health fell
+                // 20 -> 0.7 holding 8 cooked beef, every attempt "failed to
+                // consume". What she needs is saturation topped up BEFORE a
+                // fight - see decideEat().
             }
+            this._maybeEat();
             prev_health = this.bot.health;
         });
+        // Saturation decays on its own clock, so waiting for a health event to
+        // notice means she never tops up until something has already hurt her -
+        // and by then the regeneration she wanted was gone. Measured: with
+        // saturation 0, food 12 and nothing attacking, the health-event-only
+        // version logged nothing at all for 40s. Poll instead.
+        this._eatPoll = setInterval(() => this._maybeEat(), 2000);
         // Logging callbacks
         this.bot.on('error' , (err) => {
             console.error('Error event!', err);
@@ -2825,6 +2898,19 @@ export class Agent {
         // chat lines, zero LLM turns). Legacy chat-/give kept as fallback if
         // RCON itself is unreachable. Still idempotent (missing-only), silent
         // except one line. keep_inventory OFF: naked after death = RCON kit.
+        // A chew in progress outranks a gear-up. Every `item replace`/`give`
+        // resyncs the whole inventory, which blanks the held slot and cancels the
+        // bite - measured: 10 failed eats in a row after a single respawn, each
+        // one straddling a 17-piece gear-up. Defer rather than drop: she still
+        // needs the kit, just not mid-bite.
+        if (this.bot._eating) {
+            clearTimeout(this._gearUpDeferred);
+            this._gearUpDeferred = setTimeout(() => {
+                this._gearUpDeferred = null;
+                this._gearUp().catch(() => {});
+            }, 2500);
+            return;
+        }
         try {
             const res = await rconEnsureKit(this.name);
             if (res.ok) {

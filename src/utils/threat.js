@@ -38,6 +38,97 @@ export const MELEE_RANGE = 3.0;      // a creeper inside this is lethal
 export const HOSTILE_NOTICE = 16.0;  // start dealing with a threat by here
 export const URGENT_RANGE = 6.0;     // too late to be casual
 export const FLEE_HEALTH = 14;       // below this, run rather than trade
+// Saturation is the resource that actually regenerates health:
+// ServerPlayer.tickRegeneration heals only while saturation < 20. Keeping it
+// near full costs nothing while it is, and is the only way a fight taken at
+// low health can be walked back. Just under 20 so one cooked beef covers it.
+export const SATURATION_TARGET = 19.0;
+
+// Food is only refused when it would poison her, matching autoEat's banned list.
+const POISON_FOOD = /^(rotten_flesh|spider_eye|poisonous_potato|pufferfish|chicken|chorus_fruit|suspicious_stew)$/;
+
+// Fallback only, for when the registry is unavailable. The authoritative
+// source is bot.registry.foodsByName - the same table autoEat uses - so a new
+// food is recognised without touching this list. Filtering by name only is what
+// made the first version try to eat arrows, a shovel, an elytra and a pickaxe
+// while dying: measured live.
+const KNOWN_FOOD = /^(apple|baked_potato|beef|beetroot|beetroot_soup|bread|carrot|chicken|melon_slice|mushroom_stew|cooked_(beef|chicken|cod|mutton|pork|rabbit|salmon)|cookie|dried_kelp|porkchop|potato|pumpkin_pie|rabbit_stew|salmon|tropical_fish|cod|mutton|pork|rabbit|golden_carrot)$/;
+
+// Is this item edible at all? Registry first, name list second.
+function isFood(bot, name) {
+    const registry = bot?.registry?.foodsByName;
+    if (registry && Object.prototype.hasOwnProperty.call(registry, name)) return true;
+    return KNOWN_FOOD.test(name);
+}
+
+/**
+ * Should she eat right now?
+ *
+ * The original version of this watched HEALTH below a threshold and expected
+ * food to heal her. Both halves of that are wrong, and the server jar says so:
+ *
+ *   Player.canEat(boolean)      -> invulnerable || canAlwaysEat || foodData.needsFood()
+ *   FoodData.needsFood()        -> foodLevel < 20
+ *   Consumable.startConsuming   -> FAIL when !canConsume
+ *
+ * So a survival player at full hunger CANNOT eat at all. An empty-handed-
+ * health reflex was structurally impossible: measured live, health fell
+ * 20 -> 0.7 with 8 cooked beef in hand and every attempt logged "failed to
+ * consume". autoEat gates on the same bar, so it never fired either.
+ *
+ * Food does not heal anyway. ServerPlayer.tickRegeneration(), every 20 ticks:
+ *
+ *     heal(1.0f)
+ *     if (saturation < 20) setSaturation(saturation + 1)
+ *
+ * Regeneration happens ONLY while saturation is below 20, and eating is what
+ * refills it. So the correct reflex is not "eat when hurt" - it is "keep
+ * saturation topped up", which costs nothing while full and is the only way
+ * health recovery is available when a fight starts.
+ *
+ * Returns the food to eat, or null. Pure: reads state, calls nothing.
+ *
+ * @returns {{item:object, urgency:boolean}|null}
+ */
+export function decideEat(bot) {
+    try {
+        const items = bot?.inventory?.items?.() || [];
+        const food = items
+            // Edible is the FIRST filter, not a side condition.
+            .filter(i => i?.name && isFood(bot, i.name))
+            .filter(i => !POISON_FOOD.test(String(i?.name || '')))
+            // A golden apple is a decision, not a reflex.
+            .filter(i => i.name !== 'golden_apple' && (i.count || 0) > 0);
+        if (food.length === 0) return null;
+
+        // serverTick-synced counters, not the raw packet fields.
+        const hunger = Number(bot.food);
+        const sat = Number(bot.saturationLevel ?? bot.foodSaturation);
+        if (!Number.isFinite(hunger) || !Number.isFinite(sat)) return null;
+
+        // canEat() requires foodLevel < 20, so above that nothing is wasted by
+        // not asking: the server would refuse anyway.
+        if (hunger >= 20) return null;
+        // Saturation is what regenerates health. While it is already full there
+        // is nothing to buy, so this is free to decline.
+        if (sat >= SATURATION_TARGET) return null;
+
+        // Prefer food that buys the most saturation, then the most points.
+        const reg = bot?.registry?.foodsByName || {};
+        const satOf = (i) => reg[i.name]?.foodSaturation ?? i.metadata?.foodSaturation ?? 0;
+        const ptsOf = (i) => reg[i.name]?.foodPoints ?? i.metadata?.foodPoints ?? 0;
+        food.sort((a, b) => (satOf(b) - satOf(a)) || (ptsOf(b) - ptsOf(a)));
+
+        // She is actually hurt, not merely topping up.
+        const health = Number(bot.health);
+        return {
+            item: food[0],
+            urgency: Number.isFinite(health) && health <= FLEE_HEALTH,
+        };
+    } catch (_) {
+        return null;
+    }
+}
 
 /**
  * Mobs that need active handling rather than patience.

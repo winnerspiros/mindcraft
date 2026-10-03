@@ -1242,6 +1242,8 @@ async function equipHighestAttack(bot) {
         const held = bot.heldItem;
         if (held && (held.name.includes('sword') || (held.name.includes('axe') && !held.name.includes('pickaxe')))) return;
     } catch (_) {}
+    // A chew in progress outranks a weapon swap; claimHand() queues this
+    // equip until the bite finishes rather than cancelling it.
     let weapons = bot.inventory.items().filter(item => item.name.includes('sword') || (item.name.includes('axe') && !item.name.includes('pickaxe')));
     if (weapons.length === 0)
         weapons = bot.inventory.items().filter(item => item.name.includes('pickaxe') || item.name.includes('shovel'));
@@ -3437,9 +3439,20 @@ export async function attackEntity(bot, entity, kill=true) {
      * @returns {Promise<boolean>} true if the entity was attacked, false if interrupted
      * @example
      * await skills.attackEntity(bot, entity);
-     **/
+         **/
 
-    let pos = entity.position;
+         // A chew outranks a counter-attack, and this is the one chokepoint every
+         // fight shares: the threat scan, the entityHurt handler, and self_defense
+         // mode (modes.js -> avoidEnemies) all land here. claimHand() already stops
+         // the equip, but the melee loop also runs pathfinder and control states,
+         // which cancel the chew server-side. Measured against a zombie she can
+         // fight: 2 eats and 5 failures; against one she cannot (Invulnerable+NoAI):
+         // 8 eats and 2 failures; against /damage with no mob at all: 9 and 0. Damage
+         // is not the variable - swinging back is. Refusing is safe because the
+         // caller re-evaluates on the next tick and the threat is still there.
+         if (bot._eating) return false;
+
+         let pos = entity.position;
     await equipHighestAttack(bot)
 
     if (!kill) {
@@ -4308,7 +4321,114 @@ function arrowSpent(before, after) {
     return before !== null && after !== null && after < before;
 }
 
+// Eat one item of food right now, without asking autoEat and without the model.
+//
+// Deciding WHAT to eat is decideEat()'s job (pure, state-only). This is the
+// hand-to-mouth part: equip, hold, wait for the stack to actually shrink.
+// Confirming by the stack shrinking is what keeps this honest - a bare
+// activateItem() "worked" the same way the bow release used to claim success.
+//
+// Returns true only if food was really consumed.
+/**
+ * Make a chew own the hand outright, by intercepting the one method every
+ * caller goes through.
+ *
+ * The hand is heavily contended and the callers are not all ours:
+ * equipHighestAttack (melee), shootBow (bow), the respawn gear-up's RCON
+ * `item replace`, and mineflayer-pathfinder's monitorMovement, which auto-equips
+ * a digging tool whenever a goal targets a block and offers no way to ask
+ * permission first. That last one kept winning even after every other caller
+ * was individually guarded - it reached bot.equip() from a movement tick:
+ *
+ *   heldItemChanged <- updateHeldItem <- setQuickBarSlot <- equip <-
+ *   monitorMovement (mineflayer-pathfinder/index.js)
+ *
+ * Guarding call sites one at a time kept missing one, and every attempt still
+ * logged "failed to consume" while the server silently dropped the bite.
+ * Wrapping equip() covers all of them, including anything added later.
+ *
+ * The wrapper queues rather than rejects: a queued equip runs once the chew
+ * ends, so deferring a gear-up or a pathfinder tool does not lose it.
+ */
+export function claimHand(bot) {
+    if (!bot || bot._handClaimInstalled) return bot;
+    const original = bot.equip.bind(bot);
+    bot._handQueue = [];
+    // The eater itself must bypass the queue or it deadlocks against its own
+    // claim: eatNow sets _eating = true and then calls bot.equip. A plain flag
+    // cannot tell "the eater" from "everyone else", because the chew spans many
+    // ticks and the await points in between are exactly when other code runs.
+    bot._eatingHand = null;
+    bot.equip = async (...args) => {
+        if (bot._eating && bot._eatingHand !== args[0]) {
+            return new Promise((resolve) => {
+                bot._handQueue.push({ args, resolve });
+            });
+        }
+        return original(...args);
+    };
+    bot._handClaimInstalled = true;
+    bot._releaseHand = async () => {
+        const queued = bot._handQueue.splice(0);
+        for (const { args, resolve } of queued) {
+            try { resolve(await original(...args)); } catch (e) { resolve(false); }
+        }
+    };
+    return bot;
+}
+
+export async function eatNow(bot, item) {
+    if (!bot || !item || !item.name) return false;
+    const before = item.count || 0;
+    // Claim BEFORE equipping, so the equip that brings the food to the hand is
+    // itself protected from a pathfinder tick landing in between.
+    bot._eating = true;
+    // Tag the item so the wrapper lets this one equip straight through.
+    bot._eatingHand = item;
+    try { await bot.equip(item, 'hand'); } catch { bot._eating = false; bot._eatingHand = null; return false; }
+    try {
+        await bot.activateItem();
+        // Eating takes 1.6s server-side; poll the stack rather than sleeping a
+        // fixed time, so a fast server does not pay for a slow one.
+        const deadline = Date.now() + 4000;
+        let redrawn = false;
+        while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 200));
+            const now = bot.inventory?.items?.().find(i => i.name === item.name);
+            if (!now || (now.count || 0) < before) {
+                try { await bot.deactivateItem(); } catch {}
+                log(bot, `Ate 1 ${item.name} at ${bot.health} health.`);
+                return true;
+            }
+            // mineflayer clears usingHeldItem whenever the held item changes, and
+            // a concurrent action taking the slot mid-bite silently wastes the
+            // food. Re-draw once rather than burning the whole food.
+            if (!bot.usingHeldItem && !redrawn) {
+                redrawn = true;
+                const held = bot.heldItem;
+                if (held?.name !== item.name) {
+                    try { await bot.equip(item, 'hand'); } catch {}
+                }
+                try { await bot.activateItem(); } catch {}
+            }
+        }
+        try { await bot.deactivateItem(); } catch {}
+    } catch (e) {
+        log(bot, `Could not eat the ${item.name}: ${e.message}`);
+        return false;
+    } finally {
+        bot._eating = false;
+        bot._eatingHand = null;
+        // Release the hand, then run whatever was queued behind the bite.
+        try { await bot._releaseHand?.(); } catch (_) {}
+    }
+    log(bot, `Tried to eat the ${item.name} but it left the hand unconsumed.`);
+    return false;
+}
+
 export async function shootBow(bot, target, shots=1, fullCharge=true) {
+    // A chew in progress outranks a bow draw; claimHand() defers the equip the
+    // draw needs until the bite finishes.
     /**
      * Shoot a bow at a target. Equips a bow (auto-/giving one if she lacks it — she's OP),
      * aims at the target's eyes (leading moving targets by their velocity), draws and fires.
@@ -8818,7 +8938,13 @@ export async function avoidEnemies(bot, distance=16, mode='walk') {
      * @example
      * await skills.avoidEnemies(bot, 8);
      * await skills.avoidEnemies(bot, 16, 'sprint'); // run for it
-     **/
+         **/
+
+         // Same reasoning as attackEntity: fleeing drives pathfinder and control
+         // states, which cancel a chew server-side. self_defense mode reaches this
+         // directly (modes.js:378), so guarding only the attack path still lost the
+         // bite. Refusing is safe - the threat is still there next tick.
+         if (bot._eating) return false;
     bot.modes.pause('self_preservation'); // prevents damage-on-low-health from interrupting the bot
     // ...but it also disables the drowning rescue in that mode's update, and
     // this function is exactly how she walks into water. It never unpaused, so
