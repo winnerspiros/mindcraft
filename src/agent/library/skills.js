@@ -4359,11 +4359,35 @@ export function claimHand(bot) {
     // cannot tell "the eater" from "everyone else", because the chew spans many
     // ticks and the await points in between are exactly when other code runs.
     bot._eatingHand = null;
+    // A stuck claim would wedge every equip in the process - mining, bow, gear-up,
+    // everything - with no error and no way back, because the only exit is the
+    // eater's own finally(). Two defences, since this runs unattended:
+    //   1. a deadline: a bite is ~1.6s and eatNow polls for 4s, so anything still
+    //      claimed well past that means the finally never ran.
+    //   2. a bounded queue: the pathfinder re-equips every tick while it has a
+    //      dig goal, so without a cap a long chew would accumulate hundreds of
+    //      entries and then replay them all at once.
+    const CLAIM_TIMEOUT_MS = 15000;
+    const MAX_QUEUE = 8;
     bot.equip = async (...args) => {
-        if (bot._eating && bot._eatingHand !== args[0]) {
-            return new Promise((resolve) => {
-                bot._handQueue.push({ args, resolve });
-            });
+        // The eater's own equip bypasses the queue, or it deadlocks against its
+        // own claim (eatNow sets _eating, then immediately calls bot.equip).
+        if (bot._eating && bot._eatingHand === args[0]) return original(...args);
+        if (bot._eating) {
+            if (bot._eatingStamp && Date.now() - bot._eatingStamp > CLAIM_TIMEOUT_MS) {
+                console.warn(`[hand] stale eat claim (${Date.now() - bot._eatingStamp}ms) - releasing so equipping is not wedged`);
+                bot._eating = false;
+                bot._eatingHand = null;
+            } else {
+                if (bot._handQueue.length >= MAX_QUEUE) {
+                    // Oldest request is the most stale; drop it rather than grow.
+                    const dropped = bot._handQueue.shift();
+                    dropped.resolve(false);
+                }
+                return new Promise((resolve) => {
+                    bot._handQueue.push({ args, resolve });
+                });
+            }
         }
         return original(...args);
     };
@@ -4383,6 +4407,8 @@ export async function eatNow(bot, item) {
     // Claim BEFORE equipping, so the equip that brings the food to the hand is
     // itself protected from a pathfinder tick landing in between.
     bot._eating = true;
+    // Stamp the claim so claimHand() can tell a live chew from a wedged one.
+    bot._eatingStamp = Date.now();
     // Tag the item so the wrapper lets this one equip straight through.
     bot._eatingHand = item;
     try { await bot.equip(item, 'hand'); } catch { bot._eating = false; bot._eatingHand = null; return false; }

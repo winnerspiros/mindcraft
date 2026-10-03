@@ -72,8 +72,13 @@ test('a chew owns the hand at bot.equip itself, not at each call site', () => {
         /export function claimHand\(bot\)/.test(skillsCode),
         'claimHand is missing'
     );
+    // Behaviour, not shape: tests/claim_hand.test.mjs proves the wrapper defers
+    // other equips, releases a wedged claim and bounds its queue. Asserting the
+    // literal source here only re-pinned the implementation and broke when the
+    // safety limits were added - so just require the interception exists.
     assert.ok(
-        /bot\.equip = async \(\.\.\.args\) => \{[\s\S]*?if \(bot\._eating && bot\._eatingHand !== args\[0\]\) \{[\s\S]*?_handQueue\.push/.test(skillsCode),
+        /bot\.equip = async \(\.\.\.args\) =>/.test(skillsCode) &&
+        /_handQueue\.push/.test(skillsCode),
         'claimHand must intercept bot.equip and queue while a chew is active'
     );
     assert.ok(
