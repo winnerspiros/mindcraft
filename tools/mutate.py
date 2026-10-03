@@ -54,7 +54,11 @@ for f, anchor, repl in specs:
         print(f'  SYNTAX-BREAK   {anchor[:52]} (counted caught)')
         continue
     r = run('node', test_file)
-    n = r.stdout.count('NOT OK')
+    # Count failures in BOTH streams: several test files report their failing
+    # assertions on stderr (the threat suite uses console.error), and reading
+    # stdout only reported those mutations as MISSED even though they were
+    # caught - a green suite and a green mutation run disagreed.
+    n = r.stdout.count('NOT OK') + r.stderr.count('NOT OK')
     if n:
         print(f'  CAUGHT         {anchor[:52]} ({n})')
     else:

@@ -14,10 +14,8 @@
 // failed before the logic was moved somewhere it could actually be exercised.
 
 import { readFileSync } from 'node:fs';
-import {
-    reactToHurt, assessThreats, isArmed, mobName,
-    MELEE_RANGE, HOSTILE_NOTICE,
-} from '../src/utils/threat.js';
+import { reactToHurt, assessThreats, isArmed, mobName,
+    MELEE_RANGE, HOSTILE_NOTICE, distanceBetween } from '../src/utils/threat.js';
 
 let pass = 0, failed = 0;
 const check = (c, good, bad) => {
@@ -155,6 +153,138 @@ const botWith = (items) => ({ entity: { position: HER }, health: 20, inventory: 
         'the dead inline reflex is gone from agent.js', 'a dead inline reflex remains');
 }
 
+const Vec3 = (await import('vec3')).default
+const vec = (x, y, z) => new Vec3(x, y, z)
+const mob_ = (name, x, y, z) => ({ id: name + x, name, type: 'hostile', position: vec(x, y, z), height: 1.8 })
+const nanVec = new Vec3(0, 64, 0)
+nanVec.x = NaN
+
+// --- null-position entities ------------------------------------------------
+// Measured live on 26.3 (mineflayer 4.37): Object.values(bot.entities) contains
+// `zombie@{"x":null,"y":null,"z":null}` next to perfectly normal entries. A
+// Vec3 with null components makes distanceTo() return NaN, the old
+// `typeof d === 'number'` test accepted it (NaN is a number), and the range
+// check then dropped the mob - so a hostile standing next to her was invisible
+// and the 1s scan never fired. These assert the mob is either measured
+// correctly or skipped for an HONEST reason (out of range), never silently
+// lost to NaN.
+{
+  const mk = (pos, type = 'hostile', name = 'zombie') => ({ id: Math.random(), type, name, position: pos, height: 1.8 })
+  const bot = {
+    health: 20, food: 18,
+    entity: { position: vec(0, 64, 0) },
+    inventory: { items: () => [{ name: 'diamond_sword' }] },
+  }
+  // null components, as the real bot reported
+  // A REAL Vec3 whose components are null - this is what mineflayer actually
+  // produced, and it is Vec3.distanceTo() that turns it into NaN. A bare
+  // {x,y,z} takes the fallback branch instead, so the old bug survives here and
+  // the test passes even with the guard deleted.
+  const nullPos = mk(new Vec3(0, 64, 0))
+  // Mineflayer really does build this: a Vec3 instance whose own x/y/z were
+  // assigned null, so `new Vec3(null,null,null)` is useless as a stand-in (it
+  // coerces to 0). Measured: ctor=Vec3 dTo=function keys=["x","y","z"]
+  // posRaw={"x":null,"y":null,"z":null} on a live 26.3 hostile.
+  nullPos.position.x = null
+  nullPos.position.y = null
+  nullPos.position.z = null
+  const r = assessThreats({ bot, entities: [nullPos] })
+  check(r.action === 'ignore' && r.reason === 'no hostiles nearby',
+    'a null-position mob is skipped without throwing', JSON.stringify(r))
+
+  // a real, close mob must still be detected - the null one must not poison it
+  const good = mk(vec(4, 64, 0))
+  const r2 = assessThreats({ bot, entities: [nullPos, good] })
+  check(r2.action === 'fight' && r2.target === good,
+    'a null-position neighbour does not hide a real threat', JSON.stringify(r2.action))
+
+  // mixed order, and many nulls
+  const r3 = assessThreats({ bot, entities: [nullPos, nullPos, nullPos, mk(vec(6, 64, 0))] })
+  check(r3.action === 'fight' && Math.abs(r3.target.position.x - 6) < 0.01,
+    'many null-position mobs still leave the real one detectable', JSON.stringify(r3.reason))
+
+  // a Vec3-like whose components are strings ("5") must not silently vanish
+  // Vec3 coerces a numeric STRING to a number, so '5' is a legitimate 5 blocks
+  // away and must be fought. Assert that, rather than the invalid case I first
+  // wrote - Vec3('5') is not the same as an unparseable value.
+  const strPos = mk(new Vec3('5', 64, 0))
+  const r4 = assessThreats({ bot, entities: [strPos] })
+  check(r4.action === 'fight' && r4.reason === 'armed, zombie at 5.0 blocks',
+    'a numeric-string coordinate still measures a real distance', JSON.stringify(r4.reason))
+
+  // and the real thing: NaN components
+  const nanPos = mk(new Vec3(NaN, 64, 0))
+  const r5 = assessThreats({ bot, entities: [nanPos] })
+  check(r5.action === 'ignore' && r5.reason === 'no hostiles nearby',
+    'a NaN-coordinate mob is skipped, not measured as NaN', JSON.stringify(r5))
+
+  // THE MUTATIONS THAT MUST DIE. distanceBetween() is the unit that holds the
+  // guard, so test it directly: through assessThreats() the NaN is also caught
+  // by the caller's own !Number.isFinite(d), so the typeof-vs-isFinite
+  // mutation survives an end-to-end test no matter what - two independent
+  // defences, one of them invisible from outside.
+  check(distanceBetween(nanVec, vec(0, 64, 0)) === Infinity,
+    'a NaN component is rejected outright',
+    String(distanceBetween(nanVec, vec(0, 64, 0))))
+  check(distanceBetween(vec(0, 64, 0), nanVec) === Infinity,
+    'a NaN component is rejected from either side')
+  const oddVec = vec(3, 64, 0)
+  oddVec.distanceTo = () => NaN
+  check(distanceBetween(oddVec, vec(0, 64, 0)) === Infinity,
+    'a distanceTo() of NaN becomes Infinity, not NaN',
+    String(distanceBetween(oddVec, vec(0, 64, 0))))
+  const infVec = vec(3, 64, 0)
+  infVec.distanceTo = () => Infinity
+  check(distanceBetween(infVec, vec(0, 64, 0)) === Infinity,
+    'an Infinity distance stays Infinity')
+  const okVec = vec(3, 64, 0)
+  okVec.distanceTo = () => 3
+  check(distanceBetween(okVec, vec(0, 64, 0)) === 3,
+    'a genuine distance still comes through', String(distanceBetween(okVec, vec(0, 64, 0))))
+  check(distanceBetween(3, vec(0, 64, 0)) === Infinity || distanceBetween(3, vec(0, 64, 0)) > 0,
+    'a non-vector degrades to Infinity rather than throwing')
+  check(distanceBetween(null, null) === Infinity && distanceBetween(undefined, vec(0,64,0)) === Infinity,
+    'null/undefined inputs are Infinity, never NaN')
+  check(distanceBetween(vec(3, 64, 0), vec(0, 64, 0)) === 3,
+    'the plain Vec3 case still measures 3 blocks')
+}
+
+
+// --- every 26.3 hostile must be a known behaviour -------------------------
+// A mobName() with no HOSTILE_BEHAVIOUR row is dropped by `if (!behaviour)
+// continue`, which is a SILENT skip: the mob is right there and she does
+// nothing. Measured live census on 26.3: hostile/enderman and hostile/spider
+// were both visible while she ignored a husk 7 blocks away.
+//
+// This asserts a floor, not the whole list - it fails when a hostile anyone
+// meets is unlisted, which is the failure that actually happened.
+{
+  const seenLive = ['zombie', 'husk', 'creeper', 'skeleton', 'pillager', 'vindicator',
+                    'witch', 'stray', 'phantom', 'wither_skeleton', 'enderman', 'spider',
+                    'breeze', 'evoker', 'zombified_piglin', 'piglin_brute', 'hoglin',
+                    'zoglin', 'ravager', 'silverfish', 'endermite', 'blaze', 'guardian',
+                    'elder_guardian', 'slime', 'magma_cube', 'cave_spider', 'drowned',
+                    ]
+  const bot = {
+    health: 20, food: 18, entity: { position: vec(0, 64, 0) },
+    inventory: { items: () => [{ name: 'diamond_sword' }] },
+  }
+  const unlisted = []
+  for (const name of seenLive) {
+    const r = assessThreats({ bot, entities: [mob_(name, 4, 64, 0)] })
+    // 'avoid' is a CORRECT answer for a priming creeper, not a gap.
+    if (r.action !== 'fight' && !(name === 'creeper' && r.action === 'avoid')) {
+      unlisted.push(`${name}:${r.action}`)
+    }
+  }
+  check(unlisted.length === 0, 'every 26.3 hostile she can meet has a behaviour row',
+    'ignored: ' + unlisted.join(', '))
+  // And the unknown-name case must stay ignored: a player is not a mob, and an
+  // unlisted string must not become fightable just because we widened the map.
+  check(assessThreats({ bot, entities: [mob_('some_new_hostile', 4, 64, 0)] }).action === 'ignore',
+    'an unknown mob name is still ignored, not auto-fought')
+}
+
 console.log(failed
     ? `\nFAIL — ${pass} passed, ${failed} failed`
-    : `\nPASS — ${pass} threat assertions green`);
+    : `\n${pass - failed} passed, ${failed} failed — threat assertions`);

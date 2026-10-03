@@ -57,6 +57,35 @@ const HOSTILE_BEHAVIOUR = {
     stray:       { explodes: false, priority: 3 },
     phantom:     { explodes: false, priority: 2 },
     wither_skeleton: { explodes: false, priority: 4 },
+    // Measured live in the 26.3 entity census (Object.values(bot.entities)):
+    //   hostile/enderman  hostile/spider  passive/glow_squid  hostile/breeze
+    // These were missing, and a mobName() with no behaviour entry is skipped by
+    // `if (!behaviour) continue` - so an enderman or a spider walked straight
+    // past her and the scan never mentioned it. Every hostile needs a row, even
+    // a boring one: priority only decides who she deals with FIRST.
+    spider:      { explodes: false, priority: 3 },
+    cave_spider: { explodes: false, priority: 3 },
+    enderman:    { explodes: false, priority: 3 },
+    breeze:      { explodes: false, priority: 3 },
+    slime:       { explodes: false, priority: 2 },
+    magma_cube:  { explodes: false, priority: 2 },
+    blaze:       { explodes: false, priority: 4 },
+    guardian:    { explodes: false, priority: 4 },
+    elder_guardian: { explodes: false, priority: 4 },
+    evoker:      { explodes: false, priority: 4 },
+    zoglin:      { explodes: false, priority: 3 },
+    hoglin:      { explodes: false, priority: 3 },
+    ravager:     { explodes: false, priority: 4 },
+    silverfish:  { explodes: false, priority: 2 },
+    endermite:   { explodes: false, priority: 2 },
+    // Also found by the coverage test. Drowned/axolotl/tadpole/warden are
+    // ambient or passive and correctly absent - but piglin_brute and
+    // zombified_piglin are outright hostiles that nether mobs ignored.
+    zombified_piglin: { explodes: false, priority: 3 },
+    piglin_brute:     { explodes: false, priority: 4 },
+    piglin:           { explodes: false, priority: 2 },
+    drowned:          { explodes: false, priority: 3 },
+    zombified_villager: { explodes: false, priority: 3 },
 };
 
 /**
@@ -131,15 +160,38 @@ export function mobName(entity) {
     return name;
 }
 
+// Reject anything that cannot produce a real distance, at the boundary.
+//
+// Measured live on 26.3 (mineflayer 4.37) on a running hostile:
+//   ctor=Vec3 dTo=function posRaw={"x":null,"y":null,"z":null}
+// The constructor coerces null to 0, so these components were assigned after
+// construction. Vec3.distanceTo() on such a vector returns NaN.
+//
+// Two separate things had to be rejected, and doing only one leaves a live
+// blind spot:
+//   1. the VECTOR having null/NaN components, and
+//   2. distanceTo() RETURNING NaN even for a vector that looks fine -
+//      `typeof NaN === 'number'` passed it straight through, so the caller's
+//      !Number.isFinite check silently dropped the mob and a zombie standing
+//      next to her was invisible to the 1s threat scan.
+// Neither check subsumes the other, so both stay: one mutation-spec run flagged
+// each of them as redundant against the other, which was true for the naive
+// version and false once the result was checked as well.
+function isUsableVec(v) {
+    if (!v) return false;
+    const { x, y, z } = v;
+    return Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z);
+}
+
 function distanceBetween(a, b) {
-    if (!a || !b) return Infinity;
+    if (!isUsableVec(a) || !isUsableVec(b)) return Infinity;
     if (typeof a.distanceTo === 'function') {
         const d = a.distanceTo(b);
-        return typeof d === 'number' ? d : Infinity;
+        return Number.isFinite(d) ? d : Infinity;
     }
     if (typeof b.distanceTo === 'function') {
         const d = b.distanceTo(a);
-        return typeof d === 'number' ? d : Infinity;
+        return Number.isFinite(d) ? d : Infinity;
     }
     return Infinity;
 }

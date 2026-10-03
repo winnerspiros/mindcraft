@@ -4354,12 +4354,39 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
             const lead = Math.min(0.7, dist / 55);
             aim = aim.offset(entity.velocity.x * lead, entity.velocity.y * lead, entity.velocity.z * lead);
         }
+        // Check the bow is still in hand immediately before drawing, and BEFORE
+        // the aim - a steal during lookAt still reached the draw when the check
+        // sat after it. equipHighestAttack() runs inside attackEntity() and
+        // picks the SWORD, so a concurrent melee can swap the slot between this
+        // function's own equip and its draw.
+        //
+        // Measured 2026-10-03: the scan logged "shot result: fired=true"
+        // repeatedly while she was holding diamond_sword. Zombie HP stayed 20.0,
+        // the arrow count never moved and no arrow entity ever spawned - she was
+        // "shooting" with a sword. Drawing without the bow consumes nothing and
+        // fires nothing, so the only defence is to check and to not lie about it.
+        if (bot.heldItem?.name !== 'bow') {
+            log(bot, `Lost the bow before drawing (holding ${bot.heldItem?.name || 'nothing'}) - re-equipping.`);
+            try { await bot.equip(bow, 'hand'); } catch (_) { break; }
+        }
         await bot.lookAt(aim, true);
+        // Re-check after the aim too: the aim is a round trip to the server and
+        // a concurrent equipHighestAttack() can land the sword at any point in
+        // it. A single check before the aim is not enough - it was passing in
+        // testing while the slot changed underneath it.
+        if (bot.heldItem?.name !== 'bow') {
+            log(bot, `Lost the bow while aiming (holding ${bot.heldItem?.name || 'nothing'}) - re-equipping.`);
+            try { await bot.equip(bow, 'hand'); } catch (_) { break; }
+        }
         await new Promise(r => setTimeout(r, 100));   // let the view settle on target
         await bot.activateItem();                     // start drawing the bow
         await new Promise(r => setTimeout(r, fullCharge ? 1000 : 320));
         try { await bot.deactivateItem(); } catch {}  // release -> arrow flies
-        fired++;
+        // Count only what actually left the bow. `fired++` unconditionally made
+        // shootBow report success while the server consumed no arrow, which is
+        // exactly the false signal that hid this for hours of live testing.
+        if (bot.heldItem && bot.heldItem.name === 'bow') fired++;
+        else log(bot, 'Drew the bow but nothing left the hand - not counting it.');
         await new Promise(r => setTimeout(r, fullCharge ? 220 : 130));
     }
     log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);

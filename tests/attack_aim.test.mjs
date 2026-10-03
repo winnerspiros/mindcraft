@@ -217,5 +217,103 @@ check('every SCREAMING_CASE constant in the kill branch is actually declared',
   undefinedCaps.length === 0,
   undefinedCaps.length ? 'undefined in this module: ' + undefinedCaps.join(', ') : undefined)
 
+// --- a bow shot must actually shoot ----------------------------------------
+// Measured 2026-10-03: the scan logged "shot result: fired=true" over and over
+// while she was holding diamond_sword. Zombie HP stayed 20.0, the arrow count
+// never moved and no arrow entity ever spawned - she was "shooting" with a
+// sword, because equipHighestAttack() runs inside attackEntity() and swapped
+// the slot back between shootBow's equip and its draw.
+const shootBowFn = (await import('../src/agent/library/skills.js')).shootBow
+const Vec3 = (await import('vec3')).default
+
+// A minimal bot stand-in. `stealAtLookAt` makes the rival win the slot during
+// the aim - which is what equipHighestAttack() inside a concurrent
+// attackEntity() does in the real bot.
+function makeBowBot({ stealAtLookAt = false, stealAtDraw = false, alwaysLose = false } = {}) {
+  const b = {
+    username: 'T', heldItem: null, interrupt_code: false, output: '',
+    entity: { position: new Vec3(0, 0, 0) },
+    inventory: { items: () => [{ name: 'bow' }, { name: 'arrow' }] },
+    supportFeature: () => true,
+    equips: 0,
+    equip: async (item) => {
+      b.equips++
+      b.heldItem = alwaysLose ? { name: 'diamond_sword' } : item
+    },
+    lookAt: async () => { if (stealAtLookAt) b.heldItem = { name: 'diamond_sword' } },
+    activateItem: async () => { if (stealAtDraw) b.heldItem = { name: 'diamond_sword' } },
+    deactivateItem: async () => {},
+    hawkEye: undefined, chat: () => {},
+  }
+  return b
+}
+const targetAt = (d) => ({ position: new Vec3(d, 0, 0), height: 1.8 })
+
+// 1. Nothing touches the slot: a shot must land and be counted.
+{
+  const b = makeBowBot()
+  const res = await shootBowFn(b, targetAt(8), 1, false)
+  check('shootBow reports TRUE and counts the shot when the bow stays in hand',
+    res === true && b.heldItem.name === 'bow' && /Fired 1 arrow/.test(b.output),
+    `res=${res}, held=${b.heldItem?.name}, log=${JSON.stringify(b.output)}`)
+}
+
+// 2. The slot is stolen DURING the draw. The post-draw check is the only thing
+//    that can catch this, and it must NOT report a shot.
+{
+  const b = makeBowBot({ stealAtDraw: true })
+  const res = await shootBowFn(b, targetAt(8), 1, false)
+  check('shootBow refuses to count a shot drawn with the wrong item',
+    res === false, `res=${res}`)
+  check('shootBow says a drawn arrow never left the hand',
+    /nothing left the hand - not counting it/.test(b.output), JSON.stringify(b.output))
+}
+
+// 3. The rival wins the slot during the aim and then holds it. The guards must
+//    notice, re-equip, and still fire. This is the recovery that makes arrows
+//    actually leave the bow in the real bot.
+{
+  const b = makeBowBot({ stealAtLookAt: true })
+  const res = await shootBowFn(b, targetAt(8), 1, false)
+  check('shootBow recovers the bow when the slot is stolen during the aim',
+    /Lost the bow/.test(b.output) &&
+    b.heldItem && b.heldItem.name === 'bow' &&
+    res === true && /Fired 1 arrow/.test(b.output),
+    `res=${res}, held=${b.heldItem?.name}, equips=${b.equips}, log=${JSON.stringify(b.output)}`)
+}
+
+// 4. The rival wins every single time. No shot may be claimed.
+{
+  const b = makeBowBot({ stealAtLookAt: true, alwaysLose: true })
+  const res = await shootBowFn(b, targetAt(8), 1, false)
+  check('shootBow never claims a shot while the bow is not in hand',
+    res === false && !/Fired 1 arrow/.test(b.output),
+    `res=${res}, held=${b.heldItem?.name}, log=${JSON.stringify(b.output)}`)
+  check('the recovery was actually attempted before giving up',
+    /Lost the bow/.test(b.output) && b.equips >= 2,
+    `equips=${b.equips}, log=${JSON.stringify(b.output)}`)
+}
+
+// --- source-shape guards for the parts a fake cannot observe ---------------
+const sbStart = src.indexOf('export async function shootBow')
+const sb = src.slice(sbStart, src.indexOf('\n}\n', sbStart))
+check('shootBow checks the bow is IN HAND before drawing',
+  /bot\.heldItem\?\.name !== 'bow'/.test(sb) && /Lost the bow before drawing/.test(sb))
+check('the bow check comes BEFORE the aim, not after it',
+  sb.indexOf('Lost the bow before drawing') < sb.indexOf('await bot.lookAt(aim, true)'))
+check('the bow is re-checked AFTER the aim too',
+  /Lost the bow while aiming/.test(sb) &&
+  sb.indexOf('Lost the bow while aiming') > sb.indexOf('await bot.lookAt(aim, true)'))
+check('a lost bow is re-equipped, not ignored',
+  /re-equipping/.test(sb) && /await bot\.equip\(bow, 'hand'\)/.test(sb))
+check('shootBow does not claim a shot it never drew',
+  /nothing left the hand - not counting it/.test(sb) &&
+  /if \(bot\.heldItem && bot\.heldItem\.name === 'bow'\) fired\+\+;/.test(sb))
+check('the false-signal rationale is documented in-file',
+  /the only defence is to check and to not lie about it/.test(sb))
+check('equipHighestAttack (the sword swapper) is called from attackEntity',
+  /await equipHighestAttack\(bot\)/.test(ae),
+  'and that is what stole the bow mid-shot')
+
 console.log(`\n${ok} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
