@@ -9752,6 +9752,84 @@ export async function digDown(bot, distance = 10) {
     return true;
 }
 
+// THE MISSING HALF OF digDown.
+//
+// She could tunnel down and had no way to tunnel back up: the command registry
+// had digDown but no digUp, and goToSurface() cannot path vertically through
+// solid rock - goToGoal has no route to a block 44 blocks overhead. Measured: she
+// ran !digDown 9 times to reach y18 and then could not leave by the same means,
+// so the cave became a one-way trip. Her y65 high-water mark was a different
+// pocket, reached another way.
+//
+// This is the "staircase" ascent: dig the block above her head, step up, repeat.
+// Bounded per call for the same reason digDown is - a 45s leg per block wedged
+// past the action timeout and caused suicides at 20:00/20:05 on 2026-09-26.
+export async function digUp(bot, distance = 6) {
+    /**
+     * Dig upward by staircase-ing: clear the block above, step up, repeat.
+     * @param {MinecraftBot} bot, reference to the minecraft bot.
+     * @param {int} distance, blocks to climb.
+     * @returns {Promise<boolean>} true if the full distance was climbed.
+     **/
+    const capped = Math.min(Math.max(distance, 1), 6);
+    let climbed = 0;
+    for (let i = 1; i <= capped; i++) {
+        if (bot.interrupt_code) {
+            log(bot, `Climb interrupted after ${climbed} blocks.`);
+            return climbed > 0;
+        }
+        const feet = bot.blockAt(bot.entity.position);
+        if (!feet) {
+            log(bot, 'Cannot climb: the chunk here is not loaded yet.');
+            return false;
+        }
+        // Clear headroom, then stand in it. Head then feet then head again, so a
+        // 1-block hole is enough - the staircase does not need two blocks.
+        const head = bot.blockAt(feet.position.offset(0, 1, 0));
+        if (!head) return climbed > 0;
+        if (head.name !== 'air' && head.name !== 'cave_air') {
+            if (head.name === 'lava' || head.name === 'water' || head.name === 'bedrock') {
+                log(bot, `Cannot climb: ${head.name} above.`);
+                return false;
+            }
+            const ok = await breakBlockAt(bot, head.position.x, head.position.y, head.position.z, 12000);
+            if (!ok) {
+                log(bot, `Climbed ${climbed} blocks, then could not break the block above.`);
+                return climbed > 0;
+            }
+        }
+        const newFeet = bot.blockAt(bot.entity.position);
+        if (!newFeet) return climbed > 0;
+        if (newFeet.name !== 'air' && newFeet.name !== 'cave_air') {
+            // Solid underfoot - dig it, or the staircase stops here.
+            if (newFeet.name === 'bedrock' || newFeet.name === 'lava') {
+                log(bot, `Cannot climb: ${newFeet.name} underfoot.`);
+                return false;
+            }
+            const ok = await breakBlockAt(bot, newFeet.position.x, newFeet.position.y, newFeet.position.z, 12000);
+            if (!ok) return climbed > 0;
+        }
+        // Look up so she actually steps into the cleared space.
+        try { await bot.look(bot.entity.position.offset(0, 1, 0), true); } catch (_) {}
+        try { bot.setControlState('forward', true); } catch (_) {}
+        await new Promise(r => setTimeout(r, 350));
+        try { bot.setControlState('forward', false); } catch (_) {}
+        await new Promise(r => setTimeout(r, 150));
+        const nowY = Math.floor(bot.entity.position.y);
+        const gain = nowY - Math.floor(feet.position.y);
+        if (gain <= 0) {
+            log(bot, `Climbed ${climbed} blocks, then made no further progress.`);
+            return climbed > 0;
+        }
+        climbed += gain;
+    }
+    if (capped < distance)
+        log(bot, `Climbed ${climbed} blocks (capped per call — re-issue to climb higher).`);
+    else
+        log(bot, `Climbed ${climbed} blocks.`);
+    return true;
+}
+
 // WORLDEATER PORT (layered dig region: Botcraft's WorldEater plans a quarry
 // as an action QUEUE — top layer first, never break the block underfoot,
 // bail on lava/water/drops per position. Direct port of that pattern into
@@ -9894,14 +9972,68 @@ export async function goToSurface(bot) {
      * @returns {Promise<boolean>} true if the surface was reached, false otherwise.
      **/
     const pos = bot.entity.position;
+    const startY = Math.floor(pos.y);
     for (let y = 360; y > -64; y--) { // probably not the best way to find the surface but it works
         const block = bot.blockAt(new Vec3(pos.x, y, pos.z));
         if (!block || block.name === 'air' || block.name === 'cave_air') {
             continue;
         }
-        await goToPosition(bot, block.position.x, block.position.y + 1, block.position.z, 0); // this will probably work most of the time but a custom mining and towering up implementation could be added if needed
-        log(bot, `Going to the surface at y=${y+1}.`);``
-        return true;
+        // She must actually GET THERE, and "there" is vertical.
+        //
+        // This used to call goToPosition(bot, x, y+1, z, 0) and then `return true`
+        // unconditionally, discarding the boolean. Worse, that call could not have
+        // detected arrival even in principle: goToPosition measures arrival in the
+        // XZ PLANE ONLY ("BOTCRAFT PORT ... Y mismatches (standing a block
+        // above/below the target) must not read as failure"), via
+        // `dxz <= min_distance + 1`. goToSurface targets her OWN column, so dxz is
+        // approximately zero from the first tick - it returned true instantly,
+        // every time, without her moving a block.
+        //
+        // Measured: she ran !goToSurface 5 times, logging
+        //   Going to the surface at y=62.
+        //   Going to the surface at y=63.
+        // while standing at y=18 the whole time. Five successes, zero progress,
+        // and nothing in the log distinguished "arrived" from "never tried".
+        //
+        // So: check her own Y against the target, and report honestly. If she is
+        // already above it, that is success. If the path is unreachable, say so
+        // rather than claiming she got there.
+        const arrived = await goToPosition(bot, block.position.x, block.position.y + 1, block.position.z, 0);
+        const nowY = Math.floor(bot.entity.position.y);
+        // "Close enough" is a real vertical gain, not exact arrival - pathfinding
+        // to a single block at range 40 in a cave is a tall order.
+        const climbed = nowY >= block.position.y + 1 - 2;
+        if (climbed) {
+            log(bot, `Reached the surface at y=${nowY} (target y=${y + 1}).`);
+            return true;
+        }
+        // Pathfinding cannot climb solid rock, so tunnel the rest of the way.
+        // Without this she has digDown but no way back out, and every cave she
+        // explores is one-way.
+        if (nowY > startY) {
+            log(bot, `Climbed from y=${startY} to y=${nowY} by path; tunnelling the rest to y=${y + 1}.`);
+        } else {
+            log(bot, `Pathfinding could not climb from y=${startY}; tunnelling to y=${y + 1}.`);
+        }
+        let guard = 0;
+        while (Math.floor(bot.entity.position.y) < block.position.y + 1 - 2 && guard++ < 24) {
+            if (bot.interrupt_code) {
+                log(bot, `Surface climb interrupted at y=${Math.floor(bot.entity.position.y)}.`);
+                return true;
+            }
+            const before = Math.floor(bot.entity.position.y);
+            if (!await digUp(bot, 6)) {
+                log(bot, `Tunnelling stopped at y=${before}, ${block.position.y + 1 - before} blocks short of the surface.`);
+                return true; // real progress, honestly short
+            }
+            if (Math.floor(bot.entity.position.y) <= before) break; // no gain; do not spin
+        }
+        const endY = Math.floor(bot.entity.position.y);
+        const gotThere = endY >= block.position.y + 1 - 2;
+        log(bot, gotThere
+            ? `Reached the surface at y=${endY}.`
+            : `Gave up below the surface: y=${endY}, target y=${y + 1}.`);
+        return gotThere;
     }
     return false;
 }

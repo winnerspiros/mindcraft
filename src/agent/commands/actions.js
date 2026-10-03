@@ -1700,6 +1700,17 @@ export const actionsList = [
         })
     },
     {
+        // The missing half of !digDown. She could tunnel down with no way back
+        // up, so every cave she explored was a one-way trip: measured, 9x
+        // !digDown to reach y18 and then no way out by the same means.
+        name: '!digUp',
+        description: 'Digs upward by tunnelling, staircase-style. Stops if she cannot make progress.',
+        params: {'distance': { type: 'int', description: 'Distance to climb', domain: [1, Number.MAX_SAFE_INTEGER] }},
+        perform: runAsAction(async (agent, distance) => {
+            await skills.digUp(agent.bot, distance)
+        })
+    },
+    {
         name: '!goToSurface',
         description: 'Moves the bot to the highest block above it (usually the surface).',
         params: {},
