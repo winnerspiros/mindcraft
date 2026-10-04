@@ -1,6 +1,7 @@
 import * as skills from '../library/skills.js';
 import * as schematic from '../library/schematic.js';
 import * as buildsense from '../library/buildsense.js';
+import * as landwork from '../library/landwork.js';
 import * as world from '../library/world.js';
 import * as mc from '../../utils/mcdata.js';
 import { researchBuildTopic } from '../../utils/research.js';
@@ -48,6 +49,118 @@ function buildContextText(bot) {
         dirt = world.getNearestBlocksWhere(bot, b => b && (b.name === 'dirt' || b.name === 'grass_block'), 48, 24).length;
     } catch (e) { /* non-fatal */ }
     return `Inventory: ${invStr}. Nearby within ~48 blocks: ${logs} logs, ${stone} stone, ${dirt} dirt/grass.`;
+}
+
+// ---------------------------------------------------------------- landwork
+// Parsing and plumbing for the terrain-aware builders. Kept here (not inline in
+// each command) because the SAME spec grammar has to mean the same thing in
+// every one of them: "north 40", "10 20 30 40", "north 40 width=3 cobble".
+
+const LAND_DIRS = {
+    north: [0, -1], n: [0, -1], south: [0, 1], s: [0, 1],
+    east: [1, 0], e: [1, 0], west: [-1, 0], w: [-1, 0],
+    northeast: [1, -1], ne: [1, -1], northwest: [-1, -1], nw: [-1, -1],
+    southeast: [1, 1], se: [1, 1], southwest: [-1, 1], sw: [-1, 1],
+};
+
+/**
+ * "north 40" / "ne 24" / "10 -3 30 -3" / "east 50 width=3 cobble" -> {a, b, opts}
+ * Defaults to starting where she stands. Unknown words are ignored rather than
+ * rejected: she talks like a person, not a parser.
+ */
+function parseLandSpec(bot, spec) {
+    const p = bot.entity.position;
+    const a = { x: p.x, z: p.z };
+    const b = { x: p.x, z: p.z };
+    const opts = {};
+    const s = String(spec || '').trim();
+    if (!s) return { error: 'Tell me where to: a direction and a length ("north 40") or four coordinates "x1 z1 x2 z2".' };
+
+    // four bare numbers = explicit endpoints
+    const bare = s.split(/\s+/).filter(t => /^-?\d+(\.\d+)?$/.test(t)).map(Number);
+    if (bare.length >= 4) {
+        return { a: { x: bare[0], z: bare[1] }, b: { x: bare[2], z: bare[3] }, opts };
+    }
+    // x1 z1 x2 z2 possibly comma separated
+    const csv = s.split(/[\s,]+/).map(t => t.trim()).filter(t => t && !t.includes('='));
+    const nums = csv.filter(t => /^-?\d+(\.\d+)?$/.test(t)).map(Number);
+    if (nums.length >= 4 && csv.every(t => /^-?\d+(\.\d+)?$/.test(t))) {
+        return { a: { x: nums[0], z: nums[1] }, b: { x: nums[2], z: nums[3] }, opts };
+    }
+
+    const tokens = s.toLowerCase().split(/\s+/);
+    const dirTok = tokens.find(t => LAND_DIRS[t]);
+    const lenTok = tokens.find(t => /^\d+(\.\d+)?$/.test(t));
+    if (!dirTok) return { error: `"${spec}" has no direction I know. Try north/south/east/west (+ northeast etc) and a length, or x1 z1 x2 z2.` };
+    const [dx, dz] = LAND_DIRS[dirTok];
+    const len = lenTok ? Math.max(1, Math.min(256, Number(lenTok))) : 24;
+    b.x = Math.round(a.x + dx * len);
+    b.z = Math.round(a.z + dz * len);
+
+    // key=value options, plus bare material names
+    for (const m of s.matchAll(/([a-z_]+)\s*=\s*([a-z_]+|\d+)/gi)) {
+        const k = m[1].toLowerCase(), v = m[2].toLowerCase();
+        if (k === 'width') opts.width = Math.max(1, Math.min(7, Number(v) || 3));
+        else if (k === 'height') opts.height = Math.max(1, Math.min(16, Number(v) || 3));
+        else if (k === 'material' || k === 'mat') opts.material = v;
+    }
+    const MAT_WORDS = { dirt: 'dirt', gravel: 'gravel', cobble: 'cobble', cobblestone: 'cobble', stone: 'stone', planks: 'plank', plank: 'plank', path: 'path', sand: 'sand', snow: 'snow' };
+    for (const t of tokens) {
+        if (!MAT_WORDS[t]) continue;
+        opts.material = MAT_WORDS[t];
+    }
+    return { a, b, opts };
+}
+
+/** Where a named build stands: explicit "x y z", else what she recorded when she made it. */
+function resolveBuildOrigin(bot, name, origin) {
+    const n = String(name || '').trim();
+    if (!n) return { error: 'Which build? Give me a schematic name — !listSchematics shows them.' };
+    if (!existsSync(schematic.schematicPath(n))) {
+        return { error: `No saved build called "${n}". !listSchematics shows what I have.` };
+    }
+    const parts = String(origin || '').trim().split(/[\s,]+/).map(Number).filter(v => !Number.isNaN(v));
+    if (parts.length >= 3) return { origin: { x: parts[0], y: parts[1], z: parts[2] } };
+    const known = buildsense.loadKnownBuilds?.('UwU') || {};
+    const k = known[n];
+    if (k?.origin) return { origin: k.origin };
+    const s = known[n];
+    if (s?.x != null) return { origin: { x: s.x, y: s.y, z: s.z } };
+    return { error: `I have "${n}" saved but not where it stands. Give me "x y z" and I will work on it.` };
+}
+
+/** Turn the missing cells of a diff into a placeable schematic at world coords. */
+function repairSchematic(diff, origin) {
+    const blocks = diff.fix.map(b => ({
+        x: b.worldX, y: b.worldY, z: b.worldZ, name: b.name,
+        _w: true,
+    }));
+    const ox = Math.min(...blocks.map(b => b.x));
+    const oy = Math.min(...blocks.map(b => b.y));
+    const oz = Math.min(...blocks.map(b => b.z));
+    return {
+        name: 'repair',
+        size: {
+            x: Math.max(...blocks.map(b => b.x)) - ox + 1,
+            y: Math.max(...blocks.map(b => b.y)) - oy + 1,
+            z: Math.max(...blocks.map(b => b.z)) - oz + 1,
+        },
+        origin: { x: ox, y: oy, z: oz },
+        blocks: blocks.map(b => ({ x: b.x - ox, y: b.y - oy, z: b.z - oz, name: b.name })),
+    };
+}
+
+/** Honest close-out for every landwork command: what she did, and what is still wrong. */
+function reportPlaced(bot, label, summary, sch) {
+    const r = sch.report || {};
+    const bits = [`${label}: placed ${summary.placed}/${summary.of}`];
+    if (summary.chunks > 1) bits.push(`in ${summary.chunks} chunks`);
+    if (summary.cleared) bits.push(`cleared ${summary.cleared} plants`);
+    if (r.gapSpans?.length) bits.push(`${r.gapSpans.length} gap span(s) bridged`);
+    if (r.fills) bits.push(`${r.fills} fill blocks`);
+    if (r.unloaded) bits.push(`${r.unloaded} unreadable columns — walk there and I will finish it`);
+    bits.push(summary.faults ? `${summary.faults} still not right` : 'all placed and verified');
+    skills.log(bot, bits.join(', '));
 }
 
 export const actionsList = [
@@ -983,6 +1096,198 @@ export const actionsList = [
                 return;
             }
             skills.log(bot, `No schematic named "${target}" and that is not a block — try !listSchematics or a block name.`);
+        }, false, 15)
+    },
+    {
+        name: '!buildRoad',
+        description: 'Make a road or path that follows the GROUND: it rides the surface, steps up hills, throws a plank deck with posts across any gap, ravine or stream it meets, and clears the vegetation along it. Give a direction and length (e.g. "north 40"), or x1 z1 x2 z2 for an exact line. Width 1 is a trail, 3 is a road. This is how you make roads across the land, not houses.',
+        params: {
+            'spec': { type: 'string', description: 'Where: a direction + length ("north 40", "east 60"), or four numbers "x1 z1 x2 z2". Optional: "width=3 cobble".' },
+        },
+        perform: runAsAction(async (agent, spec) => {
+            const bot = agent.bot;
+            const target = parseLandSpec(bot, spec);
+            if (target.error) { skills.log(bot, target.error); return; }
+            const g = landwork.terrainSampler(bot);
+            const sch = landwork.road(g, target.a, target.b, target.opts);
+            if (sch.report.error) { skills.log(bot, `Cannot plan that road: ${sch.report.error}`); return; }
+            skills.log(bot, `Road: ${landwork.describe(sch)}, ${sch.blocks.length} blocks. Checking what I can actually get...`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Road cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'road', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!buildBridge',
+        description: 'Span a gap: deck at the higher bank, joists, posts driven down to whatever is below, and a railing. Give a direction and span ("north 12") or x1 z1 x2 z2. Use this for a river, a ravine, a crevasse — anywhere a road would fall in.',
+        params: {
+            'spec': { type: 'string', description: 'Where: direction + span ("north 12"), or four numbers "x1 z1 x2 z2". Optional: "width=3".' },
+        },
+        perform: runAsAction(async (agent, spec) => {
+            const bot = agent.bot;
+            const target = parseLandSpec(bot, spec);
+            if (target.error) { skills.log(bot, target.error); return; }
+            const g = landwork.terrainSampler(bot);
+            const sch = landwork.bridge(g, target.a, target.b, target.opts);
+            if (sch.report.error) { skills.log(bot, `Cannot span that: ${sch.report.error}`); return; }
+            if (!sch.report.gap) skills.log(bot, `No real gap between those points (ground all the way) — I am building the span anyway.`);
+            skills.log(bot, `Bridge: ${landwork.describe(sch)}, ${sch.blocks.length} blocks.`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Bridge cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'bridge', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!buildWall',
+        description: 'A retaining wall along a line of ground — it finds where the land falls away and stacks stone to hold the higher side up. Terraces, hillside shelves, stopping a slope from washing into the path. spec: direction + length, or x1 z1 x2 z2.',
+        params: {
+            'spec': { type: 'string', description: 'Where: direction + length ("north 20"), or four numbers "x1 z1 x2 z2". Optional: "height=4".' },
+        },
+        perform: runAsAction(async (agent, spec) => {
+            const bot = agent.bot;
+            const target = parseLandSpec(bot, spec);
+            if (target.error) { skills.log(bot, target.error); return; }
+            const g = landwork.terrainSampler(bot);
+            const sch = landwork.retainingWall(g, target.a, target.b, target.opts);
+            if (!sch.blocks.length) { skills.log(bot, `No drop along that line — nothing to hold up. Try a line that crosses the slope.`); return; }
+            skills.log(bot, `Retaining wall: ${landwork.describe(sch)}, ${sch.blocks.length} blocks.`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Wall cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'wall', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!buildStairs',
+        description: 'Cut a supported stair run up or down a slope between two points, so a road can climb instead of dead-ending. spec: direction + length, or x1 z1 x2 z2.',
+        params: {
+            'spec': { type: 'string', description: 'Where: direction + length ("north 12"), or four numbers "x1 z1 x2 z2".' },
+        },
+        perform: runAsAction(async (agent, spec) => {
+            const bot = agent.bot;
+            const target = parseLandSpec(bot, spec);
+            if (target.error) { skills.log(bot, target.error); return; }
+            const g = landwork.terrainSampler(bot);
+            const sch = landwork.stairs(g, target.a, target.b, target.opts);
+            if (sch.report.error) { skills.log(bot, `Cannot cut stairs: ${sch.report.error}`); return; }
+            skills.log(bot, `Stairs: ${landwork.describe(sch)}, ${sch.blocks.length} blocks.`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Stair cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'stairs', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!levelGround',
+        description: 'Level a square of ground to its MEDIAN height — fills the dips, and REPORTS the high cells it would have to cut rather than silently bulldozing them. Give size (default 7) and optional x z. This is the first thing to do before a garden, a yard, or a building site.',
+        params: {
+            'size': { type: 'int', description: 'Width/depth of the square in blocks (default 7).', default: 7 },
+            'coords': { type: 'string', description: 'Optional "x z" centre. Default: where you stand.' },
+        },
+        perform: runAsAction(async (agent, size, coords) => {
+            const bot = agent.bot;
+            const n = Math.max(3, Math.min(31, size || 7));
+            let centre = { x: bot.entity.position.x, z: bot.entity.position.z };
+            const parts = String(coords || '').trim().split(/[\s,]+/).map(Number).filter(n => !Number.isNaN(n));
+            if (parts.length >= 2) centre = { x: parts[0], z: parts[1] };
+            const g = landwork.terrainSampler(bot);
+            const sch = landwork.level(g, centre, n, n);
+            if (sch.report.error) { skills.log(bot, `Cannot level that: ${sch.report.error}`); return; }
+            skills.log(bot, `Levelling ${n}x${n} to y${sch.report.targetY}: ${landwork.describe(sch)}.`);
+            if (sch.report.cuts.length) skills.log(bot, `${sch.report.cut} blocks stand above y${sch.report.targetY} — I will NOT dig those out on my own; say the word and I will.`);
+            if (!sch.blocks.length) { skills.log(bot, 'Nothing to fill.'); return; }
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Levelling cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'levelled ground', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!buildGarden',
+        description: 'Make a garden on the FLATTEST loaded ground near you — it scans candidate squares and takes the one with the smallest height spread, then beds it, paths it, fences it and puts water on one edge. Give size (default 7) and how far to look (default 24). Never plants a garden on a slope just because you asked.',
+        params: {
+            'size': { type: 'int', description: 'Garden width in blocks (default 7).', default: 7 },
+            'search': { type: 'int', description: 'How far to look for a flat site (default 24).', default: 24 },
+        },
+        perform: runAsAction(async (agent, size, search) => {
+            const bot = agent.bot;
+            const n = Math.max(3, Math.min(21, size || 7));
+            let biome = 'plains';
+            try { biome = (world.getBiomeName(bot) || 'plains').toLowerCase(); } catch (_) {}
+            const g = landwork.terrainSampler(bot);
+            const here = { x: bot.entity.position.x, z: bot.entity.position.z };
+            const sch = landwork.garden(g, here, { size: n, searchRadius: Math.max(6, search || 24), biome });
+            if (sch.report.error) { skills.log(bot, `No garden site: ${sch.report.error}`); return; }
+            const s = sch.report.site;
+            skills.log(bot, `Garden at ${s.x},${s.z} (y${s.y}, spread ${sch.report.spread}): ${sch.report.beds} beds.`);
+            if (sch.report.spread > 2) skills.log(bot, `Nothing truly flat within range — best I found still varies ${sch.report.spread} blocks.`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Garden cost'));
+            // no originOverride: the generator already builds around the site it
+            // surveyed, so shifting it by that site moves the beds off the ground
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'garden', summary, sch);
+        }, false, 15)
+    },
+    {
+        name: '!fixBuild',
+        description: 'Repair a build that is already standing: compare every block of a saved schematic against the world and place ONLY what is missing — the griefed bits, the blown-up bits, the blocks a creeper took. Wrong blocks and stray blocks are REPORTED, never silently removed. Give a schematic name and optional x y z of where it stands. This is how you mend your own work.',
+        params: {
+            'name': { type: 'string', description: 'Saved schematic name (see !listSchematics), or "blueprint" for the last thing you captured.' },
+            'origin': { type: 'string', description: 'Optional "x y z" where the build stands. Default: nearest known build.' },
+        },
+        perform: runAsAction(async (agent, name, origin) => {
+            const bot = agent.bot;
+            const target = resolveBuildOrigin(bot, name, origin);
+            if (target.error) { skills.log(bot, target.error); return; }
+            let sch;
+            try { sch = await schematic.loadSchematic(schematic.schematicPath(name)); }
+            catch (e) { skills.log(bot, `Could not load "${name}": ${e.message}`); return; }
+            const g = landwork.terrainSampler(bot);
+            const diff = landwork.diffAgainstWorld(sch, g.get, target.origin);
+            skills.log(bot, `"${name}": ${diff.missing.length} missing, ${diff.wrong.length} wrong block, ${diff.extra.length} stray.`);
+            if (!diff.missing.length) { skills.log(bot, `Nothing missing — it is all still standing.`); return; }
+            // build a repair schematic of just the missing cells, in world space
+            const fixSch = repairSchematic(diff, target.origin);
+            const { plan } = landwork.planGenerated(bot, fixSch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Repair cost'));
+            const summary = await landwork.placeGenerated(bot, fixSch);
+            reportPlaced(bot, `${name} repaired`, summary, fixSch);
+            if (diff.wrong.length) skills.log(bot, `Also ${diff.wrong.length} wrong blocks (first: ${diff.wrong[0].expected} where ${diff.wrong[0].found} stands) — say so and I will swap them.`);
+            if (diff.extra.length) skills.log(bot, `And ${diff.extra.length} stray blocks sitting where nothing should be — I will not break those unasked.`);
+        }, false, 15)
+    },
+    {
+        name: '!extendBuild',
+        description: 'Carry on building: attach more of the same thing to a build that already exists, east/west/north/south, skipping every cell the old build already occupies. Give a saved schematic name and a direction; it regenerates the new section only — the existing work is never re-placed.',
+        params: {
+            'name': { type: 'string', description: 'Saved schematic name to extend (see !listSchematics).' },
+            'dir': { type: 'string', description: 'Which way: east / west / north / south / up.' },
+            'origin': { type: 'string', description: 'Optional "x y z" where the build stands.' },
+        },
+        perform: runAsAction(async (agent, name, dir, origin) => {
+            const bot = agent.bot;
+            const target = resolveBuildOrigin(bot, name, origin);
+            if (target.error) { skills.log(bot, target.error); return; }
+            let sch;
+            try { sch = await schematic.loadSchematic(schematic.schematicPath(name)); }
+            catch (e) { skills.log(bot, `Could not load "${name}": ${e.message}`); return; }
+            const d = String(dir || 'east').toLowerCase();
+            if (!['east', 'west', 'north', 'south', 'up'].includes(d)) { skills.log(bot, 'Direction must be east, west, north, south or up.'); return; }
+            const g = landwork.terrainSampler(bot);
+            const extended = landwork.extend(sch, target.origin,
+                (a, b) => (sch.name === 'road' || /road|path/i.test(sch.name))
+                    ? landwork.road(g, a, b, { width: sch.size.z })
+                    : landwork.retainingWall(g, a, b, {}),
+                { dir: d, length: sch.size.x });
+            if (!extended.blocks.length) { skills.log(bot, 'Nothing to add there — check the direction and that the ground is loaded.'); return; }
+            skills.log(bot, `Extending "${name}" ${d}: ${extended.blocks.length} new blocks (${landwork.describe(extended)}).`);
+            const { plan } = landwork.planGenerated(bot, extended);
+            skills.log(bot, buildsense.formatPlan(plan, 'Extension cost'));
+            const summary = await landwork.placeGenerated(bot, extended);
+            reportPlaced(bot, `${name} extended`, summary, extended);
         }, false, 15)
     },
     {
