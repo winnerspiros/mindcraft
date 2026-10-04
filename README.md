@@ -10,6 +10,11 @@ fight, and — if you ignore her — get a *little* stabby. She's powered by an 
        (maybe too much)
 ```
 
+> 🧩 **Branch guide — you are on `26.2`.** This is the last **Minecraft 26.2**-compatible state,
+> kept for reference and rollback. The current line is `main`, which targets **26.3** and has
+> ~68 further commands (mining, traversal, guard mode, resumable builds, and the 26.3
+> RCON-position/tablist navigation fixes). Use `main` for anything new.
+
 ---
 
 ## ✨ What she can do
@@ -124,6 +129,40 @@ Mineflayer to the **Complexity-ML 26.2** fork and ships every missing piece:
 servers), plus behaviour toggles. Defaults point at `127.0.0.1:25565` (a local server).
 
 > 🔑 `keys.json` is gitignored — never commit it. (`keys.example.json` is the safe template.)
+
+---
+
+## 🎛️ Supported model APIs
+
+Set the matching key in `keys.json`. The backend is chosen by the `model` field in `uwu.json`.
+
+| API | Config variable | Docs |
+|-----|-----------------|------|
+| `openai` | `OPENAI_API_KEY` | [docs](https://platform.openai.com/docs/models) |
+| `google` (Gemini) | `GEMINI_API_KEY` | [docs](https://ai.google.dev/gemini-api/docs/models/gemini) |
+| `anthropic` | `ANTHROPIC_API_KEY` | [docs](https://docs.anthropic.com/claude/docs/models-overview) |
+| `xai` | `XAI_API_KEY` | [docs](https://docs.x.ai/docs) |
+| `deepseek` | `DEEPSEEK_API_KEY` | [docs](https://api-docs.deepseek.com/) |
+| `mistral` | `MISTRAL_API_KEY` | [docs](https://docs.mistral.ai/getting-started/models/) |
+| `replicate` | `REPLICATE_API_KEY` | [docs](https://replicate.com/collections/language-models) |
+| `groq` *(not grok)* | `GROQCLOUD_API_KEY` | [docs](https://console.groq.com/docs/models) |
+| `huggingface` | `HUGGINGFACE_API_KEY` | [docs](https://huggingface.co/models) |
+| `novita` | `NOVITA_API_KEY` | [docs](https://novita.ai/model-api/product/llm-api) |
+| `openrouter` | `OPENROUTER_API_KEY` | [docs](https://openrouter.ai/models) |
+| `hyperbolic` | `HYPERBOLIC_API_KEY` | [docs](https://docs.hyperbolic.xyz/docs/getting-started) |
+| `cerebras` | `CEREBRAS_API_KEY` | [docs](https://inference-docs.cerebras.ai/introduction) |
+| `mercury` | `MERCURY_API_KEY` | [docs](https://www.inceptionlabs.ai/) |
+| `qwen` | `QWEN_API_KEY` | [Intl.](https://www.alibabacloud.com/help/en/model-studio/developer-reference/use-qwen-by-calling-api)/[cn](https://help.aliyun.com/zh/model-studio/getting-started/models) |
+| `andy` | `ANDY_API_KEY` | (our finetuned models) |
+
+**Local / self-hosted** — no API key needed:
+
+| API | Notes |
+|-----|-------|
+| `ollama` | [docs](https://ollama.com/library) — also how you run our finetuned models |
+| `vllm` | self-hosted |
+| `lmstudio` | local LM Studio server |
+| `azure` | Azure OpenAI |
 
 ---
 
