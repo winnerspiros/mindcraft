@@ -20,20 +20,28 @@ const skillsPath = resolve(here, '../src/agent/library/skills.js')
 const testPath = resolve(here, '../tests/bow_shot_truth.test.mjs')
 const original = readFileSync(skillsPath, 'utf8')
 
-// The mutation: both sides of the arrowSpent comparison come from the client.
-const MUTANT = `let arrowsBefore = useServerCount ? serverArrows.total : countArrows(bot);
-    if (arrowsBefore === null) arrowsBefore = countArrows(bot);`
-const MUTATED = `let arrowsBefore = countArrows(bot);`
-
-const secondMutation = `let arrowsAfter = countArrows(bot);
+// Each mutant is one half of the same defect: put a side of the arrowSpent
+// comparison back on the broken client count.
+const mutants = [
+  {
+    name: 'arrowsBefore comes from the client, not the server',
+    from: `let arrowsBefore = useServerCount ? serverArrows.total : countArrows(bot);
+    if (arrowsBefore === null) arrowsBefore = countArrows(bot);`,
+    to: `let arrowsBefore = countArrows(bot);`,
+  },
+  {
+    name: 'arrowsAfter comes from the client, not the server',
+    from: `let arrowsAfter = countArrows(bot);
         if (useServerCount) {
             try {
                 const { rconCountAll } = await import('../../utils/rcon.js');
                 const s = await rconCountAll(bot.username, 'arrow');
                 if (s) arrowsAfter = s.total;
             } catch (_) {}
-        }`
-const secondReplaced = `let arrowsAfter = countArrows(bot);`
+        }`,
+    to: `let arrowsAfter = countArrows(bot);`,
+  },
+]
 
 const run = () => {
   try {
@@ -43,11 +51,6 @@ const run = () => {
     return { code: e.status ?? 1, out: (e.stdout || '') + (e.stderr || '') }
   }
 }
-
-const mutants = [
-  { name: 'arrowsBefore comes from the client, not the server', from: MUTANT, to: MUTATED },
-  { name: 'arrowsAfter comes from the client, not the server', from: secondMutation, to: secondReplaced },
-]
 
 let allBite = true
 try {
@@ -69,15 +72,11 @@ try {
     }
     writeFileSync(skillsPath, original.replace(m.from, m.to))
     const r = run()
-    const fails = (r.out.match(/^NOT OK/gm) || []).length
-    const bites = r.code !== 0
-    console.log(`\n${bites ? 'BITES' : 'DOES NOT BITE'}: ${m.name}`)
-    console.log(`  exit ${r.code}, ${fails} failing check(s)`)
-    if (bites) {
-      for (const line of r.out.split('\n').filter(l => /^NOT OK/.test(l))) console.log('  ' + line)
-    } else {
-      allBite = false
-    }
+    const failing = r.out.split('\n').filter(l => /^NOT OK/.test(l))
+    console.log(`\n${r.code !== 0 ? 'BITES' : 'DOES NOT BITE'}: ${m.name}`)
+    console.log(`  exit ${r.code}, ${failing.length} failing check(s)`)
+    for (const line of failing) console.log('  ' + line)
+    if (r.code === 0) allBite = false
     writeFileSync(skillsPath, original)
   }
 } finally {

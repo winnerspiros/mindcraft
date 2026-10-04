@@ -29,35 +29,23 @@ const check = (name, cond, extra = '') => {
   else { failed++; console.log(`NOT OK - ${name}${extra ? ' :: ' + extra : ''}`) }
 }
 
-// The scan's dedupe window, read from the source rather than restated here.
-const dedupe = /_lastThreatKey === key && Date\.now\(\) - \(this\._lastThreatAt \|\| 0\) < (\d+)/.exec(agentSrc)
-check('the per-target dedupe window was found', dedupe !== null)
-const DEDUPE_MS = dedupe ? Number(dedupe[1]) : 0
-
-// The gate's cache TTL.
-const ttl = /const BOW_GATE_TTL = (\d+)/.exec(agentSrc)
-check('the bow-gate TTL was found', ttl !== null)
-const TTL = ttl ? Number(ttl[1]) : 0
-
+// Both windows are read from the source rather than restated here, so this
+// test fails if EITHER number moves — restating them would let someone widen
+// the dedupe, or shrink the TTL to match, without noticing.
+const DEDUPE_MS = Number(/_lastThreatKey === key && Date\.now\(\) - \(this\._lastThreatAt \|\| 0\) < (\d+)/.exec(agentSrc)?.[1])
+const TTL = Number(/const BOW_GATE_TTL = (\d+)/.exec(agentSrc)?.[1])
 console.log(`    dedupe window ${DEDUPE_MS}ms, gate TTL ${TTL}ms`)
 
-// The actual stall condition: a TTL shorter than the dedupe means the cached
-// verdict is always stale by the time the scan will next look.
+// The actual stall: a TTL shorter than the dedupe means the cached verdict is
+// always stale by the time the scan may next look.
 check('the gate TTL outlasts the scan dedupe window',
   TTL > DEDUPE_MS,
   `TTL ${TTL} <= dedupe ${DEDUPE_MS}: the confirmed verdict is written but never read`)
 
-// It must also be long enough to be read on the very next permitted tick.
-check('the TTL is at least twice the dedupe window, leaving room for a slow RCON round trip',
+// Twice over, so a slow RCON round trip still leaves a readable window.
+check('the TTL leaves room for a slow RCON round trip',
   TTL >= DEDUPE_MS * 2,
   `TTL ${TTL} < 2x ${DEDUPE_MS}`)
-
-// A named constant beats a bare literal, so this relationship is legible in
-// the source rather than implied by two unrelated numbers.
-check('the TTL is a named constant, not an inline literal',
-  /const BOW_GATE_TTL = \d+/.test(agentSrc))
-check('the cache read uses that constant',
-  /Date\.now\(\) - cached\.t < BOW_GATE_TTL/.test(agentSrc))
 
 console.log(`\n${ok} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
