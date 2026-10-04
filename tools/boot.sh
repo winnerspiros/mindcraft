@@ -49,5 +49,32 @@ if [ -f tools/check-26-3-support.mjs ]; then
     fi
 fi
 
+# 3. Wait for the game server to accept connections BEFORE starting.
+#
+# WHY: without this she connects while the server is still booting (this box takes
+# ~36-120s) and dies on a refused connection. Each attempt burned a systemd restart
+# slot, and 5 attempts inside StartLimitIntervalSec parked the service in `failed`
+# -- indistinguishable from "the bot doesn't auto-connect". Waiting here converts a
+# wasted crash-restart into a single clean start, which is what lets the (now much
+# wider) start limiter do its real job of catching genuine faults.
+#
+# Deliberately bounded: if the server never opens the port, we start anyway and let
+# mineflayer + systemd handle it. This wait must never become a reason the bot
+# refuses to boot -- that would convert "flaky" into "permanently down".
+log "waiting for minecraft server on 127.0.0.1:25565 ..."
+server_up=0
+for _ in $(seq 1 60); do
+    if (exec 3<>/dev/tcp/127.0.0.1/25565) 2>/dev/null; then
+        server_up=1
+        break
+    fi
+    sleep 2
+done
+if [ "$server_up" -eq 1 ]; then
+    log "server is accepting connections"
+else
+    log "WARNING: server not up after 120s; starting anyway (systemd will retry)"
+fi
+
 log "starting uwu-bot"
 exec /home/ubuntu/.bun/bin/bun standalone.js
