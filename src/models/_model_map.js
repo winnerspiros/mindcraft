@@ -19,7 +19,6 @@ const PREFIX_FILE = {
     anthropic: 'claude.js',
     deepseek: 'deepseek.js',
     google: 'gemini.js',
-    glhf: 'glhf.js',
     openai: 'gpt.js',
     xai: 'grok.js',
     groq: 'groq.js',
