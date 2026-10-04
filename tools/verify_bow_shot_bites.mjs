@@ -35,11 +35,18 @@ const mutants = [
         if (useServerCount) {
             try {
                 const { rconCountAll } = await import('../../utils/rcon.js');
-                const s = await rconCountAll(bot.username, 'arrow');
-                if (s) arrowsAfter = s.total;
+                arrowsAfter = await awaitArrowDrop(rconCountAll, bot.username, arrowsBefore, countArrows(bot));
             } catch (_) {}
         }`,
     to: `let arrowsAfter = countArrows(bot);`,
+  },
+  {
+    // The third layer: after the count moved to the server, it was still read
+    // exactly once, so an arrow whose projectile spawned a round trip late was
+    // reported as "no arrow was consumed" - the second arrow of every volley.
+    name: 'the after-count is polled instead of read once',
+    from: `arrowsAfter = await awaitArrowDrop(rconCountAll, bot.username, arrowsBefore, countArrows(bot));`,
+    to: `arrowsAfter = (await rconCountAll(bot.username, 'arrow')).total;`,
   },
 ]
 

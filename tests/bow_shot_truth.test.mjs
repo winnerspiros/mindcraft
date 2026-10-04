@@ -21,6 +21,10 @@
 // Server verdicts come from rcon.js's own setCountAllOverride seam, cleared in
 // finally. Stubbing the file on disk instead would have to satisfy every
 // export skills.js imports, and risks leaving a stub behind if the test dies.
+//
+// delay: how many polls the server keeps reporting the OLD count for before it
+// admits the drop. The real server decrements when the projectile spawns, a
+// round trip or two after the release returns, so delay > 0 is the live case.
 import { fileURLToPath } from 'url'
 import { dirname, resolve } from 'path'
 
@@ -65,13 +69,29 @@ const cases = [
     server: 64, afterDraw: 64, client: 10, expect: false },
   { name: 'a real server-side decrease is counted as a shot',
     server: 64, afterDraw: 63, client: 10, expect: true },
+  // The live symptom: the count has not settled yet when it is first read. A
+  // single read after the release saw the old value and reported "no arrow was
+  // consumed" for the second arrow of every volley.
+  { name: 'a shot still counts when the server admits the drop late',
+    server: 64, afterDraw: 63, delay: 2, client: 10, expect: true },
+  // ...and the poll cannot manufacture a hit: a count that never moves is a
+  // miss, however long it is polled.
+  { name: 'a count that never drops is still not a shot',
+    server: 64, afterDraw: 64, delay: 99, client: 10, expect: false },
   { name: 'an empty quiver refuses the draw',
     server: 0, afterDraw: 0, client: 10, expect: false, noDraw: true },
   { name: 'the client fallback is still reachable with no RCON',
     server: null, afterDraw: null, client: 64, clientAfter: 63, expect: true },
 ]
 
-const rconSays = (n) => setCountAllOverride(async () => ({ total: n, inv: n, worn: null, offhand: 0 }))
+// One shared counting override. `delay` is how many reads still report the old
+// count before the drop shows, which is what the spawn latency looks like.
+let pollsLeft = 0
+const rconSays = (before, after, delay = 0) => {
+  pollsLeft = delay
+  setCountAllOverride(async () => ({ total: pollsLeft-- > 0 ? before : after, inv: 0, worn: null, offhand: 0 }))
+}
+const rconBroken = () => setCountAllOverride(() => { throw new Error('rcon off') })
 
 try {
   for (const c of cases) {
@@ -86,12 +106,12 @@ try {
       activateItem: async () => { drew = true },
       deactivateItem: async () => {
         if (c.server === null) clientArrows = c.clientAfter
-        else rconSays(c.afterDraw)
+        else rconSays(c.server, c.afterDraw, c.delay || 0)
       },
       on: () => {},
     }
-    if (c.server === null) setCountAllOverride(() => { throw new Error('rcon off') })
-    else rconSays(c.server)
+    if (c.server === null) rconBroken()
+    else rconSays(c.server, c.server, 0)
 
     const fired = await shootBow(bot, target, 1, true)
     // noDraw: an empty quiver must be refused BEFORE activateItem, not

@@ -4321,6 +4321,33 @@ function arrowSpent(before, after) {
     return before !== null && after !== null && after < before;
 }
 
+// Poll the server arrow count until it drops below `before`, or the window
+// runs out. The server decrements the stack when the projectile spawns, which
+// is a round trip or two AFTER deactivateItem resolves, so one read taken
+// straight after the release still sees the old count. Bounded and short: an
+// arrow that truly never flew simply never moves the count, so it reports no
+// shot — the poll cannot manufacture a hit, it only waits out the latency.
+// `clientNow` is the fallback answer if RCON stops answering mid-poll.
+async function awaitArrowDrop(rconCountAll, username, before, clientNow) {
+    const POLLS = 6;
+    const GAP = 300;   // ~1.5s of tolerance: measured live, the decrement for a
+                       // released arrow landed LATER than a 600ms window could
+                       // wait (22->22, 20->20, 18->18 while the stack plainly
+                       // fell between volleys). A full charge is 1s, so waiting
+                       // up to 1.5s costs nothing that has not already been
+                       // spent.
+    let latest = null;
+    for (let i = 0; i < POLLS; i++) {
+        if (i > 0) await new Promise(r => setTimeout(r, GAP));
+        try {
+            const s = await rconCountAll(username, 'arrow');
+            if (s) latest = s.total;
+        } catch (_) { break; }   // RCON died mid-poll: fall through to what we have
+        if (latest !== null && before !== null && latest < before) return latest;
+    }
+    return latest === null ? clientNow : latest;
+}
+
 // Eat one item of food right now, without asking autoEat and without the model.
 //
 // Deciding WHAT to eat is decideEat()'s job (pure, state-only). This is the
@@ -4557,6 +4584,32 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         useServerCount = true;
     } catch (_) { /* survival server / rcon off: trust the client */ }
 
+    // A draw takes ~1.2s end to end (equip, aim, charge, release). Without a claim
+    // the hand is stolen out from under it: measured live, the volley drew while
+    // she was holding cooked_beef, cobblestone and diamond_pickaxe in turn, and
+    // reported fired=false every time while the arrows did fly from the ones
+    // that landed. The eater already uses _eating/_eatingHand for exactly this
+    // (see claimHand); tag the draw the same way so other equips queue behind
+    // it, and release in a finally so a wedged claim cannot block mining,
+    // eating or gear-up for good.
+    const prevClaim = bot._eating;
+    const prevHand = bot._eatingHand;
+    bot._eating = true;
+    bot._eatingHand = bow;
+    bot._eatingStamp = Date.now();
+    try {
+        return await runVolley();
+    } finally {
+        // Restore rather than clear: a chew already in flight outranks us, and
+        // clobbering its claim would leave it wedged with no way back.
+        bot._eating = prevClaim;
+        bot._eatingHand = prevHand;
+        if (prevClaim) bot._eatingStamp = Date.now();
+    }
+
+    // The volley itself. Split out so the hand claim above can wrap it in a
+    // single try/finally instead of every early return having to remember.
+    async function runVolley() {
     await bot.equip(bow, 'hand');
 
     let fired = 0;
@@ -4567,9 +4620,7 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     let arrowsBefore = useServerCount ? serverArrows.total : countArrows(bot);
     if (arrowsBefore === null) arrowsBefore = countArrows(bot);
     for (let i = 0; i < shots; i++) {
-        if (bot.interrupt_code) break;
         const pos = entity.position;
-        if (!pos) break;
         const dist = bot.entity.position.distanceTo(pos);
         // First arrow: hawkeye solved trajectory (gravity + velocity + block
         // check) when the target is far enough for the solver to beat flat
@@ -4625,12 +4676,20 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         // broken on 26.3 (it stayed at 64 through every draw), so with RCON the
         // server stack is read before AND after the draw — a decrease there is
         // the only thing that can say an arrow flew.
+        //
+        // The read is polled, not taken once. The server decrements the stack
+        // when the projectile actually spawns, which lands a round trip AFTER
+        // deactivateItem returns — so a single read after the release still
+        // showed the old count. Measured live: the first arrow of a volley
+        // counted and the second reported "no arrow was consumed" every time,
+        // even though both flew and the stack had dropped by two. Polling for a
+        // short, bounded window covers the spawn latency; an arrow that truly
+        // never flew still fails, because the count simply never moves.
         let arrowsAfter = countArrows(bot);
         if (useServerCount) {
             try {
                 const { rconCountAll } = await import('../../utils/rcon.js');
-                const s = await rconCountAll(bot.username, 'arrow');
-                if (s) arrowsAfter = s.total;
+                arrowsAfter = await awaitArrowDrop(rconCountAll, bot.username, arrowsBefore, countArrows(bot));
             } catch (_) {}
         }
         const spent = arrowSpent(arrowsBefore, arrowsAfter);
@@ -4641,6 +4700,7 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     }
     log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);
     return fired > 0;
+    }   // runVolley
 }
 
 export async function throwTrident(bot, target, count=1) {
