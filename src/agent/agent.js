@@ -2369,7 +2369,26 @@ export class Agent {
                     bot: this.bot,
                     entities: Object.values(this.bot.entities || {}),
                 });
-                if (r.action === 'ignore') return;
+                if (r.action === 'ignore') {
+                    // Nothing left to deal with: drop the fight state so the
+                    // movement-rescue modes (unstuck) come back online. Setting
+                    // _threatTargetName without ever clearing it left `unstuck`
+                    // disabled for the rest of the process after the first
+                    // hostile appeared — the exact opposite of the fix it was
+                    // part of. The ignore branch runs every scan tick, so this
+                    // clears within a second of the threat being gone.
+                    this._threatTargetName = null;
+                    this._threatBowSpentKey = null;
+                    return;
+                }
+                // Remember WHAT she is dealing with, so movement-rescue modes
+                // can stand down for the duration (see unstuck in modes.js:
+                // its stillness watchdog was preempting every melee approach
+                // and one pillager at 6 blocks survived 40 minutes). Cleared
+                // as soon as the fight resolves below.
+                if (r.action === 'fight' || r.action === 'avoid') {
+                    this._threatTargetName = r.target ? (r.target.name || r.target.username || 'mob') : null;
+                }
                 // Do not re-aim at the same threat every tick: that would restart
                 // the goal forever and she would never finish dealing with it.
                 const key = r.target ? `${r.target.id}:${r.action}` : r.action;
@@ -2409,10 +2428,29 @@ export class Agent {
                         console.log(`[threat] scan: SHOOTING ${r.target.name || 'mob'} at ${gap} blocks`);
                         this.self_prompter.start(r.goal);
                         skills.shootBow(this.bot, r.target, 2, true)
-                            .then((fired) => console.log(`[threat] scan shot result: fired=${fired}`))
-                            .catch((e) => console.warn('[threat] scan shot failed:', e?.message));
+                            .then((fired) => {
+                                console.log(`[threat] scan shot result: fired=${fired}`);
+                                // fired=true means an arrow LEFT THE BOW, not
+                                // that the mob is dead. Measured live 12:0x: the
+                                // scan logged fired=true 32 times in 20 minutes
+                                // against one pillager whose server-side Health
+                                // stayed 20.0, and she holds no arrows at all —
+                                // arrowSpent() read a stale client stack, so
+                                // "fired" was truthy while nothing ever flew.
+                                // Once the bow path has spent its volley, hand
+                                // the target back to melee on the NEXT scan tick
+                                // instead of re-shooting forever.
+                                if (!fired) this._threatBowSpentKey = key;
+                            })
+                            .catch((e) => {
+                                console.warn('[threat] scan shot failed:', e?.message);
+                                this._threatBowSpentKey = key;
+                            });
                         return;
                     }
+                    // Bow drew but landed nothing: take the sword next tick
+                    // instead of re-aiming at the same mob with the same arrows.
+                    if (this._threatBowSpentKey === key) this._threatBowSpentKey = null;
                     if (this._fightInFlight) return;
                     this._fightInFlight = true;
                     console.log(`[threat] scan: FIGHTING ${r.target.name || 'mob'} @ ${r.target.position?.toString?.() || '?'}`);
@@ -2991,12 +3029,73 @@ export class Agent {
         try {
             const items = this.bot?.inventory?.items?.() || [];
             const hasBow = items.some(i => i.name === 'bow');
-            const hasArrow = items.some(i => /^(arrow|spectral_arrow|tipped_arrow)$/.test(i.name));
-            if (!hasBow || !hasArrow) return false;
-            // Only worth it if it saves her walking in: inside sword range the
-            // melee path is faster and does not risk wasting an arrow.
-            const d = this.bot.entity.position.distanceTo(entity.position);
-            return d > MELEE_RANGE;
+            const arrowCount = items
+                .filter(i => /^(arrow|spectral_arrow|tipped_arrow)$/.test(i.name))
+                .reduce((n, i) => n + (i.count || 0), 0);
+            // ONLY WORTH IT IF SHE HAS ARROWS TO SPEND (verified live 12:0x):
+            // the client inventory said bow+arrows, the SERVER said bow and
+            // zero arrows, and the scan logged "SHOOTING pillager" then
+            // fired=true 32 times against a mob whose server-side Health never
+            // moved off 20.0. Drawing an empty bow consumes nothing and flies
+            // nothing, so this gate has to read the count, not just the bow.
+            //
+            // 26.3 client-side Slot decode is broken and reads permanently
+            // empty or stale, so an RCON read is the arbiter when it is
+            // available. It is async by nature, so the cached verdict is
+            // reused for a few seconds - a fight decision does not need to be
+            // tick-fresh, and this function is called from a sync scan.
+            // Cache on the target NAME, not entity.id: a flying mob (phantom) is
+            // re-spawned server-side constantly, so its entity.id changes EVERY
+            // tick and an id-keyed cache never hits. The first live run of the
+            // confirmed gate logged "bow is live" eight times and never once
+            // reached a SHOOTING line, because each tick started a fresh
+            // unconfirmed gate against a brand-new id. A name is stable for the
+            // whole engagement, which is exactly the lifetime that matters.
+            const cacheKey = entity?.name || 'mob';
+            const cached = this._bowForCache;
+            const setVerdict = (v, pending) => {
+                this._bowForCache = pending
+                    ? { t: Date.now(), key: cacheKey, v, pending: true }
+                    : { t: Date.now(), key: cacheKey, v };
+            };
+            if (cached && Date.now() - cached.t < 3000 && cached.key === cacheKey) {
+                return cached.v;
+            }
+            const gate = (arrows, serverBows) => {
+                // Only worth it if it saves her walking in: inside sword range
+                // the melee path is faster and does not risk wasting an arrow.
+                let d;
+                try { d = this.bot.entity.position.distanceTo(entity.position); } catch (_) { return false; }
+                const bows = serverBows === undefined ? hasBow : !!serverBows;
+                return bows && arrows > 0 && d > MELEE_RANGE;
+            };
+            // The RCON answer arrives a round trip later. Until it does, the
+            // client count is UNCONFIRMED, and an unconfirmed count must not be
+            // allowed to fire a volley: the first live run logged
+            // "[threat] bow check: server says 0 arrows" several scan ticks
+            // AFTER three "SHOOTING pillager" lines, because the sync gate
+            // still said yes for those whole ticks. So an unconfirmed gate
+            // answers false (go get the sword, which is always safe) and the
+            // confirmed verdict takes over on the next tick once RCON replies.
+            if (!gate(arrowCount)) { setVerdict(false); return false; }
+            setVerdict(false, true);
+            (async () => {
+                try {
+                    const { rconCountAll } = await import('../utils/rcon.js');
+                    const arrows = await rconCountAll(this.name, 'arrow');
+                    const bowN = await rconCountAll(this.name, 'bow');
+                    const real = gate(arrows.total, bowN.total > 0);
+                    setVerdict(real);
+                    console.log(real
+                        ? `[threat] bow check: server says ${arrows.total} arrows — bow is live.`
+                        : `[threat] bow check: server says ${arrows.total} arrows / ${bowN.total} bows — switching to melee.`);
+                } catch (_) {
+                    // RCON unreadable (survival server): the client count is
+                    // all there is, so let it stand rather than never shooting.
+                    setVerdict(true);
+                }
+            })();
+            return false; // unconfirmed this tick — melee now, bow next tick
         } catch (_) { return false; }
     }
 

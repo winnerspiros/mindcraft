@@ -372,6 +372,29 @@ const modes_list = [
             // followPlayer guard below, which is the case that protection was
             // actually written for.
             const _tracking = agent.isIdle() || _goalActive;
+            // A FIGHT IN PROGRESS IS NOT "STUCK" (verified live 12:0x, one
+            // pillager): the threat scan starts attackEntity, which spends up
+            // to 30s pathing to close from 6 blocks. `unstuck` saw her
+            // standing still, decided that was wedged, declared
+            // interrupts:['all'], and preempted the running attack — the log
+            // alternated
+            //   preempted running action "action:attack" for a reflex
+            //   Pathfinding stopped: The goal was changed before it could be completed!
+            //   [threat] scan fight result: done=false
+            // ~80 times in 40 minutes. The melee approach never got to land a
+            // single swing, the 8s-failed-nav-legs fuse never tripped, and one
+            // pillager sat at 6 blocks for the whole window. She was not
+            // stuck; the rescue was the thing interrupting her.
+            //
+            // So: while she is actively dealing with a threat, this mode must
+            // stay quiet. It is a rescue for wedged movement, and a fight's
+            // "standing still" is the approach leg, not a wedge. Fight-state
+            // lives on the agent (set by the threat scan), not on the mode, so
+            // the check is a plain read.
+            if (agent._fightInFlight || agent._threatTargetName) {
+                this._idleStill = 0;
+                return;
+            }
             if (_tracking) {
                 // IDLE-STILL WATCH (2026-09-27): the old code reset here, so an
                 // idle bot in a hole never accrued stuck_time and the rescue

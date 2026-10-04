@@ -4538,6 +4538,21 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         log(bot, 'No arrows to shoot with.');
         return false;
     }
+    // SERVER TRUTH OVERRIDES THE CLIENT COUNT (verified live 12:0x): the
+    // client stack said arrows existed, the server said zero, and the draw
+    // consumed nothing — 32 "fired=true" reports against a pillager whose
+    // server-side Health never moved. On 26.3 the client Slot decode is
+    // broken, so when RCON is available it is the arbiter and the client
+    // count is only a fallback. Silence is not failure: an unreadable RCON
+    // (survival server) leaves the client answer in place.
+    try {
+        const { rconCountAll } = await import('../../utils/rcon.js');
+        const serverArrows = await rconCountAll(bot.username, 'arrow');
+        if (serverArrows && serverArrows.total === 0) {
+            log(bot, 'Server says I have no arrows — the client count was stale.');
+            return false;
+        }
+    } catch (_) { /* survival server / rcon off: trust the client */ }
 
     await bot.equip(bow, 'hand');
 
@@ -8388,6 +8403,28 @@ export async function goToPlayer(bot, username, distance=3) {
             // loop needs the final target (11:21 crash: `t is not defined`
             // killed the leg AFTER a full walk, reporting failure).
             let lastT = rpos;
+            // OUT OF A CAVE FIRST (the "come to me" bug, verified 11:12 on a
+            // live server): if they're a long way ABOVE us — surface player,
+            // us underground — every leg below dies at "no path found after
+            // retries", because pathfinder cannot climb solid rock and the
+            // tunnel she is standing in has no walkable route up. She then
+            // reports "still 128 blocks short" forever while the player waits.
+            // Climb out of the cave (goToSurface tunnels up when the planner
+            // can't) BEFORE walking the horizontal legs. Only when she has
+            // actually gained height do the legs get a chance.
+            try {
+                const rposY0 = Number.isFinite(rpos.y) ? rpos.y : 0;
+                const upGap = rposY0 - bot.entity.position.y;
+                if (upGap > 4) {
+                    log(bot, `They're ${Math.round(upGap)} blocks above me — getting out of this cave first.`);
+                    const beforeY = Math.floor(bot.entity.position.y);
+                    try { await goToSurface(bot); } catch (_) {}
+                    const afterY = Math.floor(bot.entity.position.y);
+                    log(bot, afterY > beforeY
+                        ? `Climbed out: y=${beforeY} -> y=${afterY}. Now walking over.`
+                        : `Couldn't climb out (still y=${afterY}); walking anyway to see if a path exists.`);
+                }
+            } catch (_) {}
             for (let leg = 0; leg < 6; leg++) {
                 const fresh = await rconPlayerPos(username).catch(() => null);
                 const t = fresh || rpos;
@@ -8611,6 +8648,20 @@ export async function moveAway(bot, distance, mode='walk') {
 
     await goToGoal(bot, goal);
     let new_pos = bot.entity.position;
+    // REPORT THE MOVE HONESTLY (verified live 12:0x): the log read
+    //   Moved away from (-12, 32, 7) to (-12, 32, 7).
+    // — the same block, from the same flee, while `return true` told every
+    // caller she had escaped. goToGoal already fails honestly ("No path found
+    // after retries"), so swallowing that here re-introduced the lie one layer
+    // up: self_preservation logged a successful escape from a threat she was
+    // still standing in. A flee that did not increase the distance from where
+    // she started has not happened.
+    const gained = bot.entity.position.distanceTo(pos);
+    if (gained < 1.5) {
+        log(bot, `Didn't get away — still at ${new_pos.floored()} (gained ${gained.toFixed(1)} blocks).`);
+        try { bot.agent?.self_prompter?.reportNav(false); } catch (_) {}
+        return false;
+    }
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);
     return true;
 }
@@ -9764,6 +9815,89 @@ export async function digDown(bot, distance = 10) {
 // This is the "staircase" ascent: dig the block above her head, step up, repeat.
 // Bounded per call for the same reason digDown is - a 45s leg per block wedged
 // past the action timeout and caused suicides at 20:00/20:05 on 2026-09-26.
+// One walkable up-step, carved where she actually is. Replaces the
+// sneak+forward+jump move that gains 0 in a shaft she dug herself: the
+// staircase gives her a real block to walk ONTO, so the plain walk primitive
+// (which demonstrably works) does the lifting. Tries all four horizontal
+// directions, because the open one depends on the tunnel shape.
+async function staircaseStep(bot) {
+    if (bot.interrupt_code) return 0;
+    let best = null;
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        const here = bot.blockAt(bot.entity.position);
+        if (!here) return 0;
+        const head = bot.blockAt(here.position.offset(0, 1, 0));
+        if (!head) continue;
+        if (head.name === 'lava' || head.name === 'water' || head.name === 'bedrock') continue;
+        // The step block: the one at feet+up+forward.
+        const step = bot.blockAt(here.position.offset(dx, 1, dz));
+        if (!step) continue;
+        if (step.name === 'lava' || step.name === 'water' || step.name === 'bedrock') continue;
+        if (step.name === 'air' || step.name === 'cave_air') {
+            // nothing to stand on here, but the block under it must be
+            // diggable-free — leave these as fallback candidates
+            const under = bot.blockAt(here.position.offset(dx, 0, dz));
+            if (under && under.name !== 'lava' && under.name !== 'bedrock') best = best || [dx, dz];
+            continue;
+        }
+        best = [dx, dz];
+        break;
+    }
+    if (!best) { log(bot, `Can't carve a step — head blocked on all sides.`); return 0; }
+    const [dx, dz] = best;
+    const here2 = bot.blockAt(bot.entity.position);
+    if (!here2) return 0;
+    // 1) headroom
+    const head = bot.blockAt(here2.position.offset(0, 1, 0));
+    if (head && head.name !== 'air' && head.name !== 'cave_air') {
+        const ok = await breakBlockAt(bot, head.position.x, head.position.y, head.position.z, 12000);
+        if (!ok) return 0;
+    }
+    // 2) carve the step: clear feet+1 in front, then the block under it so
+    //    there is a face to climb, then stand on what we cleared.
+    const frontFeet = bot.blockAt(here2.position.offset(dx, 0, dz));
+    if (frontFeet && frontFeet.name !== 'air' && frontFeet.name !== 'cave_air') {
+        if (frontFeet.name === 'bedrock' || frontFeet.name === 'lava') return 0;
+        const ok = await breakBlockAt(bot, frontFeet.position.x, frontFeet.position.y, frontFeet.position.z, 12000);
+        if (!ok) return 0;
+    }
+    const above = bot.blockAt(here2.position.offset(dx, 1, dz));
+    if (above && above.name !== 'air' && above.name !== 'cave_air') {
+        if (above.name === 'bedrock' || above.name === 'lava') return 0;
+        const ok = await breakBlockAt(bot, above.position.x, above.position.y, above.position.z, 12000);
+        if (!ok) return 0;
+    }
+    try { await pickupNearbyItems(bot); } catch (_) {}
+    // 3) walk onto it. Sneak off (would edge us off the step), forward held
+    //    until Y actually changes.
+    const yBefore = Math.floor(bot.entity.position.y);
+    const yaw = Math.atan2(-dx, -dz);
+    try { bot.setControlState('sneak', false); } catch (_) {}
+    try { bot.look(yaw, 0, true); } catch (_) {}
+    try { bot.setControlState('forward', true); } catch (_) {}
+    const t0 = Date.now();
+    while (Date.now() - t0 < 2500) {
+        if (bot.interrupt_code) break;
+        if (Math.floor(bot.entity.position.y) > yBefore) break;
+        await new Promise(r => setTimeout(r, 80));
+    }
+    try { bot.setControlState('forward', false); } catch (_) {}
+    const gain = Math.floor(bot.entity.position.y) - yBefore;
+    if (gain > 0) return gain;
+    // 4) last resort: jump while pushing toward the step — some shafts need
+    //    the hop, some need only the walk, try both before giving up.
+    try { bot.setControlState('forward', true); } catch (_) {}
+    try { bot.setControlState('jump', true); } catch (_) {}
+    const t1 = Date.now();
+    while (Date.now() - t1 < 1500) {
+        if (bot.interrupt_code) break;
+        if (Math.floor(bot.entity.position.y) > yBefore) break;
+        await new Promise(r => setTimeout(r, 80));
+    }
+    for (const s of ['jump', 'forward']) { try { bot.setControlState(s, false); } catch (_) {} }
+    return Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+}
+
 export async function digUp(bot, distance = 6) {
     /**
      * Dig upward by staircase-ing: clear the block above, step up, repeat.
@@ -9788,7 +9922,32 @@ export async function digUp(bot, distance = 6) {
         const head = bot.blockAt(feet.position.offset(0, 1, 0));
         if (!head) return climbed > 0;
         if (head.name !== 'air' && head.name !== 'cave_air') {
-            if (head.name === 'lava' || head.name === 'water' || head.name === 'bedrock') {
+            if (head.name === 'water') {
+                // WATER IS NOT A WALL (verified live: she stalled at y=58,
+                // "Cannot climb: water above", 3 blocks short of the surface
+                // after climbing 120 blocks). Holding forward while looking UP
+                // swims her out — that is a movement, not a dig. Only if the
+                // swim gains nothing do we treat the water as cover to pillar.
+                const yw = Math.floor(bot.entity.position.y);
+                log(bot, `Water above — swimming up instead of digging it.`);
+                try { bot.look(bot.entity.yaw, -Math.PI / 2, true); } catch (_) {}
+                try { bot.setControlState('sneak', false); } catch (_) {}
+                try { bot.setControlState('forward', true); } catch (_) {}
+                try { bot.setControlState('jump', true); } catch (_) {}
+                const tsw = Date.now();
+                while (Date.now() - tsw < 4000) {
+                    if (bot.interrupt_code) break;
+                    if (Math.floor(bot.entity.position.y) > yw) break;
+                    await new Promise(r => setTimeout(r, 100));
+                }
+                for (const s of ['jump', 'forward']) { try { bot.setControlState(s, false); } catch (_) {} }
+                const yg = Math.floor(bot.entity.position.y) - yw;
+                log(bot, `Swam ${yg} blocks up through the water.`);
+                if (yg > 0) { climbed += yg; continue; }
+                log(bot, `Swimming didn't gain height; the water is capped.`);
+                return climbed > 0;
+            }
+            if (head.name === 'lava' || head.name === 'bedrock') {
                 log(bot, `Cannot climb: ${head.name} above.`);
                 return false;
             }
@@ -9840,6 +9999,14 @@ export async function digUp(bot, distance = 6) {
         const nowY = Math.floor(bot.entity.position.y);
         const gain = nowY - yBefore;
         if (gain <= 0) {
+            // STALLED IN A SHAFT (verified live 11:1x, y=-62 in a 1-wide
+            // deepslate tunnel): sneak+forward+jump cannot lift her into a
+            // hole she has already dug, so it gains 0 forever and the surface
+            // climb dies after one block. Carve a real STAIRCASE next to her
+            // (clear head + the up-forward step, walk onto it) — that is
+            // walkable ground, so the movement primitive cannot fail on it.
+            let gained = await staircaseStep(bot);
+            if (gained > 0) { climbed += gained; continue; }
             log(bot, `Climbed ${climbed} blocks, then made no further progress.`);
             return climbed > 0;
         }

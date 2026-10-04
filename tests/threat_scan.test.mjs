@@ -208,7 +208,11 @@ check('the bow check is INSIDE the fight branch, before the melee dispatch',
   agentSrc.indexOf('_hasBowFor(r.target)') <
   agentSrc.indexOf('if (this._fightInFlight) return;'))
 check('the bow path returns, so melee never also fires on the same target',
-  /SHOOTING[\s\S]{0,700}?shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,300}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')))
+  // Window widened from 300 (measured from the dispatch) because the
+  // "fired but landed nothing" comment block now sits between them. The
+  // invariant - a `return;` between the shoot dispatch and the melee guard -
+  // is unchanged; only the prose grew.
+  /SHOOTING[\s\S]{0,700}?shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,1000}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')))
 // The bow must be UNREACHABLE for an avoid decision. The right invariant is
 // not textual order - it is that the bow sits inside the `action === 'fight'`
 // branch, so an avoid decision can never reach it regardless of line order.
@@ -279,8 +283,15 @@ check('the scan reaches for the bow, not only the sword',
   /shootBow\(this\.bot, r\.target/.test(agentSrc) && /_hasBowFor/.test(agentSrc))
 check('the bow gate checks for an actual bow, not just arrows',
   /const hasBow = items\.some\(i => i\.name === 'bow'\);/.test(agentSrc))
+// The gate must refuse on BOTH halves (no bow, or no arrows). These used to
+// assert the literal `if (!hasBow || !hasArrow) return false;`, which only
+// holds while the gate is a plain boolean AND. That shape is gone on purpose:
+// the count is now computed (a bare `some()` matched a 1-arrow stack the same
+// as a 64 stack) and RCON arbitrates, so the gate is a `gate()` predicate. The
+// invariant is unchanged and is what gets asserted now - a bow alone is not
+// enough, arrows alone are not enough, and both together still need distance.
 check('the bow gate refuses when EITHER is missing',
-  /if \(!hasBow \|\| !hasArrow\) return false;/.test(agentSrc))
+  /const gate = \(arrows, serverBows\) => \{[\s\S]{0,400}?return bows && arrows > 0 && d > MELEE_RANGE;/.test(agentSrc))
 // Plain string containment, not regex: `items?.()` is `?` followed by `(`,
 // which is easy to mis-escape into a pattern that silently matches nothing -
 // and a check that quietly never matches is worse than no check.
@@ -294,13 +305,26 @@ check('the bow gate is defensive about a missing inventory',
   bowBody.includes('catch (_) { return false; }'))
 check('the bow gate checks arrows too (not just a bow)',
   /_hasBowFor\(entity\)/.test(agentSrc) &&
-  /hasArrow[\s\S]{0,220}arrow\|spectral_arrow/.test(agentSrc.replace(/\n\s*/g, ' ')))
+  /arrowCount[\s\S]{0,320}?spectral_arrow/.test(agentSrc.replace(/\n\s*/g, ' ')))
+check('the bow gate counts arrows, not merely that some stack exists',
+  /\.reduce\(\(n, i\) => n \+ \(i\.count \|\| 0\), 0\)/.test(agentSrc))
+// Distance is still the third condition on the same predicate; assert it there
+// rather than looking for a `return d > MELEE_RANGE;` line that only existed
+// because the whole gate used to be two statements.
 check('the bow is only used OUTSIDE sword range',
-  /return d > MELEE_RANGE;/.test(agentSrc))
+  /arrows > 0 && d > MELEE_RANGE;/.test(agentSrc))
 check('MELEE_RANGE is imported into agent.js',
   /import \{[^}]*\bMELEE_RANGE\b[^}]*\} from '\.\.\/utils\/threat\.js'/.test(agentSrc))
 check('the bow path returns, so it never also runs melee on the same target',
-  /SHOOTING[\s\S]{0,700}return;/.test(agentSrc.replace(/\n\s*/g, ' ')))
+  // Anchor on the shootBow dispatch itself rather than on the "SHOOTING"
+  // log line: the log block grew when the "fired but landed nothing" fallback
+  // landed inside it, so a window measured from the log no longer reaches the
+  // `return;`. The invariant is that nothing between the dispatch and the
+  // melee `if (this._fightInFlight)` runs instead — i.e. a `return;` follows
+  // the dispatch, and the melee guard comes after it.
+  /shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,1000}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')) &&
+  agentSrc.indexOf('shootBow(this.bot, r.target, 2, true)') <
+    agentSrc.indexOf('if (this._fightInFlight) return;'))
 
 console.log(`\n${ok} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)

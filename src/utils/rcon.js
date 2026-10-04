@@ -283,9 +283,19 @@ export async function rconItemCount(name, item) {
 // the hotbar+main inventory AND worn armor AND offhand. Every client-side
 // count is blind on 26.3, so crafting/prereq/armor checks must use this.
 // `worn` reports whether the matching armor piece is EQUIPPED (not just held).
+//
+// TEST SEAM: a caller that wants the server verdict to come from somewhere
+// else (a unit test with a fake bot, which would otherwise reach the REAL
+// live server and read a real player) installs an override. Without one, this
+// is the real RCON read. Overrides are opt-in and must be cleared.
+let _countAllOverride = null;
+export function setCountAllOverride(fn) {
+    _countAllOverride = typeof fn === 'function' ? fn : null;
+}
 export async function rconCountAll(name, item) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     const want = String(item || '').replace(/^minecraft:/, '');
+    if (_countAllOverride) return _countAllOverride(safe, want);
     if (!safe || !want) return { total: 0, inv: 0, worn: 0, offhand: 0 };
     const g = await rconPlayerGear(safe);
     if (!g) return { total: 0, inv: 0, worn: 0, offhand: 0 };

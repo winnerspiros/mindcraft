@@ -226,6 +226,21 @@ check('every SCREAMING_CASE constant in the kill branch is actually declared',
 const shootBowFn = (await import('../src/agent/library/skills.js')).shootBow
 const Vec3 = (await import('vec3')).default
 
+// SERVER ARBITRATION SEAM (2026-10-04): shootBow now asks the server how many
+// arrows she has, because the 26.3 client slot decode claims arrows that the
+// server does not hold — that bug produced 32 "fired=true" scan shots against
+// a mob whose server-side Health never moved. Without this override a fake
+// bot below would reach the REAL live server as username 'T', so the count
+// must be answered locally and deterministically from `arrowCount`.
+const rconMod = await import('../src/utils/rcon.js')
+rconMod.setCountAllOverride(async (name, item) => {
+  const b = fakeBots.get(name)
+  if (item === 'arrow') return { total: b ? b._arrows() : 0, inv: b ? b._arrows() : 0, worn: 0, offhand: 0 }
+  if (item === 'bow') return { total: b ? (b.inventory.items().some(i => i.name === 'bow') ? 1 : 0) : 0, inv: 1, worn: 0, offhand: 0 }
+  return { total: 0, inv: 0, worn: 0, offhand: 0 }
+})
+const fakeBots = new Map()
+
 // A minimal bot stand-in. `stealAtLookAt` makes the rival win the slot during
 // the aim - which is what equipHighestAttack() inside a concurrent
 // attackEntity() does in the real bot.
@@ -259,6 +274,8 @@ function makeBowBot({ stealAtLookAt = false, stealAtDraw = false, alwaysLose = f
     },
     hawkEye: undefined, chat: () => {},
   }
+  b._arrows = () => arrowCount
+  fakeBots.set(b.username, b)
   return b
 }
 const targetAt = (d) => ({ position: new Vec3(d, 0, 0), height: 1.8 })
