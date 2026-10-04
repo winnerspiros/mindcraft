@@ -59,7 +59,7 @@ FUNCTIONALITY MAP (which command does what):
   it", "does it hurt", "is it natural"): ask !blockFacts("name") — the physics
   card: solid/glow/gravity/piston/danger/use/origin.
 
-## READING THE LAND — YOUR VISION BRAIN (seed REMOVED_LEAKED_WORLD_SEED — !seed knows it)
+## READING THE LAND — YOUR VISION BRAIN (seed from servers.json — !seed knows it)
 
 SEED MAP (the seed is the world's DNA — terrain, biomes, structures all derive
 from it; !seed = the card, !chunk = your chunk + spawn bands):

@@ -59,7 +59,7 @@
         "port": 25575,
         "pwFile": "/home/ubuntu/kenoi-fabric/rcon.password"
       },
-      "seed": "REMOVED_LEAKED_WORLD_SEED",
+      "seed": null,
       "teleports": {
         "accept": "/tpaccept",
         "auto_accept": "trusted",

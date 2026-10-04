@@ -43,3 +43,6 @@ src/mindcraft-py/__pycache__/
 # scratch debug scripts from ad-hoc world/inventory probes
 t_g.mjs
 t_v.mjs
+
+# live world seed + local server overrides (servers.json ships with seed=null)
+servers.json.local

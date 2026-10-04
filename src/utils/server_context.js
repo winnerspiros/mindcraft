@@ -77,7 +77,12 @@ const HOME_DEFAULTS = {
     combat: { fight_back: true, retaliate: true, warn_hits: 2, no_console_punish: true },
     modes: {},
     rcon: { enabled: true, host: '127.0.0.1', port: 25575, pwFile: '/home/ubuntu/kenoi-fabric/rcon.password' },
-    seed: 'REMOVED_LEAKED_WORLD_SEED',
+    // No seed default on purpose. It used to be hardcoded here, which
+    // published the owner's world seed to anyone who cloned the repo -- and a
+    // seed identifies the world and lets it be regenerated. null = unknown,
+    // which switches !seed and the slime math to ask-the-op mode rather than
+    // being confidently wrong. Set it in servers.json (or servers.json.local).
+    seed: null,
 };
 
 let _ctx = null;

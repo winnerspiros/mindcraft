@@ -324,7 +324,10 @@ export function getPosition(bot) {
     return bot.entity.position;
 }
 
-export const WORLD_SEED = 'REMOVED_LEAKED_WORLD_SEED';
+// The world seed is NOT hardcoded here. It identifies the owner's world and
+// lets anyone regenerate it, so it lives in servers.json (published with
+// seed=null; the real value goes in servers.json.local) or is supplied
+// per-server at runtime. Read it with activeSeed() / worldSeed().
 
 function _javaRandomNextInt10(seedLong) {
     // java.util.Random算法 (48-bit LCG) — nextInt(10) 精确复刻，BigInt 无精度损失。

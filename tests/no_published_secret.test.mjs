@@ -43,21 +43,50 @@ if (fs.existsSync(tplPath)) {
     check(!!tpl.conversing?.length, 'template keeps her persona prompt', 'template persona prompt is empty');
 }
 
-// ── and the tracked tree must be clean of anything password-shaped ──────
-// Only files git would actually add, so an ignored local secret can't
-// produce a false positive here (that mistake cost us a scan earlier).
+// ── and the tracked tree must be clean of anything password/seed-shaped ─
+// Reads the INDEX (:path), not the working tree, so this reports what would
+// actually be committed -- a stale index otherwise reports secrets that have
+// already been removed from disk. Only files git would add, so an ignored
+// local secret can't produce a false positive here (that mistake cost us a
+// confusing scan earlier in this session).
 const staged = git('ls-files', '-z').split('\0').filter(Boolean);
 const suspicious = [];
 for (const f of staged) {
-    if (!/\.(json|js|mjs|sh|env)$/.test(f)) continue;
+    if (!/\.(json|js|mjs|md|sh|env)$/.test(f)) continue;
     let body;
     try { body = git('show', `:${f}`); } catch { continue; }
-    // a non-empty auth_password / *_PASSWORD / *_API_KEY assigned a literal
-    if (/(?:auth_password|"\w*_PASSWORD"|"\w*_API_KEY")\s*:\s*"[^"]{6,}"/.test(body)) suspicious.push(f);
+    // A non-empty auth_password / *_PASSWORD / *_API_KEY assigned a literal.
+    // The value must not be a documented placeholder: the README shows
+    // "sk-or-…" style examples on purpose, and flagging those would make this
+    // check cry wolf on the very docs that explain the rule.
+    const PLACEHOLDER = /(?:^|…|\.\.\.|\*{3,}|x{3,}|YOUR_|<)/i;
+    for (const m of body.matchAll(/(?:auth_password|"\w*_PASSWORD"|"\w*_API_KEY")\s*:\s*"([^"]{6,})"/g)) {
+        if (!PLACEHOLDER.test(m[1])) suspicious.push(`${f} (secret)`);
+    }
+    // A world seed. 19-20 digit longs are the giveaway: they are the seed, not
+    // a timestamp, an id or a BigInt mask. Requiring a seed-ish KEY as well as
+    // the literal avoids false-positives on every unrelated constant. The
+    // key may be quoted (JSON: "seed": 123) or bare (JS: seed = '123'), so
+    // the quote and any whitespace around the separator are both optional --
+    // an earlier version of this pattern missed the JSON form entirely.
+    if (/"?\b(?:world_?)?seed\b"?\s*[:=]\s*['"]?\d{19,20}\b['"]?/i.test(body))
+        suspicious.push(`${f} (world seed)`);
 }
 check(suspicious.length === 0,
-    `no password-shaped literals in ${staged.length} tracked files`,
+    `no password- or seed-shaped literals in ${staged.length} tracked files`,
     `tracked files with a literal secret: ${suspicious.join(', ')}`);
+
+// ── the world seed must not be a live default in source either ─────────
+// It was hardcoded as a fallback in server_context.js and as a dead
+// WORLD_SEED const in world.js, so scrubbing servers.json alone would have
+// left it readable in two source files.
+for (const f of ['src/utils/server_context.js', 'src/agent/library/world.js',
+                 'src/agent/library/world_knowledge.md']) {
+    const body = git('show', `:${f}`);
+    check(!/\d{19,20}/.test(body),
+        `${f} carries no 19-20 digit literal`,
+        `${f} still contains a 19-20 digit literal (likely the world seed)`);
+}
 
 console.log(`\n${pass} passed, ${failed} failed`);
 if (failed === 0) console.log('no credential is staged for commit');

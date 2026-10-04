@@ -172,7 +172,7 @@ if she can't see mobs or dig anything.
 
 ---
 
-## 🎛️ Configuration (2 files)
+## 🎛️ Configuration (3 files)
 
 **`keys.json`** — your API key. Copy from `keys.example.json`:
 ```json
@@ -192,7 +192,16 @@ if she can't see mobs or dig anything.
 **`settings.js`** — the server she joins (`host`, `port`, `auth: "offline"` for offline-mode
 servers), plus behaviour toggles. Defaults point at `127.0.0.1:25565` (a local server).
 
+**`servers.json`** — per-server profiles, in the bot root. Ships with `"seed": null` on every entry.
+
+> 🌱 **The world seed is not in this repo, on purpose.** A seed isn't a password you can rotate —
+> it identifies the world and lets anyone regenerate it. Store the real value in
+> **`servers.json.local`** (gitignored) or paste it into `servers.json` on your own machine; the
+> `guest` entry below shows the `null` = unknown shape. With `null`, `!seed` and the slime math
+> switch to ask-the-op mode instead of guessing, which is the safe failure.
+
 > 🔑 `keys.json` is gitignored — never commit it. (`keys.example.json` is the safe template.)
+> `tests/no_published_secret.test.mjs` enforces both this and the seed rule on every commit.
 
 ---
 
