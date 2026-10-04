@@ -599,6 +599,18 @@ export class SelfPrompter {
                     { cmd: '!goToSurface', needsArgs: false, goal: 'get back up to the surface' },
                     { cmd: '!findCave', needsArgs: false, goal: 'explore a cave somewhere around here' },
                     { cmd: '!comeHere', needsArgs: false, goal: 'go over to where i am needed' },
+                    // ── BUILD WITH THE LAND. ──────────────────────────────
+                    //
+                    // Same lesson as the list above, for building: every build
+                    // activity here was a BOX (a shelter, a tower, a schematic in
+                    // a fixed footprint). She could make houses all day and never
+                    // a road, a bridge or a garden, because nothing in the list
+                    // touched the ground. These take their own arguments, so the
+                    // goal text has to show the argument - hence the quoted forms.
+                    { cmd: '!buildRoad', needsArgs: true, goal: 'lay a road across the ground, like \"north 20\"' },
+                    { cmd: '!buildGarden', needsArgs: false, goal: 'make a garden on flat ground near me' },
+                    { cmd: '!levelGround', needsArgs: false, goal: 'level a square of ground flat to build on' },
+                    { cmd: '!buildStairs', needsArgs: true, goal: 'cut stairs into a slope, like \"north 10\"' },
                 ];
                 let fallbacks = [];
                 try {
