@@ -27,7 +27,7 @@ const rel = (p) => path.relative(ROOT, p);
 const fail = (msg, detail) => {
     console.error(`\nFAIL: ${msg}`);
     if (detail) console.error(detail);
-    console.error('\nFix: python3 fix-26.2-protocol.py  (npm run reinstall runs it via postinstall)\n');
+    console.error('\nFix: python3 fix-protocol.py  (npm run reinstall runs it via postinstall)\n');
     process.exit(1);
 };
 
@@ -95,7 +95,7 @@ if (!/'26\.3'/.test(readFileSync(chunk.column, 'utf8'))) {
 // feeds chunk lighting, which the bot never reads.
 //
 // Checked here because this is a node_modules patch applied by
-// fix-26.2-protocol.py, and a reinstall silently reverts it. The check is for
+// fix-protocol.py, and a reinstall silently reverts it. The check is for
 // the NARROW suppression (matching this frame only) - the blanket
 // noErrorLogging flag is deliberately not acceptable, because it also hides
 // decode failures that mean real world-data corruption.
@@ -110,14 +110,14 @@ for (const ser of protodefCands) {
     const txt = readFileSync(ser, 'utf8');
     if (/packet_update_light\/.test/.test(txt)) continue;
     fail(`protodef at ${rel(ser)} has no narrow update_light suppression`,
-        'Run: python3 fix-26.2-protocol.py');
+        'Run: python3 fix-protocol.py');
 }
 if (!checkedSerializer) fail('could not find any protodef/src/serializer.js under node_modules',
     'checked: ' + protodefCands.map(rel).join(', '));
 
 // ── The stock digging flow must SURVIVE postinstall ──────────────────
 //
-// fix-26.2-protocol.py runs on every `bun install` (postinstall) and SIX of its
+// fix-protocol.py runs on every `bun install` (postinstall) and SIX of its
 // installers write to mineflayer/lib/plugins/digging.js: seqtruth, digaim,
 // digaimc, ghostbreak, deathtruth, toolproof, stopproof. That script grew the
 // file to 519 lines of interlocking workarounds (stock is 267) and those fixes
@@ -151,7 +151,7 @@ if (!checkedSerializer) fail('could not find any protodef/src/serializer.js unde
             .filter(m => code.includes(m));
         if (rewritten.length) {
             fail(`digging.js carries ${rewritten.length} reinstated 26.3 dig workaround(s): ${rewritten.join(', ')}`,
-                'postinstall re-applied fix-26.2-protocol.py over the stock file');
+                'postinstall re-applied fix-protocol.py over the stock file');
         }
         if (lines > 400) {
             fail(`digging.js is ${lines} lines (stock is ~288); the hand-rewrite is back`,

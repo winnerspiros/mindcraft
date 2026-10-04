@@ -27,12 +27,12 @@ exit /b 1
 rem 2. protocol fix
 where python3 >nul 2>nul
 if %errorlevel%==0 (
-  python3 fix-26.2-protocol.py
+  python3 fix-protocol.py
   goto :done
 )
 where python >nul 2>nul
 if %errorlevel%==0 (
-  python fix-26.2-protocol.py
+  python fix-protocol.py
   goto :done
 )
 echo [!] python not found - skipping protocol fix.

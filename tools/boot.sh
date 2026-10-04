@@ -20,8 +20,8 @@ cd /home/ubuntu/uwu-bot || exit 1
 log() { echo "[boot-wrapper] $*"; }
 
 # 1. Repair. Idempotent: prints "-> no-op" for everything already correct.
-if [ -f fix-26.2-protocol.py ]; then
-    out=$(python3 fix-26.2-protocol.py 2>&1)
+if [ -f fix-protocol.py ]; then
+    out=$(python3 fix-protocol.py 2>&1)
     rc=$?
     # Surface only genuinely APPLIED changes. The generator re-copies a few
     # data files and re-prints "FIXED"/"locked" lines on every run even when
@@ -29,7 +29,7 @@ if [ -f fix-26.2-protocol.py ]; then
     # accurate: "[pf] done: N applied, M already present".
     applied=$(printf '%s\n' "$out" | grep -oE '\[pf\] done: [0-9]+ applied' | grep -oE '[0-9]+' | head -1)
     if [ "$rc" -ne 0 ]; then
-        log "WARNING: fix-26.2-protocol.py exited $rc"
+        log "WARNING: fix-protocol.py exited $rc"
         printf '%s\n' "$out" | tail -20 | sed 's/^/[boot-wrapper] /'
     elif [ "${applied:-0}" -gt 0 ] 2>/dev/null; then
         log "repaired 26.3 support ($applied patch(es) applied):"

@@ -1,18 +1,26 @@
 #!/usr/bin/env python3
-"""Idempotently fix the Complexity-ML 26.2 fork's two protocol bugs in node_modules.
+"""Idempotently fix the Complexity-ML protocol forks' bugs in node_modules.
 
-Fixes (both required, both from pinning a fork whose minecraft-data was
-version-bumped without bumping mineflayer's write code):
+Renamed from fix-26.2-protocol.py, which was a misnomer: the script has
+handled 26.3 for a long time (it registers a 26.3 block cloned from 26.2,
+plus the 26.3 nested-entity-position fix that keeps mobs visible). It is
+called from setup.sh, setup.bat, tools/boot.sh and package.json's
+postinstall.
 
-  8a  Write-shape drift  -> mineflayer lib writes OLD use_entity schema
-  8b  Packet-ID drift    -> fork's 26.2/protocol.json serverbound table off-by-one
+Fixes (each guarded and idempotent, so re-running is free):
+  - write-shape drift    -> mineflayer writes the OLD use_entity schema
+  - packet-ID drift      -> the fork's serverbound table is off-by-one
+  - elytra shared_flags  -> key-0 fallback the vanilla client still sends
+  - container-open flush -> so !activateBlock recipes survive reach checks
+  - collectblock deposit -> so a full inventory finds a chest, not NoChests
+  - 26.3 entity position -> nested position made every mob invisible
+  - update_light         -> 26.3 BigInt mask/array-light normalisation
 
-Run after ANY `npm install` (node_modules is volatile). Safe to re-run any
-number of times: each fix is a guarded, idempotent string/JSON edit.
+Run after ANY `npm install` (node_modules is volatile).
 
 Usage:
-    python3 fix-26.2-protocol.py              # fix the live node_modules
-    python3 fix-26.2-protocol.py /some/base    # fix node_modules under /some/base
+    python3 fix-protocol.py              # fix the live node_modules
+    python3 fix-protocol.py /some/base    # fix node_modules under /some/base
 """
 import json
 import os

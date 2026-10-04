@@ -149,17 +149,22 @@ and ships every missing piece:
 - `assets/minecraft-data-26.3/` — the full 26.3 game data (blocks/items/entities/…)
 - `assets/minecraft-data-26.2/` — the 26.2 data, kept because the fixer registers both
 - `patches/` — patch-package patches for mineflayer, pathfinder, PvP, viewer, protodef
-- `fix-26.2-protocol.py` — idempotent fixer for fork bugs and vanilla gaps (the write-shape
-  drift + a packet-ID table shifted by one, the elytra `shared_flags` key-0 fallback, a
-  container-open look flush so `!activateBlock` recipes survive reach validation, a
-  collectblock auto-deposit patch so a full inventory discovers a nearby chest instead of
-  erroring `NoChests`, and the 26.3 nested-entity-position fix that otherwise makes every mob
-  invisible). It copies the data, registers `26.2` and `26.3`, and patches the protocol on
-  every `npm install`. Safe to re-run any number of times.
+- `fix-protocol.py` — idempotent fixer for fork bugs and vanilla gaps:
+  - **write-shape drift** — mineflayer writes the old `use_entity` schema
+  - **packet-ID drift** — the fork's serverbound table is off-by-one
+  - **elytra `shared_flags`** — key-0 fallback the vanilla client still sends
+  - **container-open flush** — so `!activateBlock` recipes survive reach validation
+  - **collectblock auto-deposit** — so a full inventory discovers a nearby chest instead of
+    erroring `NoChests`
+  - **26.3 nested-entity-position** — otherwise every mob is invisible
+  - **`update_light`** — 26.3 BigInt mask / array-light normalisation
 
-> ℹ️ **The filename is a legacy misnomer.** `fix-26.2-protocol.py` patches **26.3** (and still
-> registers 26.2 on the way through). It's referenced by `setup.sh`, `setup.bat` and
-> `postinstall`, so it was left named rather than renamed for churn.
+  It copies the data, registers `26.2` and `26.3`, and patches the protocol on every
+  `npm install`. Safe to re-run any number of times.
+
+> ℹ️ **Formerly `fix-26.2-protocol.py`.** Renamed, because the name had been wrong for a long
+> time — it has patched 26.3 throughout, while still registering 26.2 on the way through. The
+> pin itself (`mineflayer-26.2`) keeps its name: that's the fork's, not the game version.
 
 `setup.sh` / `setup.bat` run all of this so you never touch it yourself. `node tools/check-26-3-support.mjs`
 is the gate that proves the protocol stack is actually intact after any install — run it first
@@ -239,8 +244,8 @@ systemd/                  ← unit drop-ins (restart window, etc.)
 src/                      ← the mindcraft fork code
 assets/minecraft-data-26.3/ ← 26.3 game data (auto-copied on setup)
 patches/                  ← patch-package fixes
-fix-26.2-protocol.py      ← the idempotent protocol fixer (handles 26.2 + 26.3; see note above)
-tests/                    ← the suite `bun run test` runs (96 tests)
+fix-protocol.py           ← the idempotent protocol fixer (handles 26.2 + 26.3)
+tests/                    ← the suite `bun run test` runs (321 assertions)
 profiles/                 ← example personas for other models
 ```
 

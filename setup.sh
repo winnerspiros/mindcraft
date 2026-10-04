@@ -23,9 +23,9 @@ fi
 
 # 2. Apply the 26.2 fork fixes (data + data.js + protocol-ID + write-shape)
 if command -v python3 >/dev/null 2>&1; then
-  python3 fix-26.2-protocol.py
+  python3 fix-protocol.py
 elif command -v python >/dev/null 2>&1; then
-  python fix-26.2-protocol.py
+  python fix-protocol.py
 else
   echo "⚠  python3 not found — skipping protocol fix (install python3 then re-run)."
 fi
