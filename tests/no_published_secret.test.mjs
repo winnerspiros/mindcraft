@@ -28,9 +28,27 @@ const isIgnored = f => { try { git('check-ignore', '-q', f); return true; } catc
 const tracked = f => { try { git('ls-files', '--error-unmatch', f); return true; } catch { return false; } };
 
 // ── the secret files must be untracked and ignored ──────────────────────
-for (const f of ['keys.json', 'uwu.json']) {
+// servers.json joins keys.json and uwu.json here: it carries the world
+// seed. It USED to be tracked, which is why the seed was published at the
+// branch tip in plain sight -- scrubbing the literal alone left the door
+// open for the next person to paste their own seed in and commit it.
+for (const f of ['keys.json', 'uwu.json', 'servers.json']) {
     check(!tracked(f), `${f} is not tracked`, `${f} IS tracked -- it can be committed`);
     check(isIgnored(f), `${f} is gitignored`, `${f} is not gitignored`);
+}
+
+// ── and a safe template must exist in its place ─────────────────────────
+for (const f of ['servers.example.json']) {
+    const p = path.join(ROOT, f);
+    check(fs.existsSync(p), `${f} exists as the safe template`, `${f} is missing`);
+    if (fs.existsSync(p)) {
+        const body = fs.readFileSync(p, 'utf8');
+        check(!/\d{19,20}/.test(body), `template ${f} carries no seed literal`,
+              `template ${f} ships a world seed`);
+        check(!/"pwFile"\s*:\s*"\/home\/ubuntu/.test(body),
+              `template ${f} uses a generic pwFile path`,
+              `template ${f} ships the owner's absolute rcon path`);
+    }
 }
 
 // ── the shipped template must exist and be blank where it matters ───────

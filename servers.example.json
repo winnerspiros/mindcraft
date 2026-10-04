@@ -1,0 +1,24 @@
+{
+  "_comment": "TEMPLATE. Copy to servers.json (gitignored) and fill in. The world seed is deliberately NOT shipped: a seed identifies the world and lets anyone regenerate it. Put the real value in servers.json.local, or in servers.json on your own machine. seed: null = unknown, which switches !seed and the slime math to ask-the-op mode rather than guessing on a wrong seed.",
+  "active": "home",
+  "servers": {
+    "home": {
+      "host": "127.0.0.1",
+      "port": 25565,
+      "auth": "offline",
+      "op": true,
+      "personality": "normal",
+      "seed": null,
+      "rcon": {
+        "enabled": true,
+        "host": "127.0.0.1",
+        "port": 25575,
+        "pwFile": "/path/to/rcon.password"
+      }
+    },
+    "guest": {
+      "notes": "TEMPLATE for other servers: survival-only, no op powers.",
+      "seed": null
+    }
+  }
+}

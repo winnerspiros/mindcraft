@@ -46,3 +46,4 @@ t_v.mjs
 
 # live world seed + local server overrides (servers.json ships with seed=null)
 servers.json.local
+servers.json
