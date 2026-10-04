@@ -10,6 +10,9 @@ fight, and — if you ignore her — get a *little* stabby. She's powered by an 
        (maybe too much)
 ```
 
+> 🧩 **Branch guide:** `main` is the current line (**Minecraft 26.3**). `26.2` is the last
+> 26.2-compatible state, kept for reference/rollback. `develop` mirrors `main`.
+
 ---
 
 ## ✨ What she can do
@@ -37,20 +40,67 @@ improvises from this toolkit.
   and even **redstone** layouts. She **invents her own designs** — when asked to build
   something she has no blueprint for, she researches real references live (searches GitHub for
   schematics, looks up materials and construction technique) rather than reaching into a fixed
-  build catalog.
+  build catalog. Builds are **resumable**: `!buildStatus`, `!pauseBuild`, `!resumeBuild`,
+  `!cancelBuild`, plus `!recipe` / `!recipePlan` to plan multi-step crafting
 - **Craft** — multi-step recipes (logs → planks → chest), any wood type, auto crafting-table setup
 - **Fishing** — she'll sit and fish when she's bored
 - Keep her own diamond kit across deaths, manage a full inventory (spawns with a chest,
   protects her bow + arrows so she stops tossing them as "junk")
 
+### ⛏️ Mining & earthworks
+- `!quarry` / `!quarrySlice` — she excavates in slabs rather than one block at a time, which is
+  what actually makes mining viable on a 1-core box
+- `!pillar` — towers upward without stranding herself
+- `!digUp` — the escape hatch when she ends up under the terrain she's cutting
+- `!terrainScan` / `!findCave` — reads the world before committing to a dig
+
+### 🏃 Movement & traversal
+- `!climb`, `!crawl`, `!swim`, `!parkour` — she gets over and through things instead of
+  retrying the same blocked path
+- `!lavaSpring` / `!lavaSwim` — survives lava crossings
+- `!ride`, `!saddle`, `!sit` — uses mobs rather than killing them for XP
+- `!trapdoorHop`, `!boatLadder`, `!boatTrap`, `!bottle`, `!scoop` — the small traversal verbs
+  that add up to not getting stuck
+
+### 🧰 Survival craft
+- `!gearUp` / `!myGear` — she maintains her own equipment instead of dropping it
+- `!getFood` — hunts and cooks rather than starving (she used to fight her own food supply)
+- `!tame`, `!lure` — animal handling
+- `!cauldron`, `!fuel`, `!myFurnace`, `!collectFurnace` — she runs a furnace loop
+- `!lightUp`, `!hide`, `!portal` — light, shelter and Nether transit
+- `!tidy`, `!sourcing`, `!scaffold` — site prep and material staging for builds
+
+### 🛡️ Self-preservation
+- `!guardMode` — a state-machine guard stance: she defends a spot instead of chasing
+- `!shove`, `!crit`, `!glitch` — close-quarters and combat helpers
+- **Drowning rescue** — she tracks her own oxygen (a NaN-silent failure mode on 26.3 that once
+  made the rescue unreachable exactly when it mattered) and will swim, break out, or surface
+
 ### ⚔️ Combat (rage-gated)
-- **Archery** — bow + arrows, with real archery/enchantment knowledge
+- **Archery** — bow + arrows, with real archery/enchantment knowledge; the draw is released with
+  the correct packet ordinal (releasing as `DROP_ITEM` meant no arrow ever flew)
 - **Elytra flight** — she can fly (spawn kit + skills), great for travel and dramatic exits
 - **Trident (spear)**, **thorns**, and **crystal PvP** — unlocked by rage, not spammed
+- **Ranged chase doctrine** — withers and flyers get shot from range instead of meleed into a
+  corner she can't reach
+- `!chestMob` — loots rather than fighting pointlessly
+- `!despawn` / `!summon` — entity lifecycle for testing and cleanup
 
 ### 🧭 She knows the world
 - **Spatial memory** — a durable map of where things are, so she navigates instead of wandering
 - Resolves saved place names (`!pointAt <place>`)
+- **RCON-position walking** — on 26.3 entities don't render reliably at short range, so
+  `!goToPlayer` walks to the *server's* coordinates for you and switches to live follow once
+  you're actually visible. Without this she reported "arrived" without moving.
+- `!scout`, `!lookDir`, `!cameraTo`, `!viewer` — perception and on-demand viewer
+- `!whoIs`, `!whereis`, `!whatIs`, `!whatChanged`, `!describe` — asks the world questions
+- **Tablist fallback** — when entities don't render at all, she finds them via the tab list
+  rather than concluding the world is empty
+
+### 💬 Social
+- `!tpa` / `!tpaccept` / `!tpdeny` — teleport requests, with the owner consented
+- `!comeHere`, `!teleportMe` — pulls you to her
+- `!trade` — offers items
 
 ---
 
