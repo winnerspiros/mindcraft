@@ -11,6 +11,11 @@ testlogin.js
 bots/**/action-code/**
 bots/**/
 keys.json
+# uwu.json holds auth_password (the live EasyAuth credential for her account) and
+# the personal half of her persona. keys.json is already excluded for the same
+# reason; this closes the identical hole next door. Ship uwu.example.json instead.
+uwu.json
+uwu.json.local
 services/viaproxy/jars/**
 services/viaproxy/logs/**
 services/viaproxy/plugins/**

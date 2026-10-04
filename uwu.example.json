@@ -2,7 +2,7 @@
   "name": "UwU",
   "beloved": "",
   "model": "openrouter/openai/gpt-4o-mini",
-  "auth_password": "STVNs3vwWffmZS0qWPnf",
+  "auth_password": "",
   "modes": {
     "self_preservation": true,
     "unstuck": true,
