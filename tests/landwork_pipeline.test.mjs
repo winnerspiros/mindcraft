@@ -157,7 +157,7 @@ test('road: generate -> place -> verify ends with zero faults on flat ground', a
     assert.equal(rep.faults, 0, `road left ${rep.faults} faults`);
     assert.match(rep.line, /all placed and verified/);
     // and it is actually a walkable surface in the fake world
-    for (let x = 0; x <= 20; x++) assert.equal(world.get(x, 64, 0), 'grass_path', `no path at x=${x}`);
+    for (let x = 0; x <= 20; x++) assert.equal(world.get(x, 64, 0), 'dirt', `no path at x=${x}`);
 });
 
 test('road across a ravine decks it and ends verified', async () => {
@@ -264,7 +264,7 @@ test('fixBuild: after a creeper hole, only the missing cells are re-placed', asy
     assert.equal(rep.faults, 0);
     // the rest of the road was NOT touched: only the 2 repairs were placed
     assert.equal(world.placed.length - standingBefore, 2, `repaired ${world.placed.length - standingBefore} blocks, expected 2`);
-    for (const [x, y, z] of victims) assert.equal(world.get(x, y, z), 'grass_path');
+    for (const [x, y, z] of victims) assert.equal(world.get(x, y, z), 'dirt');
 });
 
 test('fixBuild reports wrong and stray blocks instead of silently rebuilding them', async () => {
@@ -322,7 +322,7 @@ test('a road longer than one paste is chunked, not refused', async () => {
     const rep = await buildAndReport(bot, buildable, 'road', { max: 4000 });
     assert.ok(rep.chunks > 1, 'was not chunked');
     assert.equal(rep.faults, 0, `chunked road left ${rep.faults} faults`);
-    assert.equal(world.get(80, 64, 0), 'grass_path', 'the far end of a chunked road was not placed');
+    assert.equal(world.get(80, 64, 0), 'dirt', 'the far end of a chunked road was not placed');
 });
 
 test('every generated build reports what it did — never a bare "done"', async () => {

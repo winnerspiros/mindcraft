@@ -46,12 +46,34 @@ export function isGroundName(name) {
     return !!name && !AIR.has(name) && !SOFT.has(name);
 }
 
-/** Highest solid, non-plant Y in a column, or null if the column is empty/unloaded. */
+/**
+ * Highest solid, non-plant Y in a column, or null if the column is empty/unloaded.
+ *
+ * Water is deliberately NOT ground, so this returns a pond's FLOOR. That is right
+ * for `level` and wrong for a road: given a lake, a road built on the floor sank
+ * eleven blocks under the water and every placement failed on "can't reach". So
+ * callers that lay a surface ask surfaceTop() as well and treat standing water as
+ * something to span, not something to build on.
+ */
 export function columnTop(get, x, z, yHi, yLo) {
     for (let y = yHi; y >= yLo; y--) {
         let name = null;
         try { name = get(x, y, z); } catch (_) { return null; }
         if (isGroundName(name)) return y;
+    }
+    return null;
+}
+
+/**
+ * Y of the topmost thing in a column INCLUDING water/lava — i.e. the level you
+ * would stand on if you could stand on a lake. Returns the same null contract as
+ * columnTop for empty/unloaded columns.
+ */
+export function columnSurfaceTop(get, x, z, yHi, yLo) {
+    for (let y = yHi; y >= yLo; y--) {
+        let name = null;
+        try { name = get(x, y, z); } catch (_) { return null; }
+        if (isGroundName(name) || name === 'water' || name === 'lava') return y;
     }
     return null;
 }
@@ -78,6 +100,20 @@ export function terrainSampler(bot) {
             const k = `${x},${z}`;
             if (!cache.has(k)) cache.set(k, columnTop(get, x, z, yHi, yLo));
             return cache.get(k);
+        },
+        /**
+         * True when the column holds standing water or lava at or above its
+         * ground. A road must SPAN such a column (deck over the water) rather
+         * than follow the pond floor: `top()` deliberately returns the floor,
+         * and building there buries the whole road under the lake.
+         */
+        flooded(x, z) {
+            const floor = this.top(x, z);
+            if (floor == null) return false;
+            const surf = columnSurfaceTop(get, x, z, yHi, yLo);
+            if (surf == null || surf <= floor) return false;
+            const name = get(x, surf, z);
+            return name === 'water' || name === 'lava';
         },
         /** Name of the topmost ground block in a column (null if unloaded). */
         topName(x, z) {
@@ -167,6 +203,11 @@ export function chunk(schem, max) {
 
 // ---------------------------------------------------------------- road
 
+// `path` is grass_path — pretty, but it has no crafting recipe or drop source
+// that mcdata knows, so a default road came out "unknown: not gatherable or
+// craftable" for its largest material class and could not be built at all. Dirt
+// is diggable anywhere on the surface, so it is the default; ask for 'path'
+// explicitly when she has wheat and dirt to make some.
 export const ROAD_MATERIALS = {
     path: 'grass_path',
     dirt: 'dirt',
@@ -203,14 +244,14 @@ export const ROAD_MATERIALS = {
 export function road(ground, a, b, opts = {}) {
     const {
         width = 3,
-        material = 'path',
+        material = 'dirt',
         fill = 'dirt',
         deck = 'oak_planks',
         maxStep = 1,        // vertical change the ground may have before it's a gap
         clear = 3,          // how far above the road to clear vegetation
         name = 'road',
     } = opts;
-    const mat = ROAD_MATERIALS[material] || ROAD_MATERIALS.path;
+    const mat = ROAD_MATERIALS[material] || ROAD_MATERIALS.dirt;
     const blocks = [];
     const report = { length: 0, gapSpans: [], fills: 0, supports: 0, stairs: 0, ends: null, width, unloaded: 0 };
 
@@ -230,7 +271,10 @@ export function road(ground, a, b, opts = {}) {
         const cx = cxAt(i), cz = czAt(i);
         const top = ground.top(cx, cz);
         if (top == null) report.unloaded++;
-        line.push({ i, cx, cz, top });
+        // Standing water is not buildable ground: treat it like a hole so the
+        // segmenter decks it as a bridge instead of paving the pond's floor.
+        const wet = top != null && typeof ground.flooded === 'function' && ground.flooded(cx, cz);
+        line.push({ i, cx, cz, top, flooded: wet });
     }
     const knownIdx = line.map((p, i) => (p.top == null ? -1 : i)).filter(i => i >= 0);
     if (!knownIdx.length) {
@@ -246,6 +290,16 @@ export function road(ground, a, b, opts = {}) {
         let nearest = knownIdx[0];
         for (const k of knownIdx) if (Math.abs(k - i) < Math.abs(nearest - i)) nearest = k;
         line[i] = { ...line[i], hole: true, holeFloor: line[nearest].top };
+    }
+    // Same for standing water: deck it like a gap. The deck height must come from
+    // a DRY neighbour — picking the nearest column of any kind hands back the next
+    // pond cell (also 58) and the road quietly builds on the lake bed again.
+    const dryIdx = line.map((p, i) => (p.top != null && !p.flooded ? i : -1)).filter(i => i >= 0);
+    for (let i = 0; i <= steps; i++) {
+        if (!line[i].flooded) continue;
+        let nearest = dryIdx.length ? dryIdx[0] : null;
+        if (nearest != null) for (const k of dryIdx) if (Math.abs(k - i) < Math.abs(nearest - i)) nearest = k;
+        line[i] = { ...line[i], hole: true, holeFloor: nearest != null ? line[nearest].top : line[i].top };
     }
 
     // Segment the line into runs of walkable ground separated by gaps.
@@ -275,10 +329,16 @@ export function road(ground, a, b, opts = {}) {
             // Ride the ACTUAL surface of this cell. Taking the max of the whole
             // segment instead (an earlier version did) levels a hillside road to the
             // top of the hill: flat, and hanging in the air at the bottom.
-            let surface = p.top;
+            // A gap keeps its sampled `top` (a pond bed, a ravine floor) which is
+            // exactly the height we must NOT build at. Use the deck height.
+            let surface = p.hole ? (p.holeFloor ?? p.top) : p.top;
             for (const w of offsets) {
+                if (p.hole) break;                 // a gap decks; don't take its floor
                 const t = ground.top(cxAt(i, w), czAt(i, w));
-                if (t != null) surface = surface == null ? t : Math.max(surface, t);
+                // A flooded neighbour must not drag the road down to the pond bed.
+                if (t != null && !(typeof ground.flooded === 'function' && ground.flooded(cxAt(i, w), czAt(i, w)))) {
+                    surface = surface == null ? t : Math.max(surface, t);
+                }
             }
             if (surface == null) surface = p.holeFloor ?? seg.startTop;
             const walk = surface + 1;                 // the block you walk on
@@ -291,8 +351,12 @@ export function road(ground, a, b, opts = {}) {
                 const rise = carried == null ? 0 : walk - carried;
                 if (rise !== 0) report.stairs++;
                 blk(blocks, cx, walk - 1, cz, mat);
+                // Fill only real ground up to the road. Over water there is nothing
+                // to fill: `top()` hands back the pond bed, and filling from there
+                // dropped a dirt column to the bottom of every lake the road crossed.
+                const wet = typeof ground.flooded === 'function' && ground.flooded(cx, cz);
                 const here = ground.top(cx, cz);
-                const floor = here == null ? walk - 1 : here;
+                const floor = (here == null || wet) ? walk - 1 : here;
                 for (let y = floor + 1; y < walk - 1; y++) { blk(blocks, cx, y, cz, fill); report.fills++; }
 
                 // Clear headroom: vegetation only, never a player's block.

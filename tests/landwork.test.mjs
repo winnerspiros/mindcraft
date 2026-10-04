@@ -33,6 +33,26 @@ const ramp = fakeTerrain((x) => 64 + Math.floor(x / 4));      // 1 up every 4
 const cliff = fakeTerrain((x) => (x < 20 ? 64 : 70));          // 6-block drop at x=20
 const chasm = fakeTerrain((x) => (x < 20 || x > 26 ? 64 : null));
 
+// A pond: the floor is at 58, but water fills it up to 62. This is the shape that
+// made the live test lay a road eleven blocks under the lake, because columnTop
+// deliberately ignores water and hands back the pond bed.
+const pond = fakeTerrain((x) => (x < 18 || x > 24 ? 64 : 58), { surface: 'dirt' });
+{
+    const baseGet = pond.get;
+    pond.get = (x, y, z) => {
+        const h = pond.top(x, z);
+        if (h == null) return null;
+        if (h === 58 && y > 58 && y <= 62) return 'water';
+        return baseGet(x, y, z);
+    };
+    pond.isWater = (x, z) => h_in(x, z) === 58;
+    pond.flooded = (x, z) => {
+        const h = pond.top(x, z);
+        return h != null && h === 58;
+    };
+    function h_in(x) { return (x < 18 || x > 24) ? 64 : 58; }
+}
+
 test('isGroundName / isAirName classify the surfaces that matter', () => {
     assert.equal(isGroundName('grass_block'), true);
     assert.equal(isGroundName('water'), false);
@@ -46,6 +66,29 @@ test('isGroundName / isAirName classify the surfaces that matter', () => {
 test('columnTop finds the surface and returns null for an empty column', () => {
     assert.equal(columnTop(flat(64).get, 3, 4, 80, 50), 64);
     assert.equal(columnTop(() => null, 3, 4, 80, 50), null);
+});
+
+test('a road goes OVER water, not down the pond bed', () => {
+    // Live-test bug: water is not "ground", so the sampler returned the pond
+    // floor and the road was generated 6 blocks under the surface — every block
+    // unreachable and unplaceable. It must deck across at the banks' level.
+    const r = road(pond, { x: 14, z: 0 }, { x: 28, z: 0 }, { width: 3 });
+    // Block coords are schematic-relative, so compare in WORLD y.
+    // Posts and fences MAY reach down into the water — that is how a bridge is
+    // supported. What must never happen is the ROAD SURFACE sitting under the
+    // lake, which is what "the road is at 58" meant.
+    const world = (b) => ({ ...b, wy: r.origin.y + b.y });
+    const surfacing = r.blocks.filter(b => (b.name === 'dirt' || b.name === 'grass_path'));
+    assert.ok(surfacing.length > 0, 'expected some road surface');
+    const lowestSurface = Math.min(...surfacing.map(b => world(b).wy));
+    assert.ok(lowestSurface >= 62, `road surface sank to y=${lowestSurface}, below the water`);
+    // and no dirt at all down in the pond bed
+    assert.ok(!r.blocks.some(b => world(b).wy < 62 && b.name === 'dirt'),
+        'dirt was filled down to the pond floor');
+    // and it must actually cross: blocks on both banks and over the middle
+    const wx = (b) => r.origin.x + b.x;
+    assert.ok(r.blocks.some(b => wx(b) >= 18 && wx(b) <= 24), 'no deck over the water');
+    assert.ok(r.report.gapSpans.length > 0, 'the water should be reported as a gap span');
 });
 
 test('road on flat ground lays a continuous 3-wide path with no holes', () => {
