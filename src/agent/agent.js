@@ -3058,7 +3058,15 @@ export class Agent {
                     ? { t: Date.now(), key: cacheKey, v, pending: true }
                     : { t: Date.now(), key: cacheKey, v };
             };
-            if (cached && Date.now() - cached.t < 3000 && cached.key === cacheKey) {
+            // The TTL MUST outlast the scan's own per-target dedupe window
+            // (_lastThreatKey holds one target for 8s). At 3s it expired
+            // before the next tick was allowed to run, so the confirmed "bow
+            // is live" verdict was written and then never read: the live run
+            // logged "bow is live" on every engagement and never once reached
+            // SHOOTING. Anything under the dedupe window reproduces that stall.
+            const BOW_GATE_TTL = 20000;  // 2.5x the 8s dedupe: a slow RCON round trip
+                                    // still leaves a readable window.
+            if (cached && Date.now() - cached.t < BOW_GATE_TTL && cached.key === cacheKey) {
                 return cached.v;
             }
             const gate = (arrows, serverBows) => {

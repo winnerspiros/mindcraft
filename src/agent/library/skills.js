@@ -4545,13 +4545,16 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     // broken, so when RCON is available it is the arbiter and the client
     // count is only a fallback. Silence is not failure: an unreadable RCON
     // (survival server) leaves the client answer in place.
+    let serverArrows = null;
+    let useServerCount = false;
     try {
         const { rconCountAll } = await import('../../utils/rcon.js');
-        const serverArrows = await rconCountAll(bot.username, 'arrow');
+        serverArrows = await rconCountAll(bot.username, 'arrow');
         if (serverArrows && serverArrows.total === 0) {
             log(bot, 'Server says I have no arrows — the client count was stale.');
             return false;
         }
+        useServerCount = true;
     } catch (_) { /* survival server / rcon off: trust the client */ }
 
     await bot.equip(bow, 'hand');
@@ -4561,7 +4564,8 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     // decrements the arrow stack when the projectile spawns, so a decrease
     // across the draw is the only reliable signal. null = unknown, which is
     // reported as "not counted" rather than optimistically as a hit.
-    let arrowsBefore = countArrows(bot);
+    let arrowsBefore = useServerCount ? serverArrows.total : countArrows(bot);
+    if (arrowsBefore === null) arrowsBefore = countArrows(bot);
     for (let i = 0; i < shots; i++) {
         if (bot.interrupt_code) break;
         const pos = entity.position;
@@ -4616,10 +4620,23 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         // Ground truth for "did an arrow leave the bow" is the stack dropping,
         // not the bow still being in hand: 26.3 released as DROP_ITEM, which kept
         // the bow in hand forever while nothing ever flew. See arrowSpent().
-        const spent = arrowSpent(arrowsBefore, countArrows(bot));
+        //
+        // Same source for both sides of the comparison. The client count is
+        // broken on 26.3 (it stayed at 64 through every draw), so with RCON the
+        // server stack is read before AND after the draw — a decrease there is
+        // the only thing that can say an arrow flew.
+        let arrowsAfter = countArrows(bot);
+        if (useServerCount) {
+            try {
+                const { rconCountAll } = await import('../../utils/rcon.js');
+                const s = await rconCountAll(bot.username, 'arrow');
+                if (s) arrowsAfter = s.total;
+            } catch (_) {}
+        }
+        const spent = arrowSpent(arrowsBefore, arrowsAfter);
         if (spent) fired++;
         else log(bot, 'Drew and released, but no arrow was consumed - not counting it.');
-        arrowsBefore = countArrows(bot);
+        arrowsBefore = arrowsAfter;
         await new Promise(r => setTimeout(r, fullCharge ? 220 : 130));
     }
     log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);
