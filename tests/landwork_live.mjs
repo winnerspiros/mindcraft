@@ -181,7 +181,13 @@ async function run() {
                 const m2 = /has (-?\d+)/.exec(raw);
                 if (!m2) continue;
                 if (Number(m2[1]) <= 0) continue;   // no soil here: water or bare rock
-                // Find the topmost soil block in that column and stand on it.
+                // Find the topmost soil block in that column -- but only accept
+                // it if there is DRY, OPEN air above it. Counting soil anywhere in
+                // the column also matches the lake bed: the client-side check that
+                // asked for open air never ran, so the bot was teleported onto
+                // soil at y=78 that sat under water, and every placement there
+                // failed with "nothing to place on". A build site needs a head to
+                // stand in.
                 for (let y = 78; y >= 62; y--) {
                     let hit = false;
                     for (const n of SOILN) {
@@ -191,7 +197,27 @@ async function run() {
                         const mm = /has (-?\d+)/.exec(rr);
                         if (mm && Number(mm[1]) > 0) { hit = true; break; }
                     }
-                    if (hit) { log('rcon land', x, y, z, '(soil depth ' + m2[1] + ')'); return { x, y, z }; }
+                    if (!hit) continue;
+                    // Require three air cells above and confirm no water in them.
+                    let open = true;
+                    for (let k = 1; k <= 3 && open; k++) {
+                        // Reset first: the soil probe above left the counter
+                        // above zero, so without this every air cell would pass
+                        // on a stale count and the dry-air check would be a no-op.
+                        await rconCmd(`scoreboard players set ${SB} ${SB} 0`);
+                        for (const n of ['air', 'cave_air']) {
+                            await rconCmd(
+                                `execute if block ${x} ${y + k} ${z} minecraft:${n} run scoreboard players add ${SB} ${SB} 1`);
+                        }
+                        const ar = String(await rconCmd(`scoreboard players get ${SB} ${SB}`));
+                        const am = /has (-?\d+)/.exec(ar);
+                        // No increment means the cell is neither air nor void --
+                        // i.e. water or a solid block is in the way.
+                        if (!am || Number(am[1]) <= 0) { open = false; break; }
+                    }
+                    if (!open) continue;
+                    log('rcon land', x, y, z, '(soil depth ' + m2[1] + ', dry air above)');
+                    return { x, y, z };
                 }
             }
         }

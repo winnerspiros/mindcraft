@@ -6235,7 +6235,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             }
             for (let up = buildCell.y; up < p.y; up++) {
                 const col = p.plus(new Vec3(0, up - p.y, 0));
-                try { if (isAirLike(bot.blockAt(col))) await placeBlock(bot, 'dirt', col.x, col.y, col.z, 'bottom', true); } catch {}
+                try { if (isAirLike(bot.blockAt(col))) await placeBlock(bot, 'dirt', col.x, col.y, col.z, 'bottom', true); } catch { /* column cell is not loaded or already occupied -- try the next footing */ }
             }
             try {
                 if (await placeBlock(bot, 'dirt', p.x, p.y, p.z, 'bottom', true)) {
