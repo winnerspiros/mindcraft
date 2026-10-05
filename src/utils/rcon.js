@@ -249,6 +249,42 @@ export function rconInventoryBust(name) {
         if (safe && _invCache[safe]) delete _invCache[safe];
     } catch (_) {}
 }
+/**
+ * Parse `data get entity <p> Inventory`, and SAY whether the reply was complete.
+ *
+ * The old inline regex matched whatever arrived and said nothing about whether
+ * the reply had been cut short. A truncated reply therefore parsed into a
+ * smaller inventory that looked exactly like a real one -- and since
+ * rconItemCount sums what this returns, placeBlock would read fewer materials
+ * than she is actually holding and refuse with "Don't have any dirt to place".
+ * That is the same failure shape as the health parser: a measurement that
+ * cannot see its own failure reports a clean number.
+ *
+ * `complete:false` means "I do not know the inventory", which callers must
+ * treat as unknown rather than as zero. Also flags an entry that parsed with
+ * no count, since that entry is dropped rather than counted.
+ */
+export function parseInventoryText(out) {
+    const text = String(out ?? '');
+    const inv = [];
+    // Require the closing bracket so a cut-off reply cannot masquerade as a
+    // complete one.
+    const complete = /\]/.test(text);
+    try {
+        const re = /Slot:\s*(\d+)b,\s*id:\s*"minecraft:([a-z_]+)"[^}]*?count:\s*(\d+)/g;
+        let m;
+        while ((m = re.exec(text))) {
+            inv.push({ slot: parseInt(m[1], 10), name: m[2], count: parseInt(m[3], 10) });
+        }
+        // A bracketed entry with no count is a malformed entry; if one exists we
+        // are looking at a partial read.
+        const braces = (text.match(/\{Slot:/g) || []).length;
+        const counted = (text.match(/count:\s*\d+/g) || []).length;
+        if (braces !== counted) return { inv, complete: false };
+    } catch (_) { /* fall through: complete stays as computed */ }
+    return { inv, complete };
+}
+
 export async function rconInventory(name, bust=false) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     if (!safe) return null;
@@ -258,20 +294,24 @@ export async function rconInventory(name, bust=false) {
     let out;
     try { out = await rconCommand(`data get entity ${safe} Inventory`); }
     catch (e) { return null; }
-    // entries look like {Slot: 5b, id: "minecraft:dirt", count: 1} — capture slot+id+count
-    const inv = [];
-    try {
-        const re = /Slot:\s*(\d+)b,\s*id:\s*"minecraft:([a-z_]+)"[^}]*?count:\s*(\d+)/g;
-        let m;
-        while ((m = re.exec(String(out)))) inv.push({ slot: parseInt(m[1], 10), name: m[2], count: parseInt(m[3], 10) });
-    } catch (_) {}
+    const { inv, complete } = parseInventoryText(out);
+    // Do NOT cache a partial read. A short reply that looked like a complete
+    // inventory is what made her claim she had no dirt while holding 320 of it;
+    // caching it also made the lie stick for the whole cache window.
+    if (!complete) return null;
     _invCache[safe] = { t: now, inv };
     return inv;
 }
 // Count of a server-held item (null = unknown, treat as 0 with no authority).
 export async function rconItemCount(name, item) {
     try {
-        const inv = await rconInventory(name);
+        // Bust the cache: a count that is 20 seconds stale is exactly what makes
+        // her refuse to place with material in hand, and a full inventory is the
+        // one case where an honest extra read costs almost nothing.
+        const inv = await rconInventory(name, true);
+        // null means the read failed or was truncated -- UNKNOWN, not zero.
+        // Returning 0 here is what turns a failed measurement into a confident
+        // "you have none". Callers that need a floor should treat 0 as unknown.
         if (!inv) return 0;
         let n = 0;
         for (const e of inv) if (e.name === item) n += e.count;
