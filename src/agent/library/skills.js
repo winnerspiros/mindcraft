@@ -4788,12 +4788,33 @@ export async function crystalPvP(bot, target) {
 // the fastest tool that can actually harvest the block; only if nothing
 // carried can harvest does it fall back to fastest-anything. RCON hand-swap
 // last resort kept at call sites.
+
+/**
+ * Which tool class actually harvests this block: 'axe', 'shovel', null for
+ * "hands will do", or 'pickaxe'.
+ *
+ * This existed as THREE copies of the same regex, and they had all drifted.
+ * None of them recognised oak_fence: "fence" contains none of log/wood/plank,
+ * so a fence classified as 'pickaxe'. A fence is wood. The result was that the
+ * hand-gate refused to break fences the road itself had just laid, the cell
+ * behind them read as permanently blocked, and the log filled with
+ * "Hand-gate: no pickaxe anywhere -- skipping oak_fence".
+ *
+ * One definition, used everywhere, so the three copies cannot drift again.
+ */
+export function toolClassFor(name) {
+    const n = String(name || '');
+    // crafting_table and chest were missing here too: neither name contains
+    // log/wood/plank, so both classified as 'pickaxe'.
+    if (/log|wood|plank|fence|door|gate|sign|pressure|button|trapdoor|stairs|slab|boat|bookshelf|banner|crafting_table|cartography|smithing|loom|barrel|chest|furnace|anvil/i.test(n)) return 'axe';
+    if (/dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder|terracotta|podzol/i.test(n)) return 'shovel';
+    if (/leaves|plant|wool|cobweb|vine|tall_grass|short_grass|grass|flower|crop|snow_layer|carpet|bush|sugar_cane|kelp|seagrass|moss|podzol_roots|dandelion|poppy|tulip|orchid|bluet|allium|flower|daisy|sunflower|cornflower|lily_of_the_valley/i.test(n)) return null;
+    return 'pickaxe';
+}
+
 async function equipRightTool(bot, block) {
     const name = block.name || '';
-    const cls = /log|wood|plank/i.test(name) ? 'axe'
-        : /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i.test(name) ? 'shovel'
-        : /leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(name) ? null
-        : 'pickaxe';
+    const cls = toolClassFor(name);
     try {
         const seen = bot.inventory.items() || [];
         let best = null, bestT = Infinity;
@@ -5247,10 +5268,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                 try {
                     const { rconCommand: _rg, rconInventory: _ri } = await import('../../utils/rcon.js');
                     const _bn = block.name || '';
-                    const _wc = /log|wood|plank/i.test(_bn) ? 'axe'
-                        : /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder/i.test(_bn) ? 'shovel'
-                        : /leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(_bn) ? null
-                        : 'pickaxe';
+                    const _wc = toolClassFor(_bn);
                     if (_wc) {
                         let _h = '';
                         try { _h = String(await _rg(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
@@ -5551,7 +5569,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                 const held = bot.heldItem ? bot.inventory.slots[bot.heldItem.slot] : null;
                 const maxD = held?.maxDurability, used = held?.durabilityUsed;
                 if (maxD && used != null && (maxD - used) / maxD < 0.02) {
-                    const cls = /log|wood/i.test(block.name) ? 'axe' : /dirt|sand|gravel|soul/i.test(block.name) ? 'shovel' : 'pickaxe';
+                    const cls = toolClassFor(block.name) || 'pickaxe';
                     let best = null, bestScore = -1;
                     for (const it of bot.inventory.items()) {
                         if (!it.name.includes(cls) || it.name.includes('pickaxe') !== (cls === 'pickaxe')) continue;
