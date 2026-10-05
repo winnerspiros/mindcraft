@@ -6118,8 +6118,20 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
 
     const targetBlock = bot.blockAt(target_dest);
     if (targetBlock.name === blockType || (targetBlock.name === 'grass_block' && blockType === 'dirt')) {
-        log(bot, `${blockType} already at ${targetBlock.position}.`);
-        return false;
+        // The block we were asked to put here IS here. That is the desired end
+        // state, so it is a SUCCESS, not a fault. Returning false made every
+        // idempotent re-place look like a failure: a live run logged "oak_planks
+        // already at (9, 70, 1)" twelve times and every one became a fault, while
+        // verification simultaneously reported missing:1 -- the road was
+        // essentially finished and the log said it was failing.
+        //
+        // The previous message also read like a problem ("cannot do this"), which
+        // is why nobody could tell it apart from a genuine failure.
+        log(bot, `${blockType} is already at ${targetBlock.position} — nothing to do.`);
+        // Mark it so callers can count "already correct" apart from "placed by
+        // me". Both mean the block is right; only one is work we did.
+        if (bot._alreadySatisfied) bot._alreadySatisfied.add(`${targetBlock.position.x},${targetBlock.position.y},${targetBlock.position.z}`);
+        return true;
     }
     const empty_blocks = ['air', 'water', 'lava', 'grass', 'short_grass', 'tall_grass', 'snow', 'dead_bush', 'fern'];
     if (!empty_blocks.includes(targetBlock.name)) {
