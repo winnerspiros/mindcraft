@@ -6339,8 +6339,11 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         };
         let standGoal = null;
         const tp = targetBlock.position;
+        // +/-3, not +/-2: a high target needs a stand cell further out, and a
+        // narrow ring silently produced no stand position at all -- an eleven
+        // minute run that placed nothing.
         const ring = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1],
-            [2,0,0],[-2,0,0],[0,0,2],[0,0,-2]];
+            [2,0,0],[-2,0,0],[0,0,2],[0,0,-2],[3,0,0],[-3,0,0],[0,0,3],[0,0,-3]];
         for (const [dx, , dz] of ring) {
             for (const dy of [0, 1, -1]) {
                 const c = new Vec3(tp.x + dx, tp.y + dy, tp.z + dz);
@@ -6351,7 +6354,14 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 // 4.5 produced stand positions from which every placement was
                 // rejected -- all four remaining faults in a run, on a column of
                 // plain air over solid ground.
-                if (c.distanceTo(tp) > 3.6) continue;
+                // 4.2, not 3.6: 3.6 was the margin that fixed the x=60 column, but
+                // it was too tight for a high target -- the ring could not reach
+                // any standable cell within it, so standGoal stayed null and the
+                // run placed nothing. 4.2 is inside the raw 4.5 limit while
+                // still keeping the face-vs-centre reasoning that fixed the
+                // column: the old 4.5 accepted cells whose FACE was out of
+                // reach, and 4.2 does not.
+                if (c.distanceTo(tp) > 4.2) continue;
                 standGoal = c; break;
             }
             if (standGoal) break;
@@ -6359,16 +6369,27 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         let pos = targetBlock.position;
         let movements = moveProfile(bot, 'sprint');
         bot.pathfinder.setMovements(movements);
-        await goToGoal(bot, standGoal
+        // goToGoal returns false on failure (it does not throw). Check its
+        // return value and fall back to GoalNear if the stand cell was
+        // unreachable, instead of letting the placement time out.
+        // The stand cell is chosen by static geometry (canStandAt), which says
+        // nothing about whether the pathfinder can actually reach it: a cell
+        // across a ravine or behind a wall is standable but unreachable.
+        const ok = await goToGoal(bot, standGoal
             ? new pf.goals.GoalBlock(standGoal.x, standGoal.y, standGoal.z)
             : new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4));
+        if (!ok && standGoal) {
+            log(bot, `Could not path to the stand cell for ${target_dest} — navigating to the nearest reachable cell instead.`);
+            standGoal = null;
+            await goToGoal(bot, new pf.goals.GoalNear(pos.x, pos.y, pos.z, 4)).catch(() => { /* nothing reachable either */ });
+        }
         // Second chance: still out of reach (GoalNear settled across a gap)?
         // step to the closest standable ring cell directly.
         if (bot.entity.position.distanceTo(targetBlock.position) > 4.5 && standGoal) {
             try {
                 bot.pathfinder.setMovements(movements);
                 await goToGoal(bot, new pf.goals.GoalBlock(standGoal.x, standGoal.y, standGoal.z));
-            } catch (_) {}
+            } catch (_) { /* unreachable; placement will time out */ }
         }
     }
 
