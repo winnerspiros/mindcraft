@@ -6345,7 +6345,13 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             for (const dy of [0, 1, -1]) {
                 const c = new Vec3(tp.x + dx, tp.y + dy, tp.z + dz);
                 if (!canStandAt(c)) continue;
-                if (c.distanceTo(tp) > 4.5) continue;
+                // Margin, not the raw limit: the reach test is to the block
+                // CENTRE, while placement clicks a FACE from eye height, and
+                // those are not the same distance. Accepting a cell at exactly
+                // 4.5 produced stand positions from which every placement was
+                // rejected -- all four remaining faults in a run, on a column of
+                // plain air over solid ground.
+                if (c.distanceTo(tp) > 3.6) continue;
                 standGoal = c; break;
             }
             if (standGoal) break;
