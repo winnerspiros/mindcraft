@@ -6080,12 +6080,36 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         // Kept anyway: busting before a count cannot make a correct read wrong,
         // and it costs one RCON round trip per placement check. But do not credit
         // it with fixing a problem it did not fix.
-        let serverCount = 0;
+        // null means UNKNOWN: the read failed, was truncated, or RCON was
+        // unreachable. That is NOT the same as owning none, and collapsing the
+        // two is how she announced "Don't have any dirt to place" while the
+        // server held 320 of it. When the read is unknown, fall back to the
+        // client view and SAY the count is unverified rather than refusing on a
+        // number we do not trust.
+        let serverCount = null;
         try {
             const r = await import('../../utils/rcon.js');
             r.rconInventoryBust(bot.username);
-            serverCount = await rconItemCount(bot.username, item_name);
-        } catch (_) {}
+            const inv = await r.rconInventory(bot.username, true);
+            if (inv) {
+                serverCount = 0;
+                for (const e of inv) if (e.name === item_name) serverCount += e.count;
+            }
+        } catch (_) { serverCount = null; }
+        if (serverCount === null) {
+            // Unverified read. Try anyway if the client thinks she has some --
+            // attempting a placement costs one dig; refusing on a bad count costs
+            // the whole build.
+            const maybe = (() => { try { return bot.inventory.findInventoryItem(item_name); } catch (_) { return null; } })();
+            if (maybe && maybe.count > 0) {
+                log(bot, `Could not read the server inventory for ${item_name} — trying to place what I can see.`);
+                block_item = maybe;
+                serverCount = maybe.count;
+            } else {
+                log(bot, `Don't have any ${item_name} to place, and I could not read the server to check.`);
+                return false;
+            }
+        }
         if (serverCount > 0) {
             try { await bot.clickWindow(0, 0, 0).catch(() => {}); } catch (_) {}
             try {
