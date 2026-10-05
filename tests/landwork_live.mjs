@@ -35,6 +35,8 @@ const TEST_BOT = 'LandworkTest';
 // "THREW skills is not defined". The block was never actually broken, so the
 // damage test reported confirmed:false while looking like it had run.
 const skills = await import('../src/agent/library/skills.js');
+// One parser for every inventory read in this harness -- see the sampler below.
+const { parseInventoryText } = await import('../src/utils/rcon.js');
 // RCON gives the test bot materials: this world is survival and these bots build
 // by hand, so stock has to come from somewhere a real player would use.
 async function rconCmd(cmd) {
@@ -512,8 +514,17 @@ async function run() {
         if (!sampling) return;
         try {
             const srv = String(await rconCmd('data get entity LandworkTest Inventory'));
-            const ids = [...srv.matchAll(/id: "minecraft:([a-z_]+)", count: (\d+)/g)]
-                .map(m => `${m[1]}:${m[2]}`);
+            // Use the SHARED parser, not a second regex. This sampler's own
+            // pattern matched whatever arrived and reported it as the whole
+            // inventory, so a truncated reply silently dropped the trailing
+            // entries -- which is what the 63-at-a-time "dirt destruction" was:
+            // the stacks were never destroyed, the READ was cut short. A
+            // truncated sample is now recorded as UNKNOWN ("TRUNC") instead of a
+            // smaller inventory, so it cannot be mistaken for a real change.
+            const { inv, complete } = parseInventoryText(srv);
+            const ids = complete
+                ? inv.map(e => `${e.name}:${e.count}`)
+                : ['TRUNC'];
             const hpRaw = String(await rconCmd('data get entity LandworkTest Health')).trim();
             // Parse the number, don't slice the tail. slice(-8) returns "" or a
             // truncated word for many replies, so any counter built on it silently
