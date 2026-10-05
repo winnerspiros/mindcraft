@@ -497,7 +497,13 @@ const FLUID_NAMES = new Set(['water', 'lava', 'flowing_water', 'flowing_lava']);
 // Blocks whose presence where the schematic says air is never a fault.
 const VERIFY_IGNORE_EXTRA = new Set(['torch', 'wall_torch', 'redstone_torch', 'redstone_wall_torch',
     'snow', 'grass', 'short_grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush',
-    'poppy', 'dandelion', 'vine', 'glow_lichen', 'fire', 'soul_fire', 'rail']);
+    'poppy', 'dandelion', 'vine', 'glow_lichen', 'fire', 'soul_fire', 'rail',
+    // Common terrain that naturally exists under elevated structures (bridges, roads
+    // on supports). The schematic only places support pillars at specific points;
+    // the ground between them is pre-existing and not a placement error.
+    'dirt', 'grass_block', 'stone', 'cobblestone', 'sand', 'gravel', 'sandstone',
+    'red_sand', 'red_sandstone', 'terracotta', 'packed_ice', 'blue_ice', 'mycelium',
+    'podzol', 'coarse_dirt', 'rooted_dirt']);
 
 function propsEqualIgnoringAge(a, b) {
     const ka = Object.keys(a || {}).filter((k) => !CROP_AGE_PROPS.has(k));
