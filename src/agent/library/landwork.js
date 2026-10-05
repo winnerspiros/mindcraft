@@ -92,8 +92,26 @@ export function terrainSampler(bot) {
         const b = bot.blockAt(new Vec3(x, y, z));
         return b ? b.name : null;
     };
+    /** Block name AND its state properties. Water's `level` is what separates a
+     *  SOURCE (0 — it keeps generating) from flowing water (1-7 — it stops when
+     *  you plug the source), so flood repair cannot work on names alone. */
+    const getState = (x, y, z) => {
+        const b = bot.blockAt(new Vec3(x, y, z));
+        if (!b) return null;
+        let props = {};
+        try {
+            const st = typeof b.getProperties === 'function' ? b.getProperties() : (b.metadata || null);
+            if (st) props = st;
+        } catch (_) {
+            // A block with no readable state is normal on an older/forked
+            // protocol; treat it as "no level" and let isSourceBlock decide.
+            props = {};
+        }
+        return { name: b.name, level: props.level == null ? null : Number(props.level), props };
+    };
     return {
         get,
+        getState,
         yHi,
         yLo,
         top(x, z) {
@@ -875,3 +893,239 @@ export function describe(sch) {
 }
 
 export { schematic, buildsense, skills, world };
+
+// ---------------------------------------------------------------------------
+// FLOOD REPAIR
+//
+// Spawn floods. Patching the water is the same shape of job as everything else
+// here: survey the terrain, find where the water actually comes from, plan a
+// cheap fix, place it, then verify. Two phases, because plugging a source and
+// reclaiming the ground it drowned are separate pieces of work separated by the
+// time it takes water to recede:
+//
+//   1. PLUG — find water SOURCE blocks (level 0) and put one cheap solid block
+//      in each. A source keeps generating forever; flowing water stops as soon
+//      as its source is gone, so plugging sources is the only durable fix.
+//   2. RETAKE — once the water has receded, fill the air it left with ground.
+//      Never run this before the water is actually gone, or she rebuilds the
+//      basin she was trying to drain.
+//
+// An empty bucket works too and leaves no block behind, so the placer is told
+// which method to use rather than hardcoding one. Both are offered; the caller
+// picks by what she is carrying.
+
+/** Cheap blocks that stop water, best first. Anything solid and non-liquid. */
+export const FLOOD_PLUGS = ['cobblestone', 'dirt', 'gravel', 'sand', 'netherrack'];
+
+/**
+ * A water block is a SOURCE if its `level` is 0 (or absent — some forks omit
+ * level on still water). Level 1-7 is flowing: harmless to leave, it disappears
+ * once the source is plugged.
+ */
+export function isSourceBlock(st) {
+    if (!st || (st.name !== 'water' && st.name !== 'flowing_water')) return false;
+    if (st.level == null) return true;
+    return st.level === 0;
+}
+
+/**
+ * Survey an area for water and classify it.
+ * Returns { sources, flowing, extent, volume } in WORLD coordinates.
+ * `radius` is in blocks around `centre`; `ySpan` how far up/down to look.
+ */
+export function surveyFlood(ground, centre, radius = 12, ySpan = 12) {
+    const sources = [];
+    const flowing = [];
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    let minY = Infinity, maxY = -Infinity;
+    const read = (x, y, z) => (typeof ground.getState === 'function'
+        ? ground.getState(x, y, z)
+        : (() => { const n = ground.get(x, y, z); return n == null ? null : { name: n, level: null }; })());
+
+    for (let x = Math.round(centre.x - radius); x <= Math.round(centre.x + radius); x++) {
+        for (let z = Math.round(centre.z - radius); z <= Math.round(centre.z + radius); z++) {
+            for (let y = Math.round(centre.y - ySpan); y <= Math.round(centre.y + ySpan); y++) {
+                const st = read(x, y, z);
+                if (!st || (st.name !== 'water' && st.name !== 'flowing_water')) continue;
+                if (minX > x) minX = x; if (maxX < x) maxX = x;
+                if (minZ > z) minZ = z; if (maxZ < z) maxZ = z;
+                if (minY > y) minY = y; if (maxY < y) maxY = y;
+                (isSourceBlock(st) ? sources : flowing).push({ x, y, z });
+            }
+        }
+    }
+    if (!sources.length && !flowing.length) {
+        return { sources: [], flowing: [], extent: null, volume: 0, dry: true };
+    }
+    return {
+        sources, flowing,
+        extent: { minX, maxX, minY, maxY, minZ, maxZ },
+        volume: sources.length + flowing.length,
+        dry: false,
+    };
+}
+
+/**
+ * Pick the sources actually worth plugging.
+ *
+ * A lake is not a leak. Every water surface has source blocks in it, so
+ * "plug every source" means paving a pond with cobblestone — on the real spawn
+ * area that was 124 blocks for 4 real culprits. A source is a genuine leak when
+ * it is FEEDING water that is not itself a stable pool: either it is isolated
+ * (nothing else nearby is a source) or it sits at the low edge of a body of
+ * water that has spread far and deep below it.
+ *
+ * Returns { plugs, ponds } — the sources to stop, and the stable pools to leave
+ * alone. Reporting both matters: "I left 46 sources because that is a pond" is
+ * a different and more useful answer than a number.
+ */
+export function classifySources(survey, opts = {}) {
+    const srcs = survey.sources;
+    if (!srcs.length) return { plugs: [], ponds: [], isolated: [] };
+    const near = (a, b, dx, dy, dz) =>
+        Math.abs(a.x - b.x) <= dx && Math.abs(a.y - b.y) <= dy && Math.abs(a.z - b.z) <= dz;
+    // Group sources into clusters. A cluster of many sources close together is a
+    // body of water, not a leak.
+    const clusters = [];
+    for (const s of srcs) {
+        let hit = null;
+        for (const c of clusters) if (near(s, c.members[0], 6, 3, 6)) { hit = c; break; }
+        if (hit) hit.members.push(s);
+        else clusters.push({ members: [s] });
+    }
+
+    const plugs = [];
+    const ponds = [];
+    for (const c of clusters) {
+        if (c.members.length === 1) {
+            // A lone source is a leak — unless the water it feeds is trivial.
+            plugs.push(...c.members);
+            continue;
+        }
+        // Many sources together: a pool. Only treat it as a leak if it is also
+        // feeding water that has run far below and outside it.
+        const ys = c.members.map(m => m.y);
+        const lowY = Math.min(...ys);
+        const low = c.members.filter(m => m.y === lowY);
+        const spread = survey.extent
+            ? Math.max(survey.extent.maxX - survey.extent.minX, survey.extent.maxZ - survey.extent.minZ)
+            : 0;
+        const deep = survey.extent ? survey.extent.minY < lowY - 1 : false;
+        if (opts.aggressive && deep && spread > (opts.spreadLimit || 12)) {
+            // Plug only the LOWEST edge — that is what actually drains it.
+            plugs.push(...low);
+        } else {
+            ponds.push(...c.members);
+        }
+    }
+    const isolated = plugs.slice();
+    return { plugs, ponds, isolated, clusters: clusters.length };
+}
+
+/**
+ * Plan phase 1: one plug block per water SOURCE, in the schematic format
+ * everything else here uses, so it plans, chunks, places and verifies through
+ * exactly the same path as a road.
+ *
+ * `material` is the cheap block to use. Sources are placed highest-first so a
+ * plug never ends up underwater before she can reach it.
+ */
+export function floodPlugPlan(survey, origin, opts = {}) {
+    const material = opts.material || 'cobblestone';
+    // Plug the leaks, not the ponds. `all` overrides, and is what you want when
+    // she genuinely means "stop every drop of water here".
+    const targets = opts.all ? survey.sources : (opts.plugs || survey.sources);
+    const blocks = targets
+        .slice()
+        .sort((a, b) => b.y - a.y)
+        .map(s => ({
+            x: s.x - origin.x,
+            y: s.y - origin.y,
+            z: s.z - origin.z,
+            name: material,
+            props: {},
+        }));
+    const report = {
+        sources: survey.sources.length,
+        flowing: survey.flowing.length,
+        material,
+        volume: survey.volume,
+        plugging: targets.length,
+        pondsLeft: survey.sources.length - targets.length,
+        ponds: opts.ponds ? opts.ponds.length : 0,
+    };
+    const size = blocks.reduce(
+        (acc, b) => ({
+            x: Math.max(acc.x, b.x + 1), y: Math.max(acc.y, b.y + 1), z: Math.max(acc.z, b.z + 1),
+        }),
+        { x: 0, y: 0, z: 0 },
+    );
+    return { name: opts.name || 'flood plug', size, blocks, origin, report };
+}
+
+/**
+ * Plan phase 2: the ground the flood drowned, to be re-laid once the water is
+ * gone. Only cells that are AIR or water right now are planned — anything still
+ * holding its original block is left alone, so this cannot flatten terrain she
+ * did not flood. Refuses to run while sources remain, which is the whole point
+ * of doing this in two phases.
+ */
+export function floodRetakePlan(survey, origin, opts = {}) {
+    const ground = opts.ground;
+    const material = opts.material || 'dirt';
+    const leftover = survey.sources.length;
+    const cells = [];
+    // Refuse BEFORE planning a single cell. Building the basin she is trying to
+    // drain is worse than doing nothing: the water just fills it again.
+    if (leftover > 0) {
+        return {
+            name: opts.name || 'flood retake',
+            size: { x: 0, y: 0, z: 0 },
+            blocks: [],
+            origin,
+            report: {
+                retake: 0,
+                material,
+                blocked: true,
+                leftoverSources: leftover,
+                reason: `${leftover} water source(s) still flowing — plug them before retaking ground`,
+            },
+        };
+    }
+    if (ground) {
+        const e = survey.extent;
+        const read = (x, y, z) => (typeof ground.get === 'function' ? ground.get(x, y, z) : null);
+        for (let x = e.minX; x <= e.maxX; x++) {
+            for (let z = e.minZ; z <= e.maxZ; z++) {
+                for (let y = e.minY; y <= e.maxY; y++) {
+                    const n = read(x, y, z);
+                    if (n !== 'air' && n !== 'water') continue;
+                    cells.push({
+                        x: x - origin.x, y: y - origin.y, z: z - origin.z,
+                        name: material, props: {},
+                    });
+                }
+            }
+        }
+    }
+    const size = cells.reduce(
+        (acc, b) => ({
+            x: Math.max(acc.x, b.x + 1), y: Math.max(acc.y, b.y + 1), z: Math.max(acc.z, b.z + 1),
+        }),
+        { x: 0, y: 0, z: 0 },
+    );
+    return {
+        name: opts.name || 'flood retake',
+        size, blocks: cells, origin,
+        report: {
+            retake: cells.length,
+            material,
+            // Refuse honestly rather than building a basin she is trying to drain.
+            blocked: leftover > 0,
+            leftoverSources: leftover,
+            reason: leftover > 0
+                ? `${leftover} water source(s) still flowing — plug them before retaking ground`
+                : null,
+        },
+    };
+}

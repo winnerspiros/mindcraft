@@ -11,6 +11,7 @@ import {
     columnTop, isGroundName, isAirName, terrainSampler,
     road, bridge, retainingWall, level, stairs, garden,
     diffAgainstWorld, extend, chunk, describe,
+    surveyFlood, floodPlugPlan, floodRetakePlan, isSourceBlock, classifySources,
 } from '../src/agent/library/landwork.js';
 
 // --- fake terrain -------------------------------------------------------
@@ -125,6 +126,134 @@ test('a deck clears the water even when the bank is level with the pond', () => 
     // and it still crosses
     const wx = (b) => r.origin.x + b.x;
     assert.ok(r.blocks.some(b => wx(b) >= 18 && wx(b) <= 24), 'no deck over the water');
+});
+
+// --- flood repair --------------------------------------------------------
+// A flooded world: a source at (20,62,0) spreading east, plus a lone source at
+// (10,62,0). getState is what real terrainSampler exposes — names alone cannot
+// tell a source from flowing water.
+function floodedTerrain(sources, spread = 6) {
+    const cells = new Map();
+    for (const s of sources) cells.set(`${s.x},${s.y},${s.z}`, { name: 'water', level: 0 });
+    for (const s of sources) {
+        for (let i = 1; i <= spread; i++) {
+            const k = `${s.x + i},${s.y},${s.z}`;
+            if (!cells.has(k)) cells.set(k, { name: 'water', level: Math.min(7, i) });
+        }
+    }
+    const getState = (x, y, z) => cells.get(`${x},${y},${z}`) || { name: 'air', level: null };
+    const get = (x, y, z) => getState(x, y, z).name;
+    return { getState, get, top: () => 61, topName: () => 'air', isWater: () => false };
+}
+
+test('a source is level 0; flowing water is anything above it', () => {
+    assert.equal(isSourceBlock({ name: 'water', level: 0 }), true);
+    assert.equal(isSourceBlock({ name: 'water', level: 3 }), false);
+    // A fork that omits level still water must not be mistaken for flowing.
+    assert.equal(isSourceBlock({ name: 'water', level: null }), true);
+    assert.equal(isSourceBlock({ name: 'dirt', level: null }), false);
+});
+
+test('survey finds the sources and tells them apart from the spread', () => {
+    const g = floodedTerrain([{ x: 20, y: 62, z: 0 }, { x: 10, y: 62, z: 0 }]);
+    const s = surveyFlood(g, { x: 15, y: 62, z: 0 }, 14, 4);
+    assert.equal(s.dry, false);
+    assert.equal(s.sources.length, 2, `expected 2 sources, got ${s.sources.length}`);
+    assert.ok(s.flowing.length >= 10, `expected the spread to be flowing, got ${s.flowing.length}`);
+    // Sources are never counted twice as flowing.
+    for (const src of s.sources) {
+        assert.ok(!s.flowing.some(f => f.x === src.x && f.y === src.y && f.z === src.z));
+    }
+});
+
+test('dry ground surveys as dry rather than inventing a flood', () => {
+    const s = surveyFlood(flat(64), { x: 0, y: 64, z: 0 }, 6, 4);
+    assert.equal(s.dry, true);
+    assert.equal(s.volume, 0);
+    assert.equal(s.extent, null);
+});
+
+test('a pond is not a leak: clustered sources are left alone', () => {
+    // The real spawn area: 124 sources, of which only ~5 were actual culprits and
+    // 119 belonged to standing pools. "Plug every source" would have paved the
+    // lake with cobblestone.
+    const sources = [];
+    // A lake surface: 40 sources side by side at y=68.
+    for (let x = 0; x < 40; x++) sources.push({ x, y: 68, z: 0 });
+    // Two genuine leaks, alone on dry land.
+    sources.push({ x: -30, y: 64, z: -20 }, { x: 25, y: 70, z: 18 });
+    const s = {
+        sources, flowing: [], volume: 140,
+        extent: { minX: -30, maxX: 40, minY: 64, maxY: 70, minZ: -20, maxZ: 18 },
+        dry: false,
+    };
+    const cls = classifySources(s, {});
+    assert.equal(cls.ponds.length, 40, 'the lake was treated as 40 separate leaks');
+    assert.equal(cls.plugs.length, 2, `expected 2 leaks, got ${cls.plugs.length}`);
+    assert.ok(cls.plugs.some(p => p.x === -30 && p.z === -20));
+    assert.ok(cls.plugs.some(p => p.x === 25 && p.z === 18));
+});
+
+test('a plug plan built from leaks never touches the pond', () => {
+    const sources = [];
+    for (let x = 0; x < 10; x++) sources.push({ x, y: 68, z: 0 });
+    sources.push({ x: -30, y: 64, z: -20 });
+    const s = { sources, flowing: [], volume: 11, extent: { minX: -30, maxX: 10, minY: 64, maxY: 68, minZ: -20, maxZ: 0 }, dry: false };
+    const cls = classifySources(s, {});
+    const plan = floodPlugPlan(s, { x: 0, y: 0, z: 0 }, { plugs: cls.plugs, ponds: cls.ponds });
+    assert.equal(plan.blocks.length, 1, 'planned more than the single leak');
+    assert.equal(plan.blocks[0].x, -30);
+    assert.equal(plan.report.plugging, 1);
+    assert.equal(plan.report.pondsLeft, 10);
+});
+
+test('all=true overrides the pond rule when she really means every drop', () => {
+    const sources = [];
+    for (let x = 0; x < 6; x++) sources.push({ x, y: 68, z: 0 });
+    const s = { sources, flowing: [], volume: 6, extent: { minX: 0, maxX: 6, minY: 68, maxY: 68, minZ: 0, maxZ: 0 }, dry: false };
+    const plan = floodPlugPlan(s, { x: 0, y: 0, z: 0 }, { all: true });
+    assert.equal(plan.blocks.length, 6, 'all=true must plug the pond too');
+});
+
+test('plugging a source places one cheap block per source, not per water block', () => {
+    const g = floodedTerrain([{ x: 20, y: 62, z: 0 }, { x: 10, y: 62, z: 0 }]);
+    const s = surveyFlood(g, { x: 15, y: 62, z: 0 }, 14, 4);
+    const plan = floodPlugPlan(s, { x: 0, y: 0, z: 0 }, { material: 'cobblestone' });
+    assert.equal(plan.blocks.length, s.sources.length,
+        `planned ${plan.blocks.length} plugs for ${s.sources.length} sources`);
+    assert.ok(plan.blocks.length < s.volume,
+        'plugging flowing water too is pointless — it drains once the source is gone');
+    for (const b of plan.blocks) assert.equal(b.name, 'cobblestone');
+    // Highest source first, so no plug ends up underwater before she reaches it.
+    const ys = plan.blocks.map(b => b.y);
+    assert.deepEqual(ys, ys.slice().sort((a, b) => b - a), 'plugs must be ordered high to low');
+});
+
+test('retake is refused while a source is still flowing', () => {
+    const g = floodedTerrain([{ x: 20, y: 62, z: 0 }]);
+    const s = surveyFlood(g, { x: 20, y: 62, z: 0 }, 8, 4);
+    const plan = floodRetakePlan(s, { x: 0, y: 0, z: 0 }, { ground: g });
+    assert.equal(plan.report.blocked, true, 'retake ran with a live source');
+    assert.match(plan.report.reason, /still flowing/);
+    assert.equal(plan.blocks.length, 0, 'must not rebuild the basin it is draining');
+});
+
+test('retake fills only the drowned cells and leaves standing blocks alone', () => {
+    // After the source is plugged the water is gone: the cells are air, and one
+    // holds a block she never lost.
+    const g = floodedTerrain([]);
+    // getState AND get must agree: the retake reads get() for names, the survey
+    // reads getState() for level. A fake that only fixes one of them makes the
+    // oak_log invisible to the phase that actually matters.
+    g.getState = (x, y, z) => (x === 21 ? { name: 'oak_log', level: null } : { name: 'air', level: null });
+    g.get = (x, y, z) => (x === 21 ? 'oak_log' : 'air');
+    const s = { sources: [], flowing: [], extent: { minX: 20, maxX: 23, minY: 62, maxY: 62, minZ: 0, maxZ: 0 }, volume: 0, dry: false };
+    const plan = floodRetakePlan(s, { x: 0, y: 0, z: 0 }, { ground: g, material: 'dirt' });
+    assert.equal(plan.report.blocked, false);
+    assert.equal(plan.report.reason, null);
+    // x20..23 is four cells; x21 holds an oak_log, so three are air.
+    assert.equal(plan.blocks.length, 3, `expected 3 air cells, got ${plan.blocks.length}`);
+    assert.ok(!plan.blocks.some(b => b.x === 21), 'retake flattened a block that was never flooded');
 });
 
 test('road on flat ground lays a continuous 3-wide path with no holes', () => {

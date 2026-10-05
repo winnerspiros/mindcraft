@@ -163,6 +163,73 @@ function reportPlaced(bot, label, summary, sch) {
     skills.log(bot, bits.join(', '));
 }
 
+/**
+ * Options for the flood commands: "radius=12 material=dirt". Kept deliberately
+ * small — the flood commands survey a radius around her, so the only things
+ * worth overriding are how far to look and what to plug with.
+ */
+function parseFloodOpts(spec) {
+    const out = { radius: 12, ySpan: 12, material: 'cobblestone', forceBlocks: false };
+    if (!spec || typeof spec !== 'string') return out;
+    for (const tok of spec.split(/\s+/)) {
+        const m = /^([a-zA-Z]+)=(.+)$/.exec(tok);
+        if (!m) continue;
+        const [, k, v] = m;
+        if (k === 'radius') { const n = parseInt(v, 10); if (n > 0) out.radius = Math.min(48, n); }
+        else if (k === 'material' || k === 'block') out.material = v.toLowerCase();
+        else if (k === 'depth' || k === 'yspan') { const n = parseInt(v, 10); if (n > 0) out.ySpan = Math.min(32, n); }
+        else if (k === 'forceblocks') out.forceBlocks = true;
+        else if (k === 'all' || k === 'allsources') out.allSources = true;
+        else if (k === 'aggressive') out.aggressive = true;
+    }
+    return out;
+}
+
+/** Does she have an empty bucket, or one she can empty? Server truth, like the rest. */
+async function hasBucket(bot) {
+    try {
+        const { rconItemCount } = await import('../../utils/rcon.js');
+        const n = (await rconItemCount(bot.username, 'bucket')) || 0;
+        if (n > 0) return true;
+        // A water_bucket is useless for plugging, but worth knowing about.
+        return (await rconItemCount(bot.username, 'water_bucket')) > 0;
+    } catch (_) {
+        try { return (bot.inventory.items() || []).some(i => i.name === 'bucket'); }
+        catch (_) { return false; }
+    }
+}
+
+/**
+ * Scoop water sources with an empty bucket. Leaves no block behind, which is why
+ * it is preferred when she has one. Returns how many sources were actually
+ * removed — verified against the world afterwards, never assumed from the click.
+ */
+async function scoopSources(bot, g, survey) {
+    const { useToolOnBlock } = await import('../library/skills.js');
+    let removed = 0;
+    for (const s of survey.sources) {
+        // A full bucket cannot scoop again; empty it back into the world first.
+        try {
+            const { rconItemCount } = await import('../../utils/rcon.js');
+            if ((await rconItemCount(bot.username, 'bucket')) === 0 &&
+                (await rconItemCount(bot.username, 'water_bucket')) > 0) {
+                // Put the water back down away from the source so the bucket frees up.
+                const away = { x: s.x + 2, y: s.y, z: s.z };
+                await useToolOnBlock(bot, 'water_bucket', away);
+            }
+        } catch (_) {}
+        try {
+            await useToolOnBlock(bot, 'bucket', { x: s.x, y: s.y, z: s.z });
+            // Verify, do not trust the click: a source scoops into a bucket, and
+            // an unreachable or wrong-target block does nothing at all.
+            await new Promise(r => setTimeout(r, 350));
+            const now = typeof g.getState === 'function' ? g.getState(s.x, s.y, s.z) : null;
+            if (!now || now.name !== 'water') removed++;
+        } catch (_) {}
+    }
+    return removed;
+}
+
 export const actionsList = [
     {
         name: '!newAction',
@@ -1138,6 +1205,89 @@ export const actionsList = [
             const summary = await landwork.placeGenerated(bot, sch);
             reportPlaced(bot, 'bridge', summary, sch);
         }, false, 15)
+    },
+    {
+        name: '!stopFlood',
+        description: 'Find where a flood is COMING FROM and stop it at the source. She surveys the water around her, works out which blocks are actual water sources (the ones that keep generating) versus water that is merely spreading, and plugs each source — with a cheap solid block, or with an empty bucket if she is carrying one, which leaves nothing behind. Plugging the source is the only fix that lasts; the spreading water goes away on its own once the source is gone. She does NOT fill in the water one block at a time. Optional: "radius=12" and "material=cobblestone".',
+        params: {
+            'opts': { type: 'string', description: 'Optional: "radius=12 material=cobblestone". Defaults to a 12-block survey around her.' },
+        },
+        perform: runAsAction(async (agent, opts) => {
+            const bot = agent.bot;
+            const o = landwork.FLOOD_PLUGS && parseFloodOpts(opts);
+            const g = landwork.terrainSampler(bot);
+            const me = bot.entity.position;
+            const survey = landwork.surveyFlood(g, { x: me.x, y: me.y, z: me.z }, o.radius, o.ySpan);
+            if (survey.dry) { skills.log(bot, `No water within ${o.radius} blocks of me — nothing flooding here.`); return; }
+            skills.log(bot, `Flood: ${survey.volume} water blocks in reach — ${survey.sources.length} source(s) still feeding it, ${survey.flowing.length} just spreading.`);
+
+            // A pond is not a leak. Every water surface has sources in it, so
+            // "plug all of them" means paving a lake with cobblestone — on the
+            // real spawn area that was 124 blocks to fix 4 actual culprits.
+            // Classify first, and say plainly what is being left alone.
+            const cls = o.allSources
+                ? { plugs: survey.sources, ponds: [] }
+                : landwork.classifySources(survey, { aggressive: o.aggressive });
+            if (cls.ponds.length) {
+                skills.log(bot, `${cls.ponds.length} of those sources are a standing pool, not a leak — leaving that water alone. Stopping ${cls.plugs.length} that actually feed the flood.`);
+            }
+
+            // A bucket leaves nothing behind and needs no material at all, so
+            // carrying one is the better tool — but scoop only the leaks, since
+            // emptying a bucket into a lake just puts a hole in it.
+            const bucket = await hasBucket(bot);
+            if (bucket && !o.forceBlocks) {
+                const done = await scoopSources(bot, g, { sources: cls.plugs });
+                skills.log(bot, done
+                    ? `Scooped ${done} source(s) with the empty bucket — the water should start receding.`
+                    : `I have a bucket but could not scoop the sources; they are out of reach or the server refused.`);
+                // Re-survey: the recede takes a moment, so report honestly rather
+                // than claiming the flood is over.
+                const after = landwork.surveyFlood(g, { x: me.x, y: me.y, z: me.z }, o.radius, o.ySpan);
+                skills.log(bot, after.sources.length
+                    ? `${after.sources.length} source(s) still there — they refill immediately; needs a block to plug them.`
+                    : 'No sources left. Give the water a moment to recede, then !retakeGround to lay the ground back.');
+                return;
+            }
+
+            const sch = landwork.floodPlugPlan(survey, { x: Math.round(me.x), y: Math.round(me.y), z: Math.round(me.z) }, { material: o.material, plugs: cls.plugs, ponds: cls.ponds, all: o.allSources });
+            if (!sch.blocks.length) { skills.log(bot, `No water sources in reach — only spreading water, which will go on its own.`); return; }
+            skills.log(bot, `Plugging ${sch.blocks.length} source(s) with ${o.material} (highest first, so none end up underwater).`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Plug cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'flood plug', summary, sch);
+            skills.log(bot, `Once the water is gone, !retakeGround puts the ground back.`);
+        }, false, 20)
+    },
+    {
+        name: '!retakeGround',
+        description: 'After a flood has stopped and the water has receded, lay the ground back where the water was. She only fills cells that are empty or still wet — anything still holding its own block is left alone, so this cannot flatten ground she never flooded. She refuses to run while any water source is still feeding, because that just rebuilds the basin. Optional: "radius=12 material=dirt".',
+        params: {
+            'opts': { type: 'string', description: 'Optional: "radius=12 material=dirt".' },
+        },
+        perform: runAsAction(async (agent, opts) => {
+            const bot = agent.bot;
+            const o = parseFloodOpts(opts);
+            const g = landwork.terrainSampler(bot);
+            const me = bot.entity.position;
+            const survey = landwork.surveyFlood(g, { x: me.x, y: me.y, z: me.z }, o.radius, o.ySpan);
+            if (survey.dry) {
+                skills.log(bot, `No water here at all — so nothing drowned. Nothing to retake.`);
+                return;
+            }
+            const sch = landwork.floodRetakePlan(survey, { x: Math.round(me.x), y: Math.round(me.y), z: Math.round(me.z) }, { ground: g, material: o.material });
+            if (sch.report.blocked) {
+                skills.log(bot, `Not yet: ${sch.report.reason}. Plug them first with !stopFlood — laying ground now would just rebuild the basin.`);
+                return;
+            }
+            if (!sch.blocks.length) { skills.log(bot, `The water is gone but no ground is missing — nothing to retake.`); return; }
+            skills.log(bot, `Retaking ${sch.blocks.length} cell(s) the flood left empty, as ${o.material}.`);
+            const { plan } = landwork.planGenerated(bot, sch);
+            skills.log(bot, buildsense.formatPlan(plan, 'Retake cost'));
+            const summary = await landwork.placeGenerated(bot, sch);
+            reportPlaced(bot, 'retake', summary, sch);
+        }, false, 20)
     },
     {
         name: '!buildWall',

@@ -609,6 +609,8 @@ export class SelfPrompter {
                     // goal text has to show the argument - hence the quoted forms.
                     { cmd: '!buildRoad', needsArgs: true, goal: 'lay a road across the ground, like \"north 20\"' },
                     { cmd: '!buildGarden', needsArgs: false, goal: 'make a garden on flat ground near me' },
+                    { cmd: '!stopFlood', needsArgs: false, goal: 'water is flooding where I am — find the sources and plug them' },
+                    { cmd: '!retakeGround', needsArgs: false, goal: 'the flood has stopped — lay the drowned ground back' },
                     { cmd: '!levelGround', needsArgs: false, goal: 'level a square of ground flat to build on' },
                     { cmd: '!buildStairs', needsArgs: true, goal: 'cut stairs into a slope, like \"north 10\"' },
                 ];
