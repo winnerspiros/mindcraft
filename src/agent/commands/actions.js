@@ -1194,6 +1194,12 @@ export const actionsList = [
         },
         perform: runAsAction(async (agent, spec) => {
             const bot = agent.bot;
+            // If I am standing in water, walk to dry ground BEFORE planning. A
+            // road planned from the middle of the lake is a road on the lake bed,
+            // and every placement then fails on "nothing to place on".
+            const reloc = await landwork.relocateToSite(bot);
+            if (reloc.moved) skills.log(bot, `I was standing on poor ground — I walked to ${reloc.site.x}, ${reloc.site.z} to work from.`);
+            else if (reloc.why && reloc.why !== 'already on dry open ground') skills.log(bot, `Note: ${reloc.why}. Building from here anyway.`);
             const target = parseLandSpec(bot, spec);
             if (target.error) { skills.log(bot, target.error); return; }
             const g = landwork.terrainSampler(bot);

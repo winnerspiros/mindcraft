@@ -280,6 +280,46 @@ export function findBuildSite(get, centre, opts = {}) {
     return cands[0];
 }
 
+/**
+ * Move to somewhere workable, if the ground underfoot is not.
+ *
+ * Site choice is only useful if she actually goes there. Planning a road from
+ * the middle of a lake produces a road on the lake bed, so before starting
+ * work she looks around and walks to dry ground if she needs to.
+ *
+ * Returns { moved, site, why }. `moved` is false with a reason whenever she did
+ * not relocate -- standing her ground on a decent patch is correct behaviour,
+ * not a failure, and callers must not treat it as one.
+ */
+export async function relocateToSite(bot, opts = {}) {
+    const get = opts.get || terrainSampler(bot);
+    const here = bot.entity.position.floored();
+    const hereGround = standableTop(get, here.x, here.z, here.y + 24, here.y - 24, opts.head ?? 3);
+    // Already on decent, dry, open ground? Stay exactly where she is. Moving
+    // for the sake of moving wastes food and time and can walk her off a good
+    // spot into a worse one.
+    if (hereGround != null) return { moved: false, site: null, why: 'already on dry open ground' };
+
+    const site = findBuildSite(get, { x: here.x, y: here.y, z: here.z }, {
+        rings: opts.rings ?? 6,
+        step: opts.step ?? 2,
+        head: opts.head ?? 3,
+    });
+    if (!site) return { moved: false, site: null, why: 'no dry open ground nearby' };
+
+    // Stand on top of the ground block, not inside it.
+    const goto = opts.goTo || (await import('./skills.js')).goToPosition;
+    const ok = await goto(bot, site.x + 0.5, site.y + 1, site.z + 0.5, 1, opts.mode || 'walk');
+    if (!ok) return { moved: false, site, why: 'could not reach that ground' };
+
+    // Arriving is not enough -- confirm the ground is what we thought it was.
+    const now = bot.entity.position.floored();
+    if (standableTop(get, now.x, now.z, now.y + 24, now.y - 24, opts.head ?? 3) == null) {
+        return { moved: false, site, why: 'arrived somewhere still not dry or open' };
+    }
+    return { moved: true, site: { x: now.x, y: now.y, z: now.z }, why: '' };
+}
+
 /** Split a world-coord block list into <= max blocks chunks, each a schematic. */
 export function chunk(schem, max) {
     const ox = schem.origin?.x ?? 0, oy = schem.origin?.y ?? 0, oz = schem.origin?.z ?? 0;
