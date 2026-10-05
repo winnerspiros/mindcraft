@@ -6273,8 +6273,20 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 bot.setControlState('jump', true);
                 await new Promise(resolve => setTimeout(resolve, 300));
             }
+            let _placeTimedOut = false;
             try {
                 await bot.placeBlock(buildOffBlock, faceVec);
+            } catch (perr) {
+                // mineflayer waits 5s for a `blockUpdate` event and throws
+                // "Event blockUpdate:(x,y,z) did not fire within timeout" when it
+                // never arrives. On 26.3 the block is frequently placed anyway —
+                // the event just does not come back — so a throw here is NOT proof
+                // of failure. Fall through to the world check below and let THAT
+                // decide. Treating the throw as failure (which this used to do)
+                // turned every one of these into "0 placed" while the road was
+                // actually there.
+                _placeTimedOut = /did not fire within timeout/.test(String(perr && perr.message));
+                if (!_placeTimedOut) throw perr;
             } finally {
                 bot.setControlState('jump', false);
                 if (sneaking) { try { bot.setControlState('sneak', false); } catch {} }
@@ -6282,6 +6294,9 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             // VERIFY the placement actually landed (schem review: placeBlockTracked
             // pattern — the server can reject silently, leaving a hole she thinks
             // is filled). Wrong block or still air = failure, not success.
+            // A timed-out placement gets a longer grace period before it is
+            // judged: the block may still be arriving from the server.
+            if (_placeTimedOut) await new Promise(resolve => setTimeout(resolve, 1200));
             try {
                 await new Promise(resolve => setTimeout(resolve, 200));
                 const chk = bot.blockAt(target_dest);
@@ -6290,7 +6305,9 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                     const gotBase = String(chk.name || '').replace(/^wall_/, '').replace(/_wall$/, '');
                     const wantNorm = wantBase.replace(/^(wall_)/, '');
                     if (chk.name === 'air' || chk.boundingBox === 'empty') {
-                        log(bot, `Placed ${blockType} at ${target_dest} but it's still air — server rejected it.`);
+                        log(bot, _placeTimedOut
+                            ? `Placement at ${target_dest} timed out and the block is not there — server rejected it.`
+                            : `Placed ${blockType} at ${target_dest} but it's still air — server rejected it.`);
                         return false;
                     }
                     if (chk.name !== wantBase && gotBase !== wantBase && gotBase !== wantNorm && chk.name !== wantNorm) {
@@ -6306,7 +6323,11 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                     await breakBlockAt(bot, _scaffoldToClean.x, _scaffoldToClean.y, _scaffoldToClean.z);
                 }
             } catch {}
-            log(bot, `Placed ${blockType} at ${target_dest}.`);
+            // Say when it landed despite the missing event, so the log reflects
+            // what actually happened rather than looking like a clean success.
+            log(bot, _placeTimedOut
+                ? `Placed ${blockType} at ${target_dest} (no blockUpdate event came back, but the block is there).`
+                : `Placed ${blockType} at ${target_dest}.`);
             await new Promise(resolve => setTimeout(resolve, 200));
             return true;
         }
