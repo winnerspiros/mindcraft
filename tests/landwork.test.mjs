@@ -215,6 +215,45 @@ test('all=true overrides the pond rule when she really means every drop', () => 
     assert.equal(plan.blocks.length, 6, 'all=true must plug the pond too');
 });
 
+test('a submerged source is reported as blocked instead of silently failing', () => {
+    // Live finding: a source sitting inside standing water refills the moment its
+    // cell is emptied, so no block can ever be placed into it. Both remaining
+    // leaks on the real spawn lake are like this.
+    const cells = new Map();
+    const put = (x,y,z,n,lv) => cells.set(`${x},${y},${z}`, n);
+    put(20,62,0,'stone');               // floor beneath the source
+    // Standing water AROUND the source at y=63 — neighboursWet looks at the
+    // source's own level, not the one below it.
+    for (const d of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0],[0,-1,0]]) put(20+d[0],63+d[1],d[2],'water');
+    put(20,63,0,'water');               // the source itself
+    const g = {
+        get: (x,y,z) => cells.get(`${x},${y},${z}`) || 'air',
+        getState: (x,y,z) => { const n = cells.get(`${x},${y},${z}`); return n ? { name: n, level: 0 } : { name: 'air', level: null }; },
+    };
+    const s = { sources: [{ x:20, y:63, z:0 }], flowing: [], volume: 7,
+        extent: { minX:19, maxX:21, minY:61, maxY:63, minZ:-1, maxZ:1 }, dry: false };
+    // sanity: the fixture really is a source surrounded by water
+    assert.equal(g.get(21,63,0), 'water', 'fixture: east neighbour must be water');
+    assert.equal(g.get(20,64,0), 'water', 'fixture: above must be water');
+    const plan = floodPlugPlan(s, { x:0, y:0, z:0 }, { plugs: s.sources, ground: g });
+    assert.equal(plan.report.blocked.length, 1,
+        `a submerged source was not flagged (blocked=${JSON.stringify(plan.report.blocked)})`);
+    assert.match(plan.report.blocked[0].reason, /submerged/);
+});
+
+test('a source in open air is NOT flagged as blocked', () => {
+    const cells = new Map([['20,62,0','stone'],['20,63,0','water']]);
+    const g = {
+        get: (x,y,z) => cells.get(`${x},${y},${z}`) || 'air',
+        getState: (x,y,z) => ({ name: cells.get(`${x},${y},${z}`) || 'air', level: 0 }),
+    };
+    const s = { sources: [{ x:20, y:63, z:0 }], flowing: [], volume: 1,
+        extent: { minX:20, maxX:20, minY:62, maxY:63, minZ:0, maxZ:0 }, dry: false };
+    const plan = floodPlugPlan(s, { x:0, y:0, z:0 }, { plugs: s.sources, ground: g });
+    assert.equal((plan.report.blocked || []).length, 0, 'an open-air source was wrongly blocked');
+    assert.equal(plan.blocks.length, 1);
+});
+
 test('plugging a source places one cheap block per source, not per water block', () => {
     const g = floodedTerrain([{ x: 20, y: 62, z: 0 }, { x: 10, y: 62, z: 0 }]);
     const s = surveyFlood(g, { x: 15, y: 62, z: 0 }, 14, 4);

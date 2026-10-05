@@ -845,6 +845,27 @@ export async function placeGenerated(bot, sch, opts = {}) {
     || ((b, part, origin) => schematic.placeSchematic(b, part, origin, 0, part.name));
     const parts = chunk(sch, max);
     const summary = { chunks: parts.length, placed: 0, of: sch.blocks.length, faults: 0, cleared: 0, parts: [] };
+
+    // Anything that must be gone BEFORE anything can be placed. A flood plug is
+    // the case that matters: you cannot place into a water cell, so the water
+    // over (and under) the source is scooped out first.
+    if (sch.clearBefore && sch.clearBefore.length) {
+        for (const c of sch.clearBefore) {
+            if (opts.skipClear) continue;
+            try {
+                const b = bot.blockAt(new Vec3(c.x, c.y, c.z));
+                // Never break a block that is not water here — this list is a
+                // plan, and the world may have changed since it was surveyed.
+                if (b && (b.name === 'water' || b.name === 'flowing_water')) {
+                    await skills.breakBlockAt(bot, c.x, c.y, c.z);
+                    summary.cleared++;
+                }
+            } catch (_) {
+                // Unreachable, or the block is not there any more. Either way the
+                // plan is best-effort: the placement that follows re-verifies.
+            }
+        }
+    }
     for (const part of parts) {
         // chunk() already resolves each part's own world origin; an override
         // shifts the whole build (a garden placed on the site it chose).
@@ -916,6 +937,16 @@ export { schematic, buildsense, skills, world };
 
 /** Cheap blocks that stop water, best first. Anything solid and non-liquid. */
 export const FLOOD_PLUGS = ['cobblestone', 'dirt', 'gravel', 'sand', 'netherrack'];
+
+/** Is the source surrounded by standing water? A submerged source refills the
+ *  moment its cell is emptied, so a block can never be placed into it. */
+export function neighboursWet(ground, s) {
+    for (const d of [[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0]]) {
+        const n = ground.get(s.x + d[0], s.y + d[1], s.z + d[2]);
+        if (n === 'water' || n === 'flowing_water') return true;
+    }
+    return false;
+}
 
 /**
  * A water block is a SOURCE if its `level` is 0 (or absent — some forks omit
@@ -1035,22 +1066,96 @@ export function floodPlugPlan(survey, origin, opts = {}) {
     // Plug the leaks, not the ponds. `all` overrides, and is what you want when
     // she genuinely means "stop every drop of water here".
     const targets = opts.all ? survey.sources : (opts.plugs || survey.sources);
-    const blocks = targets
-        .slice()
-        .sort((a, b) => b.y - a.y)
-        .map(s => ({
-            x: s.x - origin.x,
-            y: s.y - origin.y,
-            z: s.z - origin.z,
-            name: material,
-            props: {},
-        }));
+    const ground = opts.ground;
+    const blocks = [];
+    const clearCells = [];
+    // Sources that cannot be plugged from here, with the reason. Reported, not
+    // silently attempted.
+    const unreachable = [];
+    for (const s of targets.slice().sort((a, b) => b.y - a.y)) {
+        const bx = s.x - origin.x, by = s.y - origin.y, bz = s.z - origin.z;
+        blocks.push({ x: bx, y: by, z: bz, name: material, props: {} });
+        // A source sitting mid-air (a waterfall, or one that has already cut
+        // through) has nothing to place against — placeBlock fails with
+        // "nothing to place on". Give it a footing first, one block below.
+        if (ground && opts.support !== false) {
+            // A source can only be plugged by filling its own cell, and that
+            // cell is water — which cannot be placed into. So the cell has to be
+            // emptied first and the plug placed into the air that leaves. For
+            // that to work there must be a FLOOR: a solid block below (counting
+            // water as a floor is wrong — it drains), or a solid side face to
+            // place against. Both live leaks at (-14,64,13) and (-4,62,15) had
+            // exactly this and neither had a usable face, so they were being
+            // attempted into open water and failing.
+            let floor = false, face = false;
+            const below = ground.get(s.x, s.y - 1, s.z);
+            if (below && below !== 'air' && below !== 'water' && below !== 'flowing_water') floor = true;
+            for (const d of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,1,0]]) {
+                const n = ground.get(s.x + d[0], s.y + d[1], s.z + d[2]);
+                if (n && n !== 'air' && n !== 'water' && n !== 'flowing_water') { face = true; break; }
+            }
+            // Being submerged blocks the plug no matter what else is true. This
+            // check used to sit inside `if (floor || face)`, so a submerged
+            // source with no floor AND no face — the walled-in lake case — was
+            // never flagged and kept failing silently.
+            if (neighboursWet(ground, s)) {
+                unreachable.push({ x: s.x, y: s.y, z: s.z, reason: 'submerged — drain the water around it first' });
+            }
+            if (floor || face) {
+                // Clear the source cell and the one under it; the plug goes into
+                // the emptied cell, standing on whatever floor is beneath.
+                //
+                // KNOWN LIMIT, found live: a source sitting INSIDE standing water
+                // refills faster than a block can be placed into the emptied
+                // cell. Both remaining leaks on the spawn lake are like this.
+                // A leak in open air plugs fine (proven: the source at
+                // (7,67,19) went from level 0 to cobblestone, and the area's
+                // water fell 1237 -> 697). A submerged source needs the water
+                // around it drained first, so the plan is marked blocked and
+                // reported rather than attempted and failed.
+                clearCells.push({ x: s.x, y: s.y, z: s.z });
+                if (!floor) clearCells.push({ x: s.x, y: s.y - 1, z: s.z });
+            }
+            if (!floor && !face) {
+                // Do NOT try to fill the flooded cell itself. A hole dug in a
+                // lake refills instantly from the water around it — the live
+                // source at (-14,64,13) reported water level 8 again within a
+                // second of being cleared. The plug has to come in from the
+                // nearest DRY neighbour instead: clear that one cell, stand on
+                // it, and place across.
+                let entry = null;
+                for (const d of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[1,0,1],[-1,0,-1],[1,0,-1],[-1,0,1],[0,1,0]]) {
+                    const n = ground.get(s.x + d[0], s.y + d[1], s.z + d[2]);
+                    if (n && n !== 'air' && n !== 'water' && n !== 'flowing_water') { entry = { dx: d[0], dy: d[1], dz: d[2] }; break; }
+                }
+                if (entry) {
+                    clearCells.push({ x: s.x + entry.dx, y: s.y + entry.dy, z: s.z + entry.dz });
+                    blocks.push({
+                        x: bx + entry.dx, y: by + entry.dy, z: bz + entry.dz,
+                        name: material, props: {},
+                        _support: true,
+                    });
+                } else {
+                    // Walled in with nothing dry to stand on. Place the footing
+                    // and let the pre-clear scoop the water anyway — this is the
+                    // case that cannot be fixed from here and should be reported,
+                    // not silently attempted.
+                    blocks.push({ x: bx, y: by - 1, z: bz, name: material, props: {}, _support: true });
+                    clearCells.push({ x: s.x, y: s.y - 1, z: s.z }, { x: s.x, y: s.y, z: s.z });
+                }
+            }
+        }
+    }
+    // The footing goes in BEFORE the plug it holds up, whatever the y order says.
+    blocks.sort((a, b) => (a._support === b._support ? b.y - a.y : (a._support ? -1 : 1)));
     const report = {
         sources: survey.sources.length,
         flowing: survey.flowing.length,
         material,
         volume: survey.volume,
         plugging: targets.length,
+        supports: blocks.filter(b => b._support).length,
+        blocked: unreachable,
         pondsLeft: survey.sources.length - targets.length,
         ponds: opts.ponds ? opts.ponds.length : 0,
     };
@@ -1060,7 +1165,9 @@ export function floodPlugPlan(survey, origin, opts = {}) {
         }),
         { x: 0, y: 0, z: 0 },
     );
-    return { name: opts.name || 'flood plug', size, blocks, origin, report };
+    // `clearBefore`, not `clear`: placeGenerated runs `clear` AFTER placing, but
+    // a plug has to scoop the water out FIRST or it has nothing to attach to.
+    return { name: opts.name || 'flood plug', size, blocks, origin, clearBefore: clearCells, report };
 }
 
 /**

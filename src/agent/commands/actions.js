@@ -1250,8 +1250,18 @@ export const actionsList = [
                 return;
             }
 
-            const sch = landwork.floodPlugPlan(survey, { x: Math.round(me.x), y: Math.round(me.y), z: Math.round(me.z) }, { material: o.material, plugs: cls.plugs, ponds: cls.ponds, all: o.allSources });
+            const sch = landwork.floodPlugPlan(survey, { x: Math.round(me.x), y: Math.round(me.y), z: Math.round(me.z) }, { material: o.material, plugs: cls.plugs, ponds: cls.ponds, all: o.allSources, ground: g });
             if (!sch.blocks.length) { skills.log(bot, `No water sources in reach — only spreading water, which will go on its own.`); return; }
+            // Say plainly what cannot be plugged, and why. A submerged source
+            // refills the instant its cell is emptied, so a block can never be
+            // placed into it — claiming otherwise would be a lie she repeats.
+            for (const b of (sch.report.blocked || [])) {
+                skills.log(bot, `Cannot plug the source at ${b.x}, ${b.y}, ${b.z}: it is ${b.reason}. I need the water around it gone first.`);
+            }
+            if (!sch.blocks.length) {
+                skills.log(bot, `Every source in reach is submerged — none can be plugged until the water around them drains.`);
+                return;
+            }
             skills.log(bot, `Plugging ${sch.blocks.length} source(s) with ${o.material} (highest first, so none end up underwater).`);
             const { plan } = landwork.planGenerated(bot, sch);
             skills.log(bot, buildsense.formatPlan(plan, 'Plug cost'));
