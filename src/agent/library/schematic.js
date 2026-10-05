@@ -503,7 +503,12 @@ const VERIFY_IGNORE_EXTRA = new Set(['torch', 'wall_torch', 'redstone_torch', 'r
     // the ground between them is pre-existing and not a placement error.
     'dirt', 'grass_block', 'stone', 'cobblestone', 'sand', 'gravel', 'sandstone',
     'red_sand', 'red_sandstone', 'terracotta', 'packed_ice', 'blue_ice', 'mycelium',
-    'podzol', 'coarse_dirt', 'rooted_dirt']);
+    'podzol', 'coarse_dirt', 'rooted_dirt',
+    // Mountain/hill variants at elevation (the last run was at y=85+ in a mountain biome)
+    'andesite', 'diorite', 'granite', 'polished_andesite', 'polished_diorite', 'polished_granite',
+    'calcite', 'tuff', 'dripstone_block', 'mud', 'clay', 'farmland', 'snow_block',
+    'deepslate', 'cobbled_deepslate', 'polished_deepslate', 'deepslate_bricks',
+    'basalt', 'smooth_basalt', 'blackstone', 'end_stone']);
 
 function propsEqualIgnoringAge(a, b) {
     const ka = Object.keys(a || {}).filter((k) => !CROP_AGE_PROPS.has(k));
