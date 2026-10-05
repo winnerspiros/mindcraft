@@ -6309,6 +6309,8 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         var _scaffoldToClean = bridged;
         // The whole pillar, so the road does not leave a dirt tower behind it.
         var _pillarToClean = typeof _columnBuilt !== 'undefined' ? _columnBuilt : [];
+        // Scaffolding that was placed but not successfully dug back out.
+        var _pillarLitter = [];
     }
 
     const pos = bot.entity.position;
@@ -6395,6 +6397,21 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             // server-rejected (occupied). Jump first, place mid-air.
             const _dest = buildOffBlock.position.plus(faceVec);
             const _feet = bot.entity.position.floored();
+            // REACH. Vanilla rejects a placement beyond ~4.5 blocks, silently,
+            // so placeBlock waits out its 5s timeout and reports "the block is
+            // not there" -- which reads as a server problem and is really a
+            // "I am too far away" problem. Every one of the last run's remaining
+            // faults was the far edge of the road, past this limit.
+            //
+            // Measure it here and say so, so the caller and the log can tell a
+            // reach problem from a genuine rejection. 4.5 is the vanilla reach
+            // for survival; leave a small margin because position is eye-level.
+            const _reachNow = (() => {
+                try { return bot.entity.position.distanceTo(_dest); } catch (_) { return 0; }
+            })();
+            if (_reachNow > 4.3) {
+                log(bot, `Too far to place at ${target_dest} (${_reachNow.toFixed(1)} blocks away, limit ~4.5) — I cannot reach it from here.`);
+            }
             if (_dest.x === _feet.x && _dest.z === _feet.z && _dest.y <= _feet.y + 1) {
                 bot.setControlState('jump', true);
                 await new Promise(resolve => setTimeout(resolve, 300));
@@ -6456,7 +6473,27 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 if (typeof _pillarToClean !== 'undefined') {
                     for (let i = _pillarToClean.length - 1; i >= 0; i--) {
                         const c = _pillarToClean[i];
-                        try { await breakBlockAt(bot, c.x, c.y, c.z); } catch (e) { /* already gone or out of reach; the road block is placed either way */ }
+                        // Only dig what we actually put down. A cell that was
+                        // already there belongs to the world, and a "record it
+                        // then dig it" bug that ignores this would tear a hole in
+                        // someone's build.
+                        let mine = false;
+                        try { const b = bot.blockAt(new Vec3(c.x, c.y, c.z)); mine = !!b && b.name === 'dirt'; } catch (_) { continue; }
+                        if (!mine) continue;
+                        try { await breakBlockAt(bot, c.x, c.y, c.z); } catch (e) { /* out of reach; report below */ }
+                        // Verify the dig landed. breakBlockAt returning is not
+                        // proof it did -- the same silent-server-rejection problem
+                        // placement has. Unverified scaffolding is exactly what
+                        // showed up as "extra" in verification (43 blocks once,
+                        // 33 the next run), so the count of what is STILL standing
+                        // is logged rather than assumed to be zero.
+                        await new Promise(resolve => setTimeout(resolve, 250));
+                        let still = null;
+                        try { const b = bot.blockAt(new Vec3(c.x, c.y, c.z)); still = !!b && b.name !== 'air' && b.boundingBox !== 'empty'; } catch (_) { /* chunk not loaded here; treat as unverified and keep looking */ }
+                        if (still) _pillarLitter.push(`${c.x},${c.y},${c.z}`);
+                    }
+                    if (_pillarLitter.length) {
+                        log(bot, `${_pillarLitter.length} scaffold block(s) I built are still standing (${_pillarLitter.join(' ')}) — clearing them is not going well here.`);
                     }
                     // Recover the pillar. We took this dirt out of our own
                     // inventory to build the scaffold, so digging it back out
