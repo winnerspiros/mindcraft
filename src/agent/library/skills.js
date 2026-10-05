@@ -10465,7 +10465,11 @@ export async function useToolOn(bot, toolName, targetName) {
      * @param {string} targetName - entity type, block type, or "nothing" for no target
      * @returns {Promise<boolean>} true if action succeeded
      */
-    if (!bot.inventory.slots.find(slot => slot && slot.name === toolName) && !bot.game.gameMode === 'creative') {
+    // NOTE: this used to read `!bot.game.gameMode === 'creative'`, which parses as
+    // (!gameMode) === 'creative' and is therefore ALWAYS false -- so the guard
+    // below never fired and the creative escape never applied. Precedence, not
+    // the game mode, was the bug.
+    if (!bot.inventory.slots.find(slot => slot && slot.name === toolName) && bot.game.gameMode !== 'creative') {
         log(bot, `You do not have any ${toolName} to use.`);
         return false;
     }

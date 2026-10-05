@@ -481,10 +481,19 @@ async function run() {
     // while walking the road. Give the test bot invulnerability and a respawn,
     // then keep it topped up during placement so a death cannot silently eat
     // the rest of the run.
+    // NOTE: no `gamemode creative` here, deliberately. It was in this loop to stop
+    // the bot drowning, and it worked -- but it also changes what the game means:
+    // placeBlock takes a creative branch that calls bot.creative.setInventorySlot,
+    // which rewrites a hotbar slot on every placement. The trace showed the
+    // whole inventory REORDERING mid-run and the iron_pickaxe simply vanishing
+    // (present at t=28, gone at t=32, never back) while health never moved off
+    // 3.500001 -- so it was not death, and "Hand-gate: no pickaxe anywhere"
+    // followed from a tool the test itself had destroyed. Resistance and water
+    // breathing solve the drowning this was meant to solve, without changing the
+    // game mode, so the run measures placement rather than inventory churn.
     const keepAlive = setInterval(() => {
         rconCmd(`effect give ${TEST_BOT} minecraft:resistance 999 255 true`).catch(() => {});
         rconCmd(`effect give ${TEST_BOT} minecraft:water_breathing 999 255 true`).catch(() => {});
-        rconCmd(`gamemode ${TEST_BOT} creative`).catch(() => {});
     }, 3000);
     const revive = setInterval(() => {
         try { if (bot.health != null && bot.health <= 0) { bot.health = 20; bot.emit('respawn'); } } catch (_) {}
