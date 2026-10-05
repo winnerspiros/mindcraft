@@ -546,18 +546,26 @@ export async function verifySchematic(bot, schematic, origin, rotationDeg = 0, o
         cursor.cells = [...expected.keys()];
         // EXTRA sweep: walk the world footprint, inverse-map each solid cell.
         // Cells that inverse to null (outside footprint) or to air are strays.
-        cursor.extras = [];
-        for (let y = 0; y < sy; y++) {
-            for (let x = 0; x < sx; x++) {
-                for (let z = 0; z < sz; z++) {
-                    const wx = ox + x, wy = oy + y, wz = oz + z;
-                    if (expected.has(`${wx},${wy},${wz}`)) continue;
-                    let blk = null;
-                    try { blk = bot.blockAt(new Vec3(wx, wy, wz)); } catch (_) {}
-                    if (!blk || isAir(blk) || FLUID_NAMES.has(blk.name) || ignoreExtra.has(blk.name)) continue;
-                    cursor.extras.push({ x: wx, y: wy, z: wz, found: blk.name });
+        // SKIP when chunked: sibling parts overlap in the bounding box and
+        // flag each other's blocks as "extra" (e.g., support pillars in part 1,
+        // road surface at same X,Z in part 2). The main missing/wrong checks
+        // still run per-part and catch real problems.
+        if (!opts.skipExtraSweep) {
+            cursor.extras = [];
+            for (let y = 0; y < sy; y++) {
+                for (let x = 0; x < sx; x++) {
+                    for (let z = 0; z < sz; z++) {
+                        const wx = ox + x, wy = oy + y, wz = oz + z;
+                        if (expected.has(`${wx},${wy},${wz}`)) continue;
+                        let blk = null;
+                        try { blk = bot.blockAt(new Vec3(wx, wy, wz)); } catch (_) {}
+                        if (!blk || isAir(blk) || FLUID_NAMES.has(blk.name) || ignoreExtra.has(blk.name)) continue;
+                        cursor.extras.push({ x: wx, y: wy, z: wz, found: blk.name });
+                    }
                 }
             }
+        } else {
+            cursor.extras = [];
         }
     }
     let ok = cursor.ok || 0, missing = cursor.missing || 0, wrongBlock = cursor.wrongBlock || 0,

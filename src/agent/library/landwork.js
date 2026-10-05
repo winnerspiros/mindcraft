@@ -984,8 +984,8 @@ export async function placeGenerated(bot, sch, opts = {}) {
                 z: part.origin.z + (opts.originOverride.z - sch.origin.z) }
             : part.origin;
         const placed = await place(bot, part, origin);
-        let v = await schematic.verifySchematic(bot, part, origin, 0);
-        while (!v.done) v = await schematic.verifySchematic(bot, part, origin, 0);
+        let v = await schematic.verifySchematic(bot, part, origin, 0, { skipExtraSweep: true });
+        while (!v.done) v = await schematic.verifySchematic(bot, part, origin, 0, { skipExtraSweep: true });
         summary.placed += placed;
         summary.faults += (v.missing || 0) + (v.wrongBlock || 0) + (v.wrongState || 0);
         summary.parts.push({ name: part.name, size: part.size, placed, faults: (v.missing || 0) + (v.wrongBlock || 0) + (v.wrongState || 0) });
