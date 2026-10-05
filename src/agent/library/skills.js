@@ -6416,6 +6416,19 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                         const c = _pillarToClean[i];
                         try { await breakBlockAt(bot, c.x, c.y, c.z); } catch (e) { /* already gone or out of reach; the road block is placed either way */ }
                     }
+                    // Recover the pillar. We took this dirt out of our own
+                    // inventory to build the scaffold, so digging it back out
+                    // just makes an item entity on the ground. Without collecting
+                    // it, every bridged block cost a dirt permanently: the live
+                    // trace shows dirt going 64 -> 60 -> 0 in whole-stack steps
+                    // while placement was still only a few blocks. That is where
+                    // "Don't have any dirt to place" was coming from.
+                    // pickupNearbyItems is the existing RCON-verified vacuum, not
+                    // an eye-scan: on this client bot.entities holds no item
+                    // handles even when drops sit at her feet, so trusting what
+                    // she can "see" returns null forever and quietly loses the
+                    // blocks. It verifies against server-held counts instead.
+                    try { await pickupNearbyItems(bot); } catch (e) { /* nothing dropped nearby, or already picked up */ }
                 }
             } catch {}
             // Say when it landed despite the missing event, so the log reflects
