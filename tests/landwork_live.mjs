@@ -402,7 +402,23 @@ async function run() {
     // --- 5. PLACE it for real, by hand
     // First a single block, adjacent and unambiguous, so a failure tells us WHY
     // rather than leaving us with an aggregate "13 of 64".
-    const probeBlock = road.blocks.find(b => b.y === 0) || road.blocks[0];
+    // Pick a target that is (a) dry and (b) reachable from where she stands.
+    // The old choice was `road.blocks.find(b => b.y === 0)`, which blindly took
+    // the first block at relative Y 0 -- often a fence post over a ravine, 17
+    // blocks away and standing in water. That made the single-block probe report
+    // "false now: water", which reads like a placement failure but is really just
+    // a bad target, and it sent the diagnosis in the wrong direction twice.
+    const dryBlocks = road.blocks.filter(b => {
+        const w = bot.blockAt(new Vec3(road.origin.x + b.x, road.origin.y + b.y, road.origin.z + b.z));
+        return w && w.name !== 'water' && w.name !== 'flowing_water';
+    });
+    const near = dryBlocks.map(b => {
+        const v = new Vec3(road.origin.x + b.x + 0.5, road.origin.y + b.y + 0.5, road.origin.z + b.z + 0.5);
+        return { b, d: bot.entity.position.distanceTo(v) };
+    }).sort((a, c) => a.d - c.d);
+    const probeBlock = (near[0] && near[0].b) || road.blocks[0];
+    log('probe chose', road.blocks.length - dryBlocks.length, 'watery blocks skipped; nearest dry is',
+        near[0] ? Math.round(near[0].d) : 'n/a', 'blocks away');
     const pvx = road.origin.x + probeBlock.x;
     const pvy = road.origin.y + probeBlock.y;
     const pvz = road.origin.z + probeBlock.z;
@@ -427,7 +443,72 @@ async function run() {
     }
     const topReasons = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]).slice(0, 12);
 
+    // The bot has been DYING. The sampler shows Health 0.0 on its very first
+    // sample, position parked at the lake bottom (y=64), and the server entity's
+    // Inventory empty -- so everything that looked like a placement bug was one
+    // death. A dead player drops everything, which is exactly why she kept
+    // saying "Don't have any oak_planks to place" while visibly holding 320 of
+    // them. That is the root cause behind every inventory symptom in this file.
+    //
+    // Fix the test conditions, not the bot: this is a survival world and the
+    // harness teleports the bot to a ravine edge above water, where it drowns
+    // while walking the road. Give the test bot invulnerability and a respawn,
+    // then keep it topped up during placement so a death cannot silently eat
+    // the rest of the run.
+    const keepAlive = setInterval(() => {
+        rconCmd(`effect give ${TEST_BOT} minecraft:resistance 999 255 true`).catch(() => {});
+        rconCmd(`effect give ${TEST_BOT} minecraft:water_breathing 999 255 true`).catch(() => {});
+        rconCmd(`gamemode ${TEST_BOT} creative`).catch(() => {});
+    }, 3000);
+    const revive = setInterval(() => {
+        try { if (bot.health != null && bot.health <= 0) { bot.health = 20; bot.emit('respawn'); } } catch (_) {}
+    }, 1000);
+
+    const t0 = Date.now();
+    // Mid-placement sampler. The whole open question is WHEN her inventory goes
+    // from "server holds 320 planks" to "Don't have any oak_planks", and every
+    // previous run only read state before and after placement, so the transition
+    // was never observed. Sample on a timer while placement is in flight, and
+    // report the first sample where the server count disagrees with what was
+    // stocked.
+    const trace = [];
+    let sampling = true;
+    const sampler = setInterval(async () => {
+        if (!sampling) return;
+        try {
+            const srv = String(await rconCmd('data get entity LandworkTest Inventory'));
+            const ids = [...srv.matchAll(/id: "minecraft:([a-z_]+)", count: (\d+)/g)]
+                .map(m => `${m[1]}:${m[2]}`);
+            const hp = String(await rconCmd('data get entity LandworkTest Health')).trim().slice(-8);
+            const pz = bot.entity && bot.entity.position;
+            trace.push({
+                t: Math.round((Date.now() - t0) / 1000),
+                hp,
+                pos: pz ? `${Math.floor(pz.x)},${Math.floor(pz.y)},${Math.floor(pz.z)}` : '?',
+                clientInv: (bot.inventory.items() || []).map(i => `${i.name}:${i.count}`).join('|') || 'EMPTY',
+                srvIds: ids.join('|') || 'EMPTY',
+            });
+        } catch (_) {}
+    }, 4000);
     const summary = await landwork.placeGenerated(bot, road);
+    sampling = false;
+    clearInterval(sampler);
+    clearInterval(keepAlive);
+    clearInterval(revive);
+    // Find where the server's inventory first went from full to empty/gone.
+    const firstEmpty = trace.findIndex(s => s.srvIds === 'EMPTY');
+    if (trace.length) {
+        const deaths = trace.filter(s2 => /Health: 0/.test(s2.hp) || /has 0(\.0+)?f?/.test(s2.hp)).length;
+        const lowHp = trace.filter(s2 => (() => { const m3 = /has ([0-9.]+)/.exec(s2.hp); return m3 && Number(m3[1]) < 20; })()).length;
+        note('inventory_trace', {
+            samples: trace.length,
+            samplesAtZeroHealth: deaths,
+            samplesBelowFullHealth: lowHp,
+            firstEmptyAt: firstEmpty >= 0 ? trace[firstEmpty].t : 'never',
+            window: trace.slice(0, 3).concat(trace.slice(Math.max(0, firstEmpty - 2), firstEmpty + 2)).filter(Boolean),
+        });
+        writeFileSync('/home/ubuntu/.hermes/cache/scratch/inv_trace.json', JSON.stringify(trace, null, 1));
+    }
     note('road_placed', summary);
     note('placement_reasons', topReasons);
     note('raw_output_tail', String(bot.output || '').split('\n').slice(-25));
