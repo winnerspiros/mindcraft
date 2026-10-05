@@ -6176,6 +6176,10 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             break;
         }
     }
+    // Cells of the pillar we drive up from a footing. Declared out here because
+    // the cleanup runs after the loop that fills it; declaring it inside the loop
+    // left the cleanup list permanently empty, which is why the pillar survived.
+    var _columnBuilt = [];
     if (!buildOffBlock) {
         // No neighbour to click on (floating block in mid-air). Bridge it:
         // drop a dirt scaffold at the closest air cell adjacent to the target
@@ -6235,7 +6239,14 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             }
             for (let up = buildCell.y; up < p.y; up++) {
                 const col = p.plus(new Vec3(0, up - p.y, 0));
-                try { if (isAirLike(bot.blockAt(col))) await placeBlock(bot, 'dirt', col.x, col.y, col.z, 'bottom', true); } catch { /* column cell is not loaded or already occupied -- try the next footing */ }
+                try {
+                    if (isAirLike(bot.blockAt(col))) {
+                        await placeBlock(bot, 'dirt', col.x, col.y, col.z, 'bottom', true);
+                        // Only track cells WE placed. A cell that was already
+                        // there is the world's, and digging it would be vandalism.
+                        _columnBuilt.push({ x: col.x, y: col.y, z: col.z });
+                    }
+                } catch { /* column cell is not loaded or already occupied -- try the next footing */ }
             }
             try {
                 if (await placeBlock(bot, 'dirt', p.x, p.y, p.z, 'bottom', true)) {
@@ -6254,6 +6265,8 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         if (!faceVec.x && !faceVec.y && !faceVec.z) faceVec = new Vec3(0, 1, 0);
         // remember to dig the scaffold after the real placement lands
         var _scaffoldToClean = bridged;
+        // The whole pillar, so the road does not leave a dirt tower behind it.
+        var _pillarToClean = typeof _columnBuilt !== 'undefined' ? _columnBuilt : [];
     }
 
     const pos = bot.entity.position;
@@ -6392,6 +6405,17 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             try {
                 if (typeof _scaffoldToClean !== 'undefined' && _scaffoldToClean) {
                     await breakBlockAt(bot, _scaffoldToClean.x, _scaffoldToClean.y, _scaffoldToClean.z);
+                }
+                // Remove the pillar we drove up from the footing. Left in place it
+                // showed up as "extra" in every verification -- a run reported 43
+                // extra blocks that were almost entirely our own scaffolding.
+                // Only cells recorded above are touched, top down so the next
+                // block down stays supported while we dig.
+                if (typeof _pillarToClean !== 'undefined') {
+                    for (let i = _pillarToClean.length - 1; i >= 0; i--) {
+                        const c = _pillarToClean[i];
+                        try { await breakBlockAt(bot, c.x, c.y, c.z); } catch (e) { /* already gone or out of reach; the road block is placed either way */ }
+                    }
                 }
             } catch {}
             // Say when it landed despite the missing event, so the log reflects
