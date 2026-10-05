@@ -6066,12 +6066,20 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
     // in hand via RCON item replace (proven for tools — silent to public
     // chat) and proceed to place. Refuse only when the server is empty too.
     if (!block_item) {
-        // Read the server with the cache BUSTED. rconItemCount reuses a 4s
-        // per-name cache, and a placement pass can check the same item many
-        // times inside that window — so the count came back 0 from a stale read
-        // while the server actually held 320 planks, and the build stopped with
-        // "Don't have any oak_planks to place". Busting costs one RCON round
-        // trip per check, which is the price of not lying about what she holds.
+        // Read the server with the cache BUSTED, so a material that arrived in
+        // the last few seconds is not missed.
+        //
+        // CORRECTION, added after measuring: this was originally justified as a
+        // fix for "stale cache made her think she had no planks". That was
+        // wrong. A 224-sample trace of the live test showed the server inventory
+        // read EMPTY only 2 times, isolated single samples with correct data on
+        // either side, and the client inventory never empty at all — the test bot
+        // was simply DYING, and a dead player drops everything. So the symptom
+        // this was aimed at was a corpse, not a cache.
+        //
+        // Kept anyway: busting before a count cannot make a correct read wrong,
+        // and it costs one RCON round trip per placement check. But do not credit
+        // it with fixing a problem it did not fix.
         let serverCount = 0;
         try {
             const r = await import('../../utils/rcon.js');
