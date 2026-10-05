@@ -6,6 +6,27 @@
 // This is the test that would catch anything the fake world cannot: blocks she
 // has no materials for, placements that fail against real block states, a
 // generate/plan mismatch, terrain sampling against real chunk data.
+import fs from 'fs';
+import path from 'path';
+
+// Singleton lock so two live harnesses never run at once — they share the same
+// Minecraft account and would kick each other (multiplayer.disconnect.duplicate_login).
+const LOCK_PATH = path.resolve('/tmp/uwu_landwork_live.lock');
+try {
+    const fd = fs.openSync(LOCK_PATH, 'wx'); // 'wx' = create exclusive, fail if exists
+    fs.closeSync(fd);
+} catch (e) {
+    if (e.code === 'EEXIST') {
+        console.error('[live] Another landwork_live.mjs is already running (lock at', LOCK_PATH, ') — exiting.');
+        process.exit(0);
+    }
+    throw e;
+}
+// Remove the lock on exit (normal or crash).
+process.on('exit', () => { try { fs.unlinkSync(LOCK_PATH); } catch (_) {} });
+process.on('SIGINT', () => { try { fs.unlinkSync(LOCK_PATH); } catch (_) {}; process.exit(1); });
+process.on('SIGTERM', () => { try { fs.unlinkSync(LOCK_PATH); } catch (_) {}; process.exit(1); });
+
 import mineflayer from 'mineflayer';
 // This server speaks "26.3" - a fork naming, not a real release - so the version
 // must be taken from mineflayer.testedVersions, exactly as settings.js does.
