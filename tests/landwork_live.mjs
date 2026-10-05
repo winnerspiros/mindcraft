@@ -29,6 +29,12 @@ const _bustInv = _rawRconInventory;
 // caches an empty inventory, and placeBlock then believes she is bare while the
 // client shows a full bag — so read it with the bust flag.
 const TEST_BOT = 'LandworkTest';
+// Hoisted: the vandalise step needs skills.breakBlockAt, and the earlier
+// per-block probe used to be the only importer — so by the time vandalise ran,
+// `skills` was out of scope and every break silently became
+// "THREW skills is not defined". The block was never actually broken, so the
+// damage test reported confirmed:false while looking like it had run.
+const skills = await import('../src/agent/library/skills.js');
 // RCON gives the test bot materials: this world is survival and these bots build
 // by hand, so stock has to come from somewhere a real player would use.
 async function rconCmd(cmd) {
@@ -130,21 +136,81 @@ async function run() {
     // Give ourselves a flat, known test plot: this world is survival and the
     // whole point is that these builders place blocks BY HAND, so a /fill here
     // only clears the site, it does not build anything.
+    // Spawn is a lake, so there is often no soil within reach at all. Widen the
+    // search until loaded chunks with actual ground are found, and if the spawn
+    // area is all water, say so plainly instead of searching forever.
     let ox = Math.floor(p.x) + 2;
     let oz = Math.floor(p.z);
+    let rad = 16;
     // Find a plot that is actually OPEN SURFACE, not a cave floor: solid ground,
     // a real soil block on top, and clear sky several blocks up. Without this the
     // test happily picks a stone cavern, the road gets generated into rock, and
     // every placement fails for reasons that have nothing to do with landwork.
     const SOIL = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'sand', 'red_sand', 'gravel', 'snow', 'sandstone']);
+    // Is the chunk containing this column already loaded? A cheap data read, no
+    // network, no world lookup.
+    const chunkLoaded = (b, x, z) => {
+        try { return !!(b.world && b.world.getChunk && b.world.getChunk(Math.floor(x / 16), Math.floor(z / 16))); }
+        catch (_) { return false; }
+    };
     const AIRN = new Set(['air', 'cave_air', 'void_air']);
+    // Ask the SERVER where land is. RCON reads terrain whether or not the client
+    // has the chunk, which is the whole problem: spawn is a lake, so every
+    // loaded chunk around the bot is water and no client-side search can win.
+    //
+    // Technique: `execute if block ... run scoreboard players add` is silent over
+    // RCON, but `scoreboard players get` DOES return its value. So count soil
+    // blocks in a vertical band per column and pick the first column with soil
+    // and open sky. Note the fake name is probe probe — one for the player slot,
+    // one for the objective.
+    const SB = 'lwprobe';
+    const SOILN = ['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'sand', 'red_sand', 'gravel', 'snow', 'sandstone'];
+    async function findLandViaRcon(cx, cz) {
+        await rconCmd(`scoreboard objectives add ${SB} dummy`).catch(() => {});
+        for (let r = 8; r <= 128; r += 8) {
+            for (const [dx, dz] of [[r, 0], [0, r], [-r, 0], [0, -r], [r, r], [-r, -r], [r, -r], [-r, r]]) {
+                const x = cx + dx, z = cz + dz;
+                await rconCmd(`scoreboard players set ${SB} ${SB} 0`);
+                for (let y = 62; y <= 78; y++) {
+                    for (const n of SOILN) {
+                        await rconCmd(
+                            `execute if block ${x} ${y} ${z} minecraft:${n} run scoreboard players add ${SB} ${SB} 1`);
+                    }
+                }
+                const raw = String(await rconCmd(`scoreboard players get ${SB} ${SB}`));
+                const m2 = /has (-?\d+)/.exec(raw);
+                if (!m2) continue;
+                if (Number(m2[1]) <= 0) continue;   // no soil here: water or bare rock
+                // Find the topmost soil block in that column and stand on it.
+                for (let y = 78; y >= 62; y--) {
+                    let hit = false;
+                    for (const n of SOILN) {
+                        await rconCmd(
+                            `execute if block ${x} ${y} ${z} minecraft:${n} run scoreboard players add ${SB} ${SB} 1`);
+                        const rr = String(await rconCmd(`scoreboard players get ${SB} ${SB}`));
+                        const mm = /has (-?\d+)/.exec(rr);
+                        if (mm && Number(mm[1]) > 0) { hit = true; break; }
+                    }
+                    if (hit) { log('rcon land', x, y, z, '(soil depth ' + m2[1] + ')'); return { x, y, z }; }
+                }
+            }
+        }
+        return null;
+    }
     let groundY = null;
     // Search a wide area: the bot spawns underground as often as not, and a
     // narrow search around a cave mouth finds nothing and quits without testing
     // anything at all.
+    for (let pass = 0; pass < 4 && groundY == null; pass++, rad += 16) {
     outer:
-    for (let x = ox - 16; x < ox + 16; x++) {
-        for (let z = oz - 16; z < oz + 16; z++) {
+    for (let x = ox - rad; x < ox + rad; x++) {
+        for (let z = oz - rad; z < oz + rad; z++) {
+            // Only look inside LOADED chunks. blockAt on an unloaded chunk is a
+            // miss that costs a full network round trip, and a 32x32 grid of
+            // them is what made this search sit silent until its timeout killed
+            // the run (exit 124). Skipping unloaded cells turns a hang into an
+            // instant answer.
+            if (!chunkLoaded(bot, x, z)) continue;
             let gy = null;
             for (let y = Math.floor(p.y) + 14; y > 10; y--) {
                 const b = bot.blockAt(new Vec3(x, y, z));
@@ -161,8 +227,26 @@ async function run() {
             if (open) { ox = x; oz = z; groundY = gy; break outer; }
         }
     }
+    }
     log('plot', ox, oz, 'ground y', groundY);
-    if (groundY == null) { log('no open surface plot found'); bot.quit(); return; }
+    if (groundY == null) {
+        // Nothing within view is soil — spawn is a lake and the client's loaded
+        // chunks are all water. Widening the search cannot help: unloaded chunks
+        // stay unloaded. Ask the SERVER for the terrain instead, via RCON, which
+        // does not depend on what the client has seen.
+        let probe = null, probeErr = null;
+        try { probe = await findLandViaRcon(ox, oz); }
+        catch (e) { probeErr = e; log('land probe threw:', e && e.message); }
+        if (!probe) {
+            log('no open surface plot found', probeErr ? '(probe threw)' : '(probe scanned and found no soil)');
+            bot.quit(); return;
+        }
+        ox = probe.x; oz = probe.z; groundY = probe.y;
+        log('plot', ox, oz, 'ground y', groundY, '(found via RCON — spawn area is a lake)');
+        // Now teleport there and let the client load it.
+        await rconCmd(`tp ${TEST_BOT} ${ox + 0.5} ${groundY + 1} ${oz + 0.5}`).catch(() => {});
+        await new Promise(r => setTimeout(r, 4000));
+    }
 
 
     // Stock the test bot so placement is actually exercised. The default test
@@ -191,15 +275,21 @@ async function run() {
         // not be more than 99: found 256" and "minecraft:dirt can only stack up
         // to 64" — and every rejection is a slot that silently stays empty, which
         // showed up downstream only as "Don't have any dirt to place".
+        // Generous on purpose. A 57-block road once logged "Don't have any oak_
+        // planks to place" 18 times in a row and stopped at 6 placed, because
+        // 3 stacks x 64 = 192 was not enough once the dirt bridge fallback
+        // started consuming material too. Shortfall is invisible in the summary
+        // and looks identical to a placement bug, so stock deep.
         const STACKS = [
             ['iron_shovel', 1], ['iron_pickaxe', 1], ['iron_axe', 1],
-            ['dirt', 64], ['dirt', 64], ['dirt', 64],
+            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
             ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
-            ['oak_fence', 64], ['oak_fence', 64],
-            ['cobblestone', 64], ['stone_bricks', 64],
-            ['oak_log', 64], ['stick', 64],
+            ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
+            ['oak_fence', 64], ['oak_fence', 64], ['oak_fence', 64],
+            ['cobblestone', 64], ['cobblestone', 64], ['stone_bricks', 64],
+            ['oak_log', 64], ['stick', 64], ['short_grass', 64], ['gravel', 64], ['sandstone', 64],
         ];
-        for (let slot = 9; slot <= 26; slot++) {
+        for (let slot = 9; slot < 9 + STACKS.length; slot++) {
             const entry = STACKS[slot - 9];
             if (!entry) continue;
             const [name, count] = entry;
@@ -308,7 +398,6 @@ async function run() {
         'bot at', Math.floor(bot.entity.position.x), Math.floor(bot.entity.position.y), Math.floor(bot.entity.position.z),
         'dist', Math.round(bot.entity.position.distanceTo(new Vec3(pvx + 0.5, pvy + 0.5, pvz + 0.5))));
     try {
-        const skills = await import('../src/agent/library/skills.js');
         const okOne = await skills.placeBlock(bot, probeBlock.name, pvx, pvy, pvz, 'bottom', true);
         log('single placeBlock ->', okOne, 'now:', bot.blockAt(new Vec3(pvx, pvy, pvz))?.name);
     } catch (e) { log('single placeBlock THREW', e.message); }
