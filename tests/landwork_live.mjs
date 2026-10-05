@@ -275,20 +275,23 @@ async function run() {
         // not be more than 99: found 256" and "minecraft:dirt can only stack up
         // to 64" — and every rejection is a slot that silently stays empty, which
         // showed up downstream only as "Don't have any dirt to place".
-        // Generous on purpose. A 57-block road once logged "Don't have any oak_
-        // planks to place" 18 times in a row and stopped at 6 placed, because
-        // 3 stacks x 64 = 192 was not enough once the dirt bridge fallback
-        // started consuming material too. Shortfall is invisible in the summary
-        // and looks identical to a placement bug, so stock deep.
-        const STACKS = [
+        // Only slots 9..26 exist on this server. A longer list SILENTLY fails
+        // from slot 27 on ("Can't find element 'minecraft:inventory.27' in
+        // registry 'minecraft:slot'"), which is how a stock bump that added
+        // stacks 30-34 appeared to work and yet still ran the road dry on
+        // "Don't have any oak_planks to place". Every entry here must be within
+        // 9..26 or it is a no-op that reads like success in the log.
+        const STACKS_RAW = [
             ['iron_shovel', 1], ['iron_pickaxe', 1], ['iron_axe', 1],
-            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
+            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
             ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
-            ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
+            ['oak_planks', 64], ['oak_planks', 64],
             ['oak_fence', 64], ['oak_fence', 64], ['oak_fence', 64],
-            ['cobblestone', 64], ['cobblestone', 64], ['stone_bricks', 64],
-            ['oak_log', 64], ['stick', 64], ['short_grass', 64], ['gravel', 64], ['sandstone', 64],
+            ['cobblestone', 64], ['stone_bricks', 64],
         ];
+        // Only 9..26 exist. A 19th entry is a silent no-op that still logs, so
+        // cap it here rather than trusting the list to stay short.
+        const STACKS = STACKS_RAW.slice(0, 18);
         for (let slot = 9; slot < 9 + STACKS.length; slot++) {
             const entry = STACKS[slot - 9];
             if (!entry) continue;
@@ -310,6 +313,15 @@ async function run() {
                 }
             }
             giveReplies.push(`slot${slot} ${name}x${count} -> ${rep.slice(0, 45)}`);
+        }
+        // Say plainly when a stack did NOT land. A rejected slot still produces a
+        // reply line, so it reads like a success in the log and the shortfall only
+        // surfaces much later as "Don't have any X to place" — which looks like a
+        // placement bug and is not one.
+        const failed = giveReplies.filter(r => /Can't find|error|THREW|Unknown/i.test(r));
+        if (failed.length) {
+            log('STOCK SHORT — these stacks did NOT arrive:');
+            for (const f of failed) log('  FAILED:', f);
         }
         await new Promise(r => setTimeout(r, 2500));
         // Server truth, cache busted. placeBlock consults rconItemCount, NOT the

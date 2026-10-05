@@ -6066,8 +6066,18 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
     // in hand via RCON item replace (proven for tools — silent to public
     // chat) and proceed to place. Refuse only when the server is empty too.
     if (!block_item) {
+        // Read the server with the cache BUSTED. rconItemCount reuses a 4s
+        // per-name cache, and a placement pass can check the same item many
+        // times inside that window — so the count came back 0 from a stale read
+        // while the server actually held 320 planks, and the build stopped with
+        // "Don't have any oak_planks to place". Busting costs one RCON round
+        // trip per check, which is the price of not lying about what she holds.
         let serverCount = 0;
-        try { serverCount = await rconItemCount(bot.username, item_name); } catch (_) {}
+        try {
+            const r = await import('../../utils/rcon.js');
+            r.rconInventoryBust(bot.username);
+            serverCount = await rconItemCount(bot.username, item_name);
+        } catch (_) {}
         if (serverCount > 0) {
             try { await bot.clickWindow(0, 0, 0).catch(() => {}); } catch (_) {}
             try {
