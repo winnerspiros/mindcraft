@@ -479,7 +479,12 @@ async function run() {
             const srv = String(await rconCmd('data get entity LandworkTest Inventory'));
             const ids = [...srv.matchAll(/id: "minecraft:([a-z_]+)", count: (\d+)/g)]
                 .map(m => `${m[1]}:${m[2]}`);
-            const hp = String(await rconCmd('data get entity LandworkTest Health')).trim().slice(-8);
+            const hpRaw = String(await rconCmd('data get entity LandworkTest Health')).trim();
+            // Parse the number, don't slice the tail. slice(-8) returns "" or a
+            // truncated word for many replies, so any counter built on it silently
+            // reports zero.
+            const hpM = /Health:\s*([0-9.]+)/.exec(hpRaw);
+            const hp = hpM ? Number(hpM[1]) : null;
             const pz = bot.entity && bot.entity.position;
             trace.push({
                 t: Math.round((Date.now() - t0) / 1000),
@@ -498,12 +503,17 @@ async function run() {
     // Find where the server's inventory first went from full to empty/gone.
     const firstEmpty = trace.findIndex(s => s.srvIds === 'EMPTY');
     if (trace.length) {
-        const deaths = trace.filter(s2 => /Health: 0/.test(s2.hp) || /has 0(\.0+)?f?/.test(s2.hp)).length;
-        const lowHp = trace.filter(s2 => (() => { const m3 = /has ([0-9.]+)/.exec(s2.hp); return m3 && Number(m3[1]) < 20; })()).length;
+        const seen = trace.filter(s2 => s2.hp !== null);
+        const deaths = seen.filter(s2 => s2.hp <= 0).length;
+        const lowHp = seen.filter(s2 => s2.hp < 20).length;
+        const hpVals = {};
+        for (const s2 of seen) hpVals[s2.hp] = (hpVals[s2.hp] || 0) + 1;
+        const hpSamples = { readable: seen.length, unreadable: trace.length - seen.length, values: hpVals };
         note('inventory_trace', {
             samples: trace.length,
             samplesAtZeroHealth: deaths,
             samplesBelowFullHealth: lowHp,
+            hpSamples,
             firstEmptyAt: firstEmpty >= 0 ? trace[firstEmpty].t : 'never',
             window: trace.slice(0, 3).concat(trace.slice(Math.max(0, firstEmpty - 2), firstEmpty + 2)).filter(Boolean),
         });
