@@ -91,6 +91,42 @@ test('a road goes OVER water, not down the pond bed', () => {
     assert.ok(r.report.gapSpans.length > 0, 'the water should be reported as a gap span');
 });
 
+test('a deck clears the water even when the bank is level with the pond', () => {
+    // The live run over a shallow pond generated its deck AT the water surface
+    // (both y=62), so the placer refused every cell — "Skipping block ... because
+    // it is water" — while verification called the whole road missing. A deck has
+    // to sit ABOVE the water line, not level with it.
+    const shallow = fakeTerrain((x) => (x < 18 || x > 24 ? 62 : 58), { surface: 'dirt' });
+    const baseGet = shallow.get;
+    shallow.get = (x, y, z) => {
+        const h = shallow.top(x, z);
+        if (h == null) return null;
+        if (h === 58 && y > 58 && y <= 62) return 'water';
+        return baseGet(x, y, z);
+    };
+    shallow.isWater = (x, z) => shallow.top(x, z) === 58;
+    shallow.flooded = (x, z) => {
+        const h = shallow.top(x, z);
+        return h != null && h === 58;
+    };
+    // The water SURFACE, which is what a deck has to clear. `top` is the bed.
+    shallow.waterTop = (x, z) => (shallow.top(x, z) === 58 ? 62 : null);
+    const r = road(shallow, { x: 14, z: 0 }, { x: 28, z: 0 }, { width: 3 });
+    const wy = (b) => r.origin.y + b.y;
+    // Only the DECK must clear the water. Posts and fences may reach down into
+    // it — that is how a bridge is supported, and the earlier pond test already
+    // spells that out. What must never sit at or below the waterline is the
+    // walkable surface.
+    const deck = r.blocks.filter(b => b.name === 'dirt' || b.name === 'grass_path');
+    const inWater = deck.filter(b => wy(b) <= 62 && wy(b) > 58 &&
+        shallow.flooded(r.origin.x + b.x, r.origin.z + b.z));
+    assert.equal(inWater.length, 0,
+        `${inWater.length} deck blocks were placed at or under the water line`);
+    // and it still crosses
+    const wx = (b) => r.origin.x + b.x;
+    assert.ok(r.blocks.some(b => wx(b) >= 18 && wx(b) <= 24), 'no deck over the water');
+});
+
 test('road on flat ground lays a continuous 3-wide path with no holes', () => {
     const r = road(flat(64), { x: 0, z: 0 }, { x: 10, z: 0 }, { width: 3 });
     assert.equal(r.blocks.length > 0, true);

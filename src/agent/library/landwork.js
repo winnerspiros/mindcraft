@@ -115,6 +115,20 @@ export function terrainSampler(bot) {
             const name = get(x, surf, z);
             return name === 'water' || name === 'lava';
         },
+        /**
+         * Height of the standing water's SURFACE in a column, or null if the
+         * column is dry. `top` returns the pond BED, which is why a deck built to
+         * the bank height can still land level with the water when the bank is no
+         * higher than the pond — the placer then refuses every cell as water.
+         */
+        waterTop(x, z) {
+            const floor = this.top(x, z);
+            if (floor == null) return null;
+            const surf = columnSurfaceTop(get, x, z, yHi, yLo);
+            if (surf == null || surf <= floor) return null;
+            const name = get(x, surf, z);
+            return name === 'water' || name === 'lava' ? surf : null;
+        },
         /** Name of the topmost ground block in a column (null if unloaded). */
         topName(x, z) {
             const y = this.top(x, z);
@@ -299,7 +313,18 @@ export function road(ground, a, b, opts = {}) {
         if (!line[i].flooded) continue;
         let nearest = dryIdx.length ? dryIdx[0] : null;
         if (nearest != null) for (const k of dryIdx) if (Math.abs(k - i) < Math.abs(nearest - i)) nearest = k;
-        line[i] = { ...line[i], hole: true, holeFloor: nearest != null ? line[nearest].top : line[i].top };
+        // The deck must clear the WATER, not just reach the bank's height. A bank
+        // level with the pond surface puts the deck AT water level, and then the
+        // placer correctly refuses every cell ("Skipping block ... because it is
+        // water") while verification calls the road missing. Deck one above the
+        // higher of the bank and the water surface.
+        let floorY = nearest != null ? line[nearest].top : line[i].top;
+        // Clear the water SURFACE, not the pond bed: `top` is the bed, so using it
+        // here left the deck one block under the surface it has to span.
+        const wTop = typeof ground.waterTop === 'function' ? ground.waterTop(line[i].cx, line[i].cz) : null;
+        const clearAt = wTop != null ? wTop + 1 : (line[i].top != null ? line[i].top + 1 : null);
+        if (floorY != null && clearAt != null) floorY = Math.max(floorY, clearAt);
+        line[i] = { ...line[i], hole: true, holeFloor: floorY };
     }
 
     // Segment the line into runs of walkable ground separated by gaps.
@@ -308,14 +333,19 @@ export function road(ground, a, b, opts = {}) {
     for (let i = 0; i <= steps; i++) {
         const p = line[i];
         const prev = i > 0 ? line[i - 1] : null;
-        const jump = prev ? (p.top ?? prev.top) - (prev.top ?? prev.top) : 0;
+        // A hole's deck height is holeFloor (the dry bank, lifted clear of the
+        // water) — NOT its own column top. Using p.top put the deck exactly at
+        // the water surface, so every cell over the pond was refused as water.
+        const deckOf = (q) => (q == null ? null : (q.hole ? (q.holeFloor ?? q.top) : q.top));
+        const jump = prev ? (deckOf(p) ?? deckOf(prev)) - (deckOf(prev) ?? 0) : 0;
         const isGap = prev && (p.hole || prev.hole || Math.abs(jump) > maxStep);
         if (!cur || isGap) {
             if (cur) { cur.gapTo = i; segs.push(cur); }
-            cur = { from: i, to: i, startTop: p.top ?? prev?.top ?? 0, endTop: p.top ?? prev?.top ?? 0 };
+            const seed = deckOf(p) ?? deckOf(prev) ?? 0;
+            cur = { from: i, to: i, startTop: seed, endTop: seed };
         } else {
             cur.to = i;
-            cur.endTop = p.top;
+            cur.endTop = deckOf(p) ?? cur.endTop;
         }
     }
     segs.push(cur);

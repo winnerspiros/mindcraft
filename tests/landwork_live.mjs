@@ -341,14 +341,36 @@ async function run() {
 
     // --- 7. Vandalise it, then REPAIR only what is missing
     if (road.blocks.length) {
-        const victim = road.blocks[Math.floor(road.blocks.length / 2)];
-        const wx = road.origin.x + victim.x, wy = road.origin.y + victim.y, wz = road.origin.z + victim.z;
-        const V = Vec3;
-        const before = bot.blockAt(new V(wx, wy, wz));
-        bot.dig(before).catch(() => {});
-        await new Promise(r => setTimeout(r, 2500));
-        const now = bot.blockAt(new V(wx, wy, wz));
-        note('vandalised', { at: [wx, wy, wz], was: before?.name, now: now?.name ?? 'air' });
+        // Break a block she ACTUALLY placed. Picking the schematic's midpoint can
+        // land on a cell the placer skipped, so the "damage" is a no-op and the
+        // repair step then measures the build's pre-existing diff instead of the
+        // damage it just caused. Pick from the road's SURFACE, verified against
+        // the world first.
+        const placed = road.blocks
+            .map(b => ({
+                b,
+                wx: road.origin.x + b.x, wy: road.origin.y + b.y, wz: road.origin.z + b.z,
+            }))
+            .filter(c => bot.blockAt(new Vec3(c.wx, c.wy, c.wz))?.name === c.b.name);
+        const victim = placed.length ? placed[Math.floor(placed.length / 2)] : null;
+        if (!victim) {
+            note('vandalised', { skipped: 'no placed block matched the design' });
+        } else {
+            const { wx, wy, wz } = victim;
+            const before = bot.blockAt(new Vec3(wx, wy, wz))?.name ?? 'air';
+            // breakBlockAt, NOT bot.dig(): dig() is fire-and-forget here, never
+            // equips a tool, and its rejection was swallowed by .catch(() => {}),
+            // which is why every run logged was=dirt now=dirt.
+            let broke = false;
+            try { broke = !!(await skills.breakBlockAt(bot, wx, wy, wz, 20000)); } catch (e) { broke = 'THREW ' + e.message; }
+            await new Promise(r => setTimeout(r, 2500));
+            const now = bot.blockAt(new Vec3(wx, wy, wz))?.name ?? 'air';
+            note('vandalised', {
+                at: [wx, wy, wz], was: before, now, broke,
+                // The only verdict that counts: did the world actually change?
+                confirmed: before !== now,
+            });
+        }
 
         const d2 = landwork.diffAgainstWorld(road, g.get, road.origin);
         note('damage_detected', { missing: d2.missing.length, wrong: d2.wrong.length });
