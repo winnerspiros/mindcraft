@@ -1166,6 +1166,27 @@ export const actionsList = [
         }, false, 15)
     },
     {
+        name: '!findSite',
+        description: 'Look for somewhere you can actually work: dry ground, open sky above it, flat enough to build on. I search outwards from here and tell you the best spot, or admit there is nowhere dry nearby. Use this before starting a build so I do not lay a road on the lake bed.',
+        params: {
+            'radius': { type: 'int', description: 'How far to search, in blocks (default 12). Bigger if I am in the middle of water.', default: 12 },
+        },
+        perform: runAsAction(async (agent, radius) => {
+            const bot = agent.bot;
+            const g = landwork.terrainSampler(bot);
+            const here = bot.entity.position.floored();
+            const r = Math.max(2, Math.min(48, Number(radius) || 12));
+            const site = landwork.findBuildSite(g, { x: here.x, y: here.y, z: here.z },
+                { rings: Math.max(1, Math.ceil(r / 2)), step: 2 });
+            if (!site) {
+                skills.log(bot, `No dry, open ground within reach of ${here.x}, ${here.z}. I am standing in water or in a hole — I need to walk further, or bridge to a bank, before I build anything.`);
+                return;
+            }
+            const away = Math.max(Math.abs(site.x - here.x), Math.abs(site.z - here.z));
+            skills.log(bot, `Best spot: ${site.x}, ${site.y}, ${site.z} — ${away} blocks away. Dry ground with clear air above it.`);
+        }, false, 15)
+    },
+    {
         name: '!buildRoad',
         description: 'Make a road or path that follows the GROUND: it rides the surface, steps up hills, throws a plank deck with posts across any gap, ravine or stream it meets, and clears the vegetation along it. Give a direction and length (e.g. "north 40"), or x1 z1 x2 z2 for an exact line. Width 1 is a trail, 3 is a road. This is how you make roads across the land, not houses.',
         params: {

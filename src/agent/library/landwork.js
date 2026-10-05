@@ -211,6 +211,75 @@ function support(ground, blocks, x, y, z, mat, report, minDepth = 3) {
     }
 }
 
+/**
+ * Is this column somewhere a person could stand and work?
+ *
+ * Requires solid ground AND dry, open air above it for `head` cells. The dry
+ * part is the whole point: a column with a lake bed under water has ground, and
+ * treating that as buildable is how a road ended up laid eleven blocks under a
+ * lake with every placement failing on "nothing to place on". You need a head
+ * to stand in, not just a floor to stand on.
+ *
+ * Returns the ground Y, or null. Unloaded columns are null, not a guess.
+ */
+export function standableTop(get, x, z, yHi, yLo, head = 3) {
+    const groundY = columnTop(get, x, z, yHi, yLo);
+    if (groundY == null) return null;
+    // columnTop deliberately returns a pond's FLOOR. A site with water sitting
+    // on it is not a site, and the head check below will catch it -- but say so
+    // here, where a future reader is deciding what this function guarantees.
+    for (let k = 1; k <= head; k++) {
+        let name = null;
+        try { name = get(x, groundY + k, z); } catch (_) { return null; }
+        if (!isAirName(name)) return null;   // water, lava or solid overhead
+    }
+    return groundY;
+}
+
+/**
+ * Find somewhere worth building near a point. Spreads outward in rings, and
+ * scores each candidate on flatness and headroom rather than taking the first
+ * hit, because the nearest column to stand on is often the edge of a ravine.
+ *
+ * This is how UwU decides where to work when nobody named a spot. It returns
+ * null rather than a bad site -- if there is nowhere dry nearby, she should
+ * walk further or build a bridge, not start on the lake bed.
+ */
+export function findBuildSite(get, centre, opts = {}) {
+    const rings = opts.rings ?? 6;
+    const step = opts.step ?? 2;
+    const span = opts.span ?? 24;
+    const head = opts.head ?? 3;
+    const yHi = opts.yHi ?? span;
+    const yLo = opts.yLo ?? -span;
+    const cands = [];
+    for (let r = 0; r <= rings; r++) {
+        for (let a = 0; a < (r === 0 ? 1 : 8); a++) {
+            const ang = (a / 8) * Math.PI * 2;
+            const x = centre.x + Math.round(Math.cos(ang) * r * step);
+            const z = centre.z + Math.round(Math.sin(ang) * r * step);
+            const gy = standableTop(get, x, z, centre.y + yHi, centre.y + yLo, head);
+            if (gy == null) continue;
+            // Flatness: compare against the four neighbours within the same ring.
+            let spread = 0, same = 0;
+            for (const [dx, dz] of [[step, 0], [-step, 0], [0, step], [0, -step]]) {
+                const ny = standableTop(get, x + dx, z + dz, centre.y + yHi, centre.y + yLo, head);
+                if (ny == null) { spread += 4; continue; }
+                same++;
+                spread += Math.min(4, Math.abs(ny - gy));
+            }
+            // Prefer close, flat, well-supported ground.
+            cands.push({ x, y: gy, z, r, score: -spread * 2 - same + r * 0.5 });
+        }
+        // One good flat candidate in the first couple of rings is plenty; do not
+        // walk the whole neighbourhood hunting for a perfect plateau.
+        if (cands.length && r >= 2) break;
+    }
+    if (!cands.length) return null;
+    cands.sort((a, b) => b.score - a.score);
+    return cands[0];
+}
+
 /** Split a world-coord block list into <= max blocks chunks, each a schematic. */
 export function chunk(schem, max) {
     const ox = schem.origin?.x ?? 0, oy = schem.origin?.y ?? 0, oz = schem.origin?.z ?? 0;

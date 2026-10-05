@@ -128,8 +128,8 @@ async function buildAndReport(bot, sch, label, opts = {}) {
     return report;
 }
 
-test('all ten landwork commands are registered, are actions, and are documented', () => {
-    const names = ['!buildRoad', '!buildBridge', '!buildWall', '!buildStairs', '!levelGround', '!buildGarden', '!fixBuild', '!extendBuild', '!stopFlood', '!retakeGround'];
+test('all eleven landwork commands are registered, are actions, and are documented', () => {
+    const names = ['!buildRoad', '!buildBridge', '!buildWall', '!buildStairs', '!levelGround', '!buildGarden', '!fixBuild', '!extendBuild', '!stopFlood', '!retakeGround', '!findSite'];
     for (const n of names) {
         assert.ok(allCommandNames().includes(n), `${n} is not registered`);
         assert.ok(isAction(n), `${n} is not an action`);

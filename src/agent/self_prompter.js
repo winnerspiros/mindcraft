@@ -607,7 +607,12 @@ export class SelfPrompter {
                     // a road, a bridge or a garden, because nothing in the list
                     // touched the ground. These take their own arguments, so the
                     // goal text has to show the argument - hence the quoted forms.
-                    { cmd: '!buildRoad', needsArgs: true, goal: 'lay a road across the ground, like \"north 20\"' },
+                    // Check where she is before laying anything. Building on the
+                    // lake bed wasted several runs before this existed: she would
+                    // happily plan a road under water and report every placement
+                    // as a failure. Looking first is what makes the rest natural.
+                    { cmd: '!findSite', needsArgs: false, goal: 'I am not sure this ground is dry and open — check for somewhere I can actually build' },
+                    { cmd: '!buildRoad', needsArgs: true, goal: 'lay a road across the ground, like "north 20"' },
                     { cmd: '!buildGarden', needsArgs: false, goal: 'make a garden on flat ground near me' },
                     { cmd: '!stopFlood', needsArgs: false, goal: 'water is flooding where I am — find the sources and plug them' },
                     { cmd: '!retakeGround', needsArgs: false, goal: 'the flood has stopped — lay the drowned ground back' },
