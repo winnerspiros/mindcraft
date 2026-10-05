@@ -6184,18 +6184,59 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         const isAirLike = (b) => !b || b.name === 'air' || b.boundingBox === 'empty';
         let bridged = null;
         const feet = bot.entity.position.floored();
-        const cands = [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1]]
-            .map(([dx, dy, dz]) => target_dest.plus(new Vec3(dx, dy, dz)))
+        // Search DOWNWARD first for a footing, not just sideways. The old
+        // candidate list was the eight cells touching the target, and it
+        // required that cell to ALREADY have a solid neighbour. Over a ravine
+        // nothing qualifies -- the gap is wider than one cell -- so every such
+        // block ended in "nothing to place on". A real span needs a footing
+        // below, then a column built up to reach the target.
+        const cands = [];
+        // Sideways cells first (cheap, and correct for a one-cell gap).
+        for (const [dx, dy, dz] of [[1,0,0],[-1,0,0],[0,0,1],[0,0,-1],[0,-1,0],[1,0,1],[1,0,-1],[-1,0,1],[-1,0,-1]]) {
+            cands.push(target_dest.plus(new Vec3(dx, dy, dz)));
+        }
+        // Then the column directly under the target, and the two cells
+        // diagonally under it, which are the positions a pillar can stand on.
+        for (let k = 1; k <= 12; k++) {
+            cands.push(target_dest.plus(new Vec3(0, -k, 0)));
+            cands.push(target_dest.plus(new Vec3(1, -k, 0)));
+            cands.push(target_dest.plus(new Vec3(-1, -k, 0)));
+            cands.push(target_dest.plus(new Vec3(0, -k, 1)));
+            cands.push(target_dest.plus(new Vec3(0, -k, -1)));
+        }
+        const ordered = cands
+            .filter((p, i, arr) => arr.findIndex(q => q.equals(p)) === i)
             .filter(p => { try { return isAirLike(bot.blockAt(p)); } catch { return false; } })
             .sort((a, b) => a.distanceTo(feet) - b.distanceTo(feet));
-        for (const p of cands) {
+        for (const p of ordered) {
             if (bot.interrupt_code) break;
-            // scaffold cell needs its own neighbour (can't float either)
+            // A footing is a solid cell anywhere below this one, OR any solid
+            // side neighbour. Walking down to find the ground is what lets a
+            // pillar be built across a gap instead of only beside a lip.
             let hasN = false;
             for (const dd of Object.values(dir_map)) {
                 try { const n = bot.blockAt(p.plus(dd)); if (n && !isAirLike(n)) { hasN = true; break; } } catch {}
             }
+            if (!hasN) {
+                for (let k = 1; k <= 16; k++) {
+                    try {
+                        const below = bot.blockAt(p.plus(new Vec3(0, -k, 0)));
+                        if (below && !isAirLike(below)) { hasN = true; break; }
+                    } catch { break; }
+                }
+            }
             if (!hasN) continue;
+            // If the footing is more than one cell below, build the column up
+            // from it so the scaffold is actually reachable to click against.
+            let buildCell = p;
+            for (let k = 1; k <= 16; k++) {
+                const below = (() => { try { return bot.blockAt(p.plus(new Vec3(0, -k, 0))); } catch { return null; } })();
+                if (below && !isAirLike(below)) { buildCell = p.plus(new Vec3(0, -(k - 1), 0)); break; }
+            }
+            for (let up = buildCell.y; up < p.y; up++) {
+                const col = p.plus(new Vec3(0, up - p.y, 0));
+                try { if (isAirLike(bot.blockAt(col))) await placeBlock(bot, 'dirt', col.x, col.y, col.z, 'bottom', true); } catch {}
+            }
             try {
                 if (await placeBlock(bot, 'dirt', p.x, p.y, p.z, 'bottom', true)) {
                     const chk = bot.blockAt(p);
