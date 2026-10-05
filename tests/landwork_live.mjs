@@ -23,6 +23,12 @@ import * as landwork from '../src/agent/library/landwork.js';
 import * as buildsense from '../src/agent/library/buildsense.js';
 import { createRequire } from 'module';
 import Vec3 from 'vec3';
+import { rconInventory as _rawRconInventory } from '../src/utils/rcon.js';
+const _bustInv = _rawRconInventory;
+// rconInventory caches for 4s. A read taken while the entity did not exist yet
+// caches an empty inventory, and placeBlock then believes she is bare while the
+// client shows a full bag — so read it with the bust flag.
+const TEST_BOT = 'LandworkTest';
 // RCON gives the test bot materials: this world is survival and these bots build
 // by hand, so stock has to come from somewhere a real player would use.
 async function rconCmd(cmd) {
@@ -133,8 +139,12 @@ async function run() {
     const SOIL = new Set(['grass_block', 'dirt', 'coarse_dirt', 'podzol', 'sand', 'red_sand', 'gravel', 'snow', 'sandstone']);
     const AIRN = new Set(['air', 'cave_air', 'void_air']);
     let groundY = null;
-    for (let x = ox; x < ox + 12 && groundY == null; x++) {
-        for (let z = oz - 8; z < oz + 8; z++) {
+    // Search a wide area: the bot spawns underground as often as not, and a
+    // narrow search around a cave mouth finds nothing and quits without testing
+    // anything at all.
+    outer:
+    for (let x = ox - 16; x < ox + 16; x++) {
+        for (let z = oz - 16; z < oz + 16; z++) {
             let gy = null;
             for (let y = Math.floor(p.y) + 14; y > 10; y--) {
                 const b = bot.blockAt(new Vec3(x, y, z));
@@ -148,7 +158,7 @@ async function run() {
                 const b = bot.blockAt(new Vec3(x, gy + k, z));
                 if (b && !AIRN.has(b.name)) { open = false; break; }
             }
-            if (open) { ox = x; oz = z; groundY = gy; break; }
+            if (open) { ox = x; oz = z; groundY = gy; break outer; }
         }
     }
     log('plot', ox, oz, 'ground y', groundY);
@@ -158,28 +168,91 @@ async function run() {
     // Stock the test bot so placement is actually exercised. The default test
     // bot spawns with a bare inventory, so a 0/172 result would only prove she
     // has nothing to build with, not that placement works.
-    const cmds = [
-        // Name the bot explicitly: @s from RCON resolves to the console itself
-        // and every give silently reports "No player was found".
-        ...['dirt 96', 'cobblestone 96', 'oak_planks 96', 'oak_fence 96', 'oak_log 32',
-            'stick 48', 'stone_bricks 96', 'gravel 96', 'sandstone 96', 'short_grass 96']
-            .map(spec => `give LandworkTest ${spec}`),
-    ];
     // Retry until the inventory actually shows it. EasyAuth finishes a beat
     // after login and resets the player's inventory on the way in, so a single
     // /give round right after spawn is silently undone — the server cheerfully
     // reports "Gave 96 [Dirt]" and the bot ends up holding nothing.
     let stock = {};
+    const giveReplies = [];
     for (let attempt = 1; attempt <= 6; attempt++) {
         // Only clear on the first round: re-clearing mid-build would delete the
         // dirt she is actively placing from.
         if (attempt === 1) { try { await rconCmd('clear LandworkTest'); } catch (_) {} }
-        for (const c of cmds) { try { await rconCmd(c); } catch (_) {} }
+
+        // Everything goes in with `item replace entity ... <slot>`, which writes
+        // a stack DIRECTLY into a chosen slot. /give says "Gave 1 [Iron Shovel]"
+        // and leaves nothing when the inventory is full — the stack lands on the
+        // floor, which is what happened here six times before this. Explicit
+        // slots also stop the tools and the bulk materials fighting over hotbar.
+        //   slots 9,10,11  : tools
+        //   slots 12..20   : building materials
+        // 64 per stack, always, and one stack per slot. `item replace` rejects a
+        // bigger count two different ways depending on the value — "Integer must
+        // not be more than 99: found 256" and "minecraft:dirt can only stack up
+        // to 64" — and every rejection is a slot that silently stays empty, which
+        // showed up downstream only as "Don't have any dirt to place".
+        const STACKS = [
+            ['iron_shovel', 1], ['iron_pickaxe', 1], ['iron_axe', 1],
+            ['dirt', 64], ['dirt', 64], ['dirt', 64],
+            ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
+            ['oak_fence', 64], ['oak_fence', 64],
+            ['cobblestone', 64], ['stone_bricks', 64],
+            ['oak_log', 64], ['stick', 64],
+        ];
+        for (let slot = 9; slot <= 26; slot++) {
+            const entry = STACKS[slot - 9];
+            if (!entry) continue;
+            const [name, count] = entry;
+            let rep = '';
+            // Never let one bad slot abort the rest: the loop silently stopped at
+            // inventory.11 and every material after it went ungiven, which looked
+            // exactly like "she has no dirt" and cost a whole diagnosis cycle.
+            try {
+                rep = String(await rconCmd(`item replace entity LandworkTest inventory.${slot} with minecraft:${name} ${count}`));
+            } catch (e) { rep = 'THREW ' + e.message; }
+            if (/THREW|error/i.test(rep)) {
+                // Retry once into the next free slot rather than giving up on it.
+                for (let alt = slot + 1; alt <= 26 && alt !== slot; alt++) {
+                    try {
+                        rep = String(await rconCmd(`item replace entity LandworkTest inventory.${alt} with minecraft:${name} ${count}`));
+                        if (!/error|Unknown/i.test(rep)) { giveReplies.push(`slot${slot}->${alt} ${name} ok`); break; }
+                    } catch (_) {}
+                }
+            }
+            giveReplies.push(`slot${slot} ${name}x${count} -> ${rep.slice(0, 45)}`);
+        }
         await new Promise(r => setTimeout(r, 2500));
+        // Server truth, cache busted. placeBlock consults rconItemCount, NOT the
+        // client inventory, so a client that looks full while the server read
+        // comes back empty makes her refuse to place with "Don't have any dirt
+        // to place" while visibly holding dirt. Check what placeBlock will see.
+        const srvInv = await _bustInv(TEST_BOT, true);
+        const srv = {};
+        for (const e of (srvInv || [])) srv[e.name] = (srv[e.name] || 0) + e.count;
+        log('server-side counts (busted)', JSON.stringify(srv));
         stock = {};
         for (const it of bot.inventory.items()) stock[it.name] = it.count;
         log(`stock attempt ${attempt}`, JSON.stringify(stock));
-        if (Object.keys(stock).length >= 5) break;
+        // Check for the TOOLS explicitly, not just "enough kinds of thing".
+        // Breaking the road's own grass_block needs a shovel, and the hand-gate
+        // refuses to swing the wrong item, so a run that stocked 7 materials and
+        // no tools looks complete right up until every placement fails.
+        // Server-side truth: the CLIENT inventory view is stale for tools on this
+        // fork. RCON cheerfully answered "Gave 1 [Iron Shovel]" six times while
+        // bot.inventory.items() never listed one — so trust the server here and
+        // let skills.js fetch the tool into hand by its own name.
+        const srvTools = ['iron_shovel', 'iron_pickaxe', 'iron_axe'].filter(t => srv[t] > 0);
+        log('server tools:', JSON.stringify(srvTools), '| client:', JSON.stringify(Object.keys(stock).filter(k => /shovel|pickaxe|axe/.test(k))));
+        const haveTools = srvTools.length === 3;
+        // Every building material must be visible SERVER-side before starting:
+        // that is the read placeBlock gates on, and a client-only bag is a build
+        // that places nothing.
+        const needServer = ['dirt', 'oak_planks'];
+        const haveMats = needServer.every(m => (srv[m] || 0) > 0);
+        log('server has materials:', haveMats, JSON.stringify(needServer.map(m => m + '=' + (srv[m] || 0))));
+        log('give replies', JSON.stringify(giveReplies));
+        log(`tools present: ${haveTools} (${Object.keys(stock).filter(k => k.includes('_')).join(',')})`);
+        if (haveTools && haveMats) break;
         await new Promise(r => setTimeout(r, 3000));
     }
 
@@ -240,8 +313,23 @@ async function run() {
         log('single placeBlock ->', okOne, 'now:', bot.blockAt(new Vec3(pvx, pvy, pvz))?.name);
     } catch (e) { log('single placeBlock THREW', e.message); }
 
+    // skills.log() appends its reasons to bot.output ("block in the way", "Don't
+    // have any dirt to place", "no path"). That is the ONLY explanation of a
+    // failed placement, and reading it is how this test turns "17 of 43" into an
+    // actual cause.
+    const reasonCounts = {};
+    for (const line of String(bot.output || '').split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        const key = t.replace(/-?\d+(\.\d+)?/g, 'N').slice(0, 110);
+        reasonCounts[key] = (reasonCounts[key] || 0) + 1;
+    }
+    const topReasons = Object.entries(reasonCounts).sort((a, b) => b[1] - a[1]).slice(0, 12);
+
     const summary = await landwork.placeGenerated(bot, road);
     note('road_placed', summary);
+    note('placement_reasons', topReasons);
+    note('raw_output_tail', String(bot.output || '').split('\n').slice(-25));
 
     // --- 6. VERIFY by diffing the design against the world we just built
     const diff = landwork.diffAgainstWorld(road, g.get, road.origin);
