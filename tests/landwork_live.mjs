@@ -483,7 +483,11 @@ async function run() {
             // Parse the number, don't slice the tail. slice(-8) returns "" or a
             // truncated word for many replies, so any counter built on it silently
             // reports zero.
-            const hpM = /Health:\s*([0-9.]+)/.exec(hpRaw);
+            // The reply is "<name> has the following entity data: 20.0f" --
+            // there is NO "Health:" label in it. Matching on the label meant the
+            // parse failed on every single sample and all 100 read as unreadable,
+            // which is a quieter version of the same mistake.
+            const hpM = /entity data:\s*([0-9.]+)/.exec(hpRaw);
             const hp = hpM ? Number(hpM[1]) : null;
             const pz = bot.entity && bot.entity.position;
             trace.push({
