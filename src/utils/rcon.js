@@ -37,7 +37,10 @@ export function rconCommand(cmd, timeoutMs = 5000) {
         let chunks = [];
         let parts = [];
         let drained = false;
-        const finish = () => { if (drained) return; drained = true; clearTimeout(timer); try { sock.destroy(); } catch (_) {} resolve(parts.join('')); };
+        // Idle-gap timer: reset on every response packet, fires when the reply
+        // has stopped arriving. Declared here so finish() can clear it.
+        let finishTimer = null;
+        const finish = () => { if (drained) return; drained = true; clearTimeout(timer); if (finishTimer) clearTimeout(finishTimer); try { sock.destroy(); } catch (_) {} resolve(parts.join('')); };
         sock.on('data', (d) => {
             chunks.push(d);
             let buf = Buffer.concat(chunks);
@@ -55,20 +58,31 @@ export function rconCommand(cmd, timeoutMs = 5000) {
                 buf = buf.slice(4 + len);
             }
             chunks = [buf];
-            let gotResponse = false;
             for (const p of out) {
                 if (stage === 'auth') {
                     if (p.id === -1 || p.type === -1) { clearTimeout(timer); try { sock.destroy(); } catch (_) {} reject(new Error('rcon auth failed')); return; }
                     stage = 'cmd';
                     sock.write(encode(2, 2, cmd));
-                    // safety net only: the real finish fires on type-0 packet
+                    // safety net only: the real finish fires on an idle gap
                     setTimeout(finish, 1500);
                 } else if (p.type === 0) {
                     parts.push(p.body);
-                    gotResponse = true;
+                    // Do NOT finish here. A long reply -- and `data get entity X
+                    // Inventory` is long -- is split across SEVERAL type-0
+                    // packets. Returning on the first one silently dropped every
+                    // entry after it, so a full inventory read as a short one and
+                    // she was told she had no materials while holding hundreds.
+                    // That is the "63 blocks of dirt vanishing every 20 seconds"
+                    // in the live trace: nothing was destroyed, the reply was
+                    // arriving in pieces and we were reading the first.
+                    //
+                    // Instead, wait for a short quiet period. TCP delivers the
+                    // packets back to back, so an idle gap means the reply is
+                    // done; the 1500ms net above is the backstop if it never is.
+                    clearTimeout(finishTimer);
+                    finishTimer = setTimeout(finish, 150);
                 }
             }
-            if (gotResponse) finish();
         });
         sock.on('error', (e) => { clearTimeout(timer); reject(e); });
     });
