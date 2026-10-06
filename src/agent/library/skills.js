@@ -5988,6 +5988,51 @@ export async function pillarUp(bot, blockType, height = 4) {
     return gained;
 }
 
+export async function tearDownTower(bot, base, height) {
+    /**
+     * Remove a temporary access tower (pillar or scaffold) so the world is left
+     * as found — the CLEAN-THE-MESS promise that {pillarUp,scaffoldUp} log but
+     * never actually perform ("Break the BOTTOM to pop it all"). Since 26.3 all
+     * movement kicks on cheat-/tp, she pillars up to reach a ledge, and the
+     * tower used to STAY forever. Called at the TOP of the climb: digs each
+     * block underneath her feet, dropping one level at a time, collecting every
+     * block back — no permanent structure, no wasted scaffold.
+     * @param {MinecraftBot} bot
+     * @param {Vec3|{x,y,z}} base  the tower's ground-floor column position.
+     * @param {number} height      top layer index reached (1-based layers placed).
+     * @returns {Promise<number>}  blocks actually removed.
+     **/
+    if (!bot || bot.interrupt_code) return 0;
+    let removed = 0;
+    try {
+        const b = { x: Math.floor(base.x), y: Math.floor(base.y), z: Math.floor(base.z) };
+        // from the layer we stood on back down to ground (b.y is where the first
+        // block was placed = existing ground; we placed b.y+1 .. b.y+height).
+        const topY = b.y + Math.max(0, Math.min(height, 24));
+        for (let y = topY; y > b.y; y--) {
+            if (bot.interrupt_code) break;
+            try {
+                const blk = bot.blockAt(new Vec3(b.x, y, b.z));
+                if (blk && blk.name !== 'air' && blk.name !== 'water' && blk.name !== 'lava') {
+                    try { await equipRightTool(bot, blk).catch(() => {}); } catch (_) {}
+                    try { await bot.dig(blk, true).catch(() => {}); } catch (_) {}
+                    // VERIFIED removal: only count when it's actually gone.
+                    try {
+                        const chk = bot.blockAt(new Vec3(b.x, y, b.z));
+                        if (!chk || chk.name === 'air' || chk.name !== blk.name) removed++;
+                    } catch (_) {}
+                }
+            } catch (_) {}
+            // settle + sink one level so the next dig is at feet, then fall.
+            try { await bot.waitForTicks(15); } catch (_) {}
+        }
+        try { await pickupNearbyItems(bot); } catch (_) {}
+    } catch (_) {}
+    if (removed > 0)
+        log(bot, `Tore down the temporary ${removed} block tower — left the spot as I found it.`);
+    return removed;
+}
+
 export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dontCheat=false) {
     /**
      * Place the given block type at the given position. It will build off from any adjacent blocks. Will fail if there is a block in the way or nothing to build off of.
@@ -8645,6 +8690,7 @@ export async function goToPlayer(bot, username, distance=3) {
                         for (const e of ((await inv(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
                         const mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (counts[n] || 0) > 0);
                         if (mat) {
+                            const _tBase = bot.entity.position.clone();
                             await ensureBlocks(bot, mat, h);
                             const gained = await pillarUp(bot, mat, h);
                             if (gained > 0) {
@@ -8654,7 +8700,15 @@ export async function goToPlayer(bot, username, distance=3) {
                                     _wg._pathTimeout = 4000;
                                     await goToGoal(bot, _wg);
                                     const _wd = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
-                                    if (_wd <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+                                    if (_wd <= Math.max(distance, 2) + 1) {
+                                        log(bot, `You have reached ${username}.`);
+                                        // CLEAN-THE-MESS (2026-10-06): tear the temporary reach tower
+                                        // back down once she's on the target, so she leaves the spot as
+                                        // found instead of abandoning a pillar. Only fires safely — she's
+                                        // at ledge level and digs down through the tower she climbed.
+                                        try { await tearDownTower(bot, _tBase, gained); } catch (_) {}
+                                        return true;
+                                    }
                                 } catch (_) {}
                             }
                         } else {
@@ -8695,6 +8749,7 @@ export async function goToPlayer(bot, username, distance=3) {
                                 for (const e of ((await inv2(bot.username, true)) || [])) c2[e.name] = (c2[e.name] || 0) + e.count;
                                 const mat2 = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (c2[n] || 0) > 0);
                                 if (mat2) {
+                                    const _tBase2 = bot.entity.position.clone();
                                     log(bot, `Dug the wall, pillaring on ${mat2} now.`);
                                     await ensureBlocks(bot, mat2, h);
                                     const g2 = await pillarUp(bot, mat2, h);
@@ -8705,7 +8760,11 @@ export async function goToPlayer(bot, username, distance=3) {
                                             _wg2._pathTimeout = 4000;
                                             await goToGoal(bot, _wg2);
                                             const _wd2 = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
-                                            if (_wd2 <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+                                            if (_wd2 <= Math.max(distance, 2) + 1) {
+                                                log(bot, `You have reached ${username}.`);
+                                                try { await tearDownTower(bot, _tBase2, g2); } catch (_) {}
+                                                return true;
+                                            }
                                         } catch (_) {}
                                     }
                                 } else {
