@@ -9064,6 +9064,39 @@ export async function followPlayer(bot, username, distance=4, mode='walk') {
             } catch (e) {}
             lastGoalReset = Date.now();
         }
+        // VERTICAL-GAP CLIMB HANDOFF (2026-10-06): GoalFollow pathfinds in the
+        // XZ plane — if the followed player is far above or below (cave base to
+        // surface, ledge, ravine), the pathfinder just churns at the wall and
+        // she never moves (measured live: frozen at cave y=-2 with the player at
+        // y=64, 66 blocks up, while she said "im trying"). goToPlayer already
+        // owns the full climb escape (diagonalAscent step-climb -> pillarUp ->
+        // dig-the-wall for blocks -> teardown), so hand off to it and re-follow
+        // from whatever Y it lands on. This is exactly why followPlayer alone
+        // could not reach a player above the cave: GoalFollow cannot climb.
+        try {
+            const _fdy = player.position.y - bot.entity.position.y;
+            const _fdXZ = Math.hypot(player.position.x - bot.entity.position.x,
+                                     player.position.z - bot.entity.position.z);
+            // Vertically unreachable but horizontally not yet absurdly far
+            // (if they're 200 blocks away AND 3 up, re-following is right; the
+            // climb matters when the wall is the wall she's standing under).
+            if (Math.abs(_fdy) > 3 && _fdXZ < 60) {
+                const _pre = bot.entity.position.clone();
+                log(bot, `${username} is ${Math.round(_fdy)} ${_fdy > 0 ? 'up' : 'down'} from me — climbing to their level before following.`);
+                await goToPlayer(bot, username, distance);
+                // Did we actually gain? Re-follow regardless (fresh position)
+                // so the loop never wedges on a missed goal.
+                const _post = bot.entity.position.y - _pre.y;
+                if (_pre.distanceTo(bot.entity.position) < 1.5) {
+                    // No movement at all — drop to a raw climb/unstick rather
+                    // than looping the handoff forever.
+                    try { await goToSurface(bot); } catch (_) {}
+                } else {
+                    log(bot, `Gained ${_post.toFixed(1)} vertically after the climb — resuming follow.`);
+                }
+                lastGoalReset = 0; // force immediate GoalFollow reissue above
+            }
+        } catch (_) {}
         // in cheat mode, if the distance is too far, teleport to the player
         const distance_from_player = bot.entity.position.distanceTo(player.position);
 
