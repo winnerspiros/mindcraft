@@ -5988,6 +5988,76 @@ export async function pillarUp(bot, blockType, height = 4) {
     return gained;
 }
 
+export async function diagonalAscent(bot, target, maxHeight = 12, blockType = null) {
+    /**
+     * CROUCH-PLACE SIDEWAYS (2026-10-06): the pathfinder's only placement move is
+     * straight up (getMoveUp, same column) — it cannot plan a DIAGONAL climb toward
+     * a target that is above AND horizontally offset. So she used to pillar straight
+     * up and walk over, which wastes a tower and leaves junk. This steps each layer
+     * one block TOWARD the target while gaining height (place block beside feet,
+     * hop onto it, repeat), so a ledge you can see and are within a few blocks of
+     * gets reached diagonally like a human would. Verified per placement; falls
+     * back to pure vertical (caller pillarUp) on failure.
+     * @param {MinecraftBot} bot
+     * @param {Vec3|{x,y,z}} target   the cell she's trying to reach.
+     * @param {number} maxHeight      how many layers to try (cap 24).
+     * @param {string|null} blockType scaffold material; resolved from inventory if
+     *                                null (dirt/cobble/... cheap solid).
+     * @returns {Promise<number>}     layers actually gained diagonally.
+     **/
+    try {
+        const invmod = (await import('../../utils/rcon.js'));
+        const counts = {};
+        if (blockType === null) {
+            try { invmod.rconInventoryBust(bot.username); } catch (_) {}
+            for (const e of ((await invmod.rconInventory(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+            blockType = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (counts[n] || 0) > 0);
+        }
+        if (!blockType) return 0;
+        maxHeight = Math.max(1, Math.min(24, Math.floor(maxHeight || 12)));
+        const tgt = { x: Math.floor(target.x), y: Math.floor(target.y), z: Math.floor(target.z) };
+        let gained = 0;
+        for (let i = 0; i < maxHeight; i++) {
+            if (bot.interrupt_code) break;
+            const here = bot.entity.position;
+            if (here.y >= tgt.y - 1) break; // reached target height — done
+            // direction to target (XZ), one block per layer (no huge diagonal jumps)
+            const dx = Math.sign(tgt.x - here.x), dz = Math.sign(tgt.z - here.z);
+            if (dx === 0 && dz === 0) break; // same cell — done
+            const stepX = here.x + dx, stepZ = here.z + dz;
+            // the cell to hop onto: one block toward target, at +1 height
+            const below = { x: Math.floor(stepX), y: Math.floor(here.y) + 1, z: Math.floor(stepZ) };
+            // verify there's nothing already solid blocking the hop cell (feet or head)
+            const head = bot.blockAt(new Vec3(below.x, below.y + 1, below.z), false);
+            if (head && head.name !== 'air' && head.boundingBox === 'block' && !(dx === 0 && dz === 0)) { break; }
+            // place the target block (at feet+1, one step toward target)
+            const placed = await placeBlock(bot, blockType, below.x, below.y, below.z, 'bottom', true);
+            if (!placed) { // try the raw cell under feet instead
+                const fb = { x: Math.floor(here.x), y: Math.floor(here.y) + 1, z: Math.floor(here.z) };
+                const placed2 = await placeBlock(bot, blockType, fb.x, fb.y, fb.z, 'bottom', true);
+                if (!placed2) break;
+            }
+            // walk/hop onto the new block (crouch over the edge, step up)
+            try { await bot.look(Math.atan2(dx, dz), 0); } catch (_) {}
+            bot.setControlState('sneak', true);
+            bot.setControlState('forward', true);
+            await waitForCond(async () => {
+                const now = bot.entity.position;
+                return Math.floor(now.y) >= below.y && Math.floor(now.x) === Math.floor(below.x) && Math.floor(now.z) === Math.floor(below.z);
+            }, 2500, 80);
+            bot.setControlState('forward', false);
+            bot.setControlState('sneak', false);
+            // verify we actually gained height (block now under us)
+            const feetNow = bot.entity.position.floored();
+            const under = bot.blockAt(new Vec3(feetNow.x, feetNow.y - 1, feetNow.z));
+            if (under && under.name === blockType) gained++;
+            await new Promise(r => setTimeout(r, 120));
+        }
+        if (gained > 0) log(bot, `Step-climbed ${gained} toward the ledge — diagonal reach works, no junk tower.`);
+        return gained;
+    } catch (_) { return 0; }
+}
+
 export async function tearDownTower(bot, base, height) {
     /**
      * Remove a temporary access tower (pillar or scaffold) so the world is left
@@ -8682,6 +8752,30 @@ export async function goToPlayer(bot, username, distance=3) {
                 if (dy > 3) {
                     const h = Math.min(Math.ceil(dy) + 1, 12);
                     log(bot, `${username} is ${Math.round(dy)} up — pillaring ${h}, not walking.`);
+                    // SIDEWAYS-REACH (2026-10-06): if the target is ABOVE and not
+                    // directly overhead, try the diagonal step-climb first (place
+                    // a block one step toward them, hop up, repeat) so she reaches
+                    // an offset ledge like a human instead of pillar-straight-up +
+                    // walk-over. Only reached-height+close counts as success; any
+                    // shortfall falls through to the straight pillar below.
+                    try {
+                        const _dx = Math.abs(rpos.x - bot.entity.position.x);
+                        const _dz = Math.abs(rpos.z - bot.entity.position.z);
+                        if (_dx + _dz > 0.8) {
+                            const _dGain = await diagonalAscent(bot, rpos, h);
+                            if (_dGain > 0 && bot.entity.position.y >= rpos.y - 1.5) {
+                                log(bot, `Diagonal reach got me to ${username}'s height — closing in.`);
+                                try {
+                                    const _wgD = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
+                                    _wgD._pathTimeout = 4000;
+                                    await goToGoal(bot, _wgD);
+                                    const _wdD = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
+                                    if (_wdD <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
+                                } catch (_) {}
+                                await tearDownTower(bot, bot.entity.position, _dGain).catch(() => {});
+                            }
+                        }
+                    } catch (_) {}
                     try {
                         const invmod0 = (await import('../../utils/rcon.js'));
                         const inv = invmod0.rconInventory;
