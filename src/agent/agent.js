@@ -1666,7 +1666,6 @@ export class Agent {
                     // state readout, and the chat budget's own share ceiling
                     // (0.55) exists precisely because that is not how players
                     // talk. notable_event above already works this way.
-                    just_acted: this._consumeActionReact(),
                     any_human: this.anyHumanOnline(),
                 });
                 if (!verdict.ok) {

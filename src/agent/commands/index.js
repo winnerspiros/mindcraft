@@ -380,6 +380,21 @@ const BLOCK_NAME_ALIASES = {
     cobble: 'cobblestone',
     planks: 'oak_planks',
     coal: 'coal_ore',
+    // ORES: the brain is told to MINE an ore but reaches for its raw-*ITEM* name
+    // (yielded by mining), which is not a block id — live "Invalid block type:
+    // raw_iron" loop. Map the raw item to the ore BLOCK she actually digs. The
+    // deepslate variants are separate ids; point at the shallow ore so the pick
+    // "mine deepslate_iron_ore" still resolves, and suggestBlockNames catches the
+    // rest. Same class of fix as coal above.
+    raw_iron: 'iron_ore',
+    raw_gold: 'gold_ore',
+    raw_copper: 'copper_ore',
+    raw_emerald: 'emerald_ore',
+    iron: 'iron_ore',
+    gold: 'gold_ore',
+    copper: 'copper_ore',
+    diamond: 'diamond_ore',
+    emerald: 'emerald_ore',
 };
 
 // todo: handle arrays?
