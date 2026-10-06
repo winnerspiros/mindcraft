@@ -470,19 +470,30 @@ async function run() {
         const v = new Vec3(road.origin.x + b.x + 0.5, road.origin.y + b.y + 0.5, road.origin.z + b.z + 0.5);
         return { b, d: bot.entity.position.distanceTo(v) };
     }).sort((a, c) => a.d - c.d);
-    const probeBlock = (near[0] && near[0].b) || road.blocks[0];
+    // The probe is a diagnostic, not a build step. It must not burn 25 minutes
+    // trying to pathfind to a block that is beyond the 4.5-block placement
+    // reach — the placement will fail anyway, but the pathfinding to a far
+    // target can stall the whole run. Skip blocks that are unreachable from
+    // here; the build loop handles the rest.
+    const reachable = near.filter(n => n.d <= 4.5);
+    const probeBlock = (reachable[0] && reachable[0].b) || (near[0] && near[0].b) || road.blocks[0];
     log('probe chose', road.blocks.length - dryBlocks.length, 'watery blocks skipped; nearest dry is',
-        near[0] ? Math.round(near[0].d) : 'n/a', 'blocks away');
+        near[0] ? Math.round(near[0].d) : 'n/a', 'blocks away' +
+        (reachable.length ? '' : ' (none within 4.5-block reach — skipping probe)'));
     const pvx = road.origin.x + probeBlock.x;
     const pvy = road.origin.y + probeBlock.y;
     const pvz = road.origin.z + probeBlock.z;
-    log('probe target', probeBlock.name, 'at', pvx, pvy, pvz,
-        'bot at', Math.floor(bot.entity.position.x), Math.floor(bot.entity.position.y), Math.floor(bot.entity.position.z),
-        'dist', Math.round(bot.entity.position.distanceTo(new Vec3(pvx + 0.5, pvy + 0.5, pvz + 0.5))));
-    try {
-        const okOne = await skills.placeBlock(bot, probeBlock.name, pvx, pvy, pvz, 'bottom', true);
-        log('single placeBlock ->', okOne, 'now:', bot.blockAt(new Vec3(pvx, pvy, pvz))?.name);
-    } catch (e) { log('single placeBlock THREW', e.message); }
+    if (!reachable.length) {
+        log('probe skipped — no dry block within 4.5-block reach; the build loop handles placement');
+    } else {
+        log('probe target', probeBlock.name, 'at', pvx, pvy, pvz,
+            'bot at', Math.floor(bot.entity.position.x), Math.floor(bot.entity.position.y), Math.floor(bot.entity.position.z),
+            'dist', Math.round(bot.entity.position.distanceTo(new Vec3(pvx + 0.5, pvy + 0.5, pvz + 0.5))));
+        try {
+            const okOne = await skills.placeBlock(bot, probeBlock.name, pvx, pvy, pvz, 'bottom', true);
+            log('single placeBlock ->', okOne, 'now:', bot.blockAt(new Vec3(pvx, pvy, pvz))?.name);
+        } catch (e) { log('single placeBlock THREW', e.message); }
+    }
 
     // skills.log() appends its reasons to bot.output ("block in the way", "Don't
     // have any dirt to place", "no path"). That is the ONLY explanation of a
