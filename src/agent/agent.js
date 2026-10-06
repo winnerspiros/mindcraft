@@ -484,6 +484,37 @@ export class Agent {
                 // RCON/system consoles are not people: no relationship record, no love
                 // economy, never beloved. (2026-09-27: console spam hit beloved via +1/message.)
                 if (/^(rcon|server|console)$/i.test(username)) return;
+
+                // ── TRUSTED-PLAYER COME/GO/TP DIRECTIVE INTERRUPTS ────────────
+                // The user: "correct, but its normal to interrupt something and
+                // work after." When a TRUSTED player directly and explicitly asks
+                // her to come/go/tp to them, that has to take the hand from her
+                // autonomous goal (e.g. cave-mining) — otherwise she keeps saying
+                // "coming your way" while the material-scorer re-elects
+                // !collectBlocks and she never reaches the player. interruptTo()
+                // pushes the current goal and sets a reach goal; when it completes,
+                // SelfPrompter.advanceGoal pops the stack and RESUMES the mining.
+                // Only fires on a literal directive (not ambient chat) from a
+                // trusted face. This closure is only entered from real human
+                // chat/whisper events (self-prompt turns go straight through
+                // handleMessage('system', ...), never here), so no self_prompt
+                // guard is needed — a system self-turn can never reach this.
+                const IS_TRUSTED = isBeloved || isYandere();
+                if (IS_TRUSTED && this.self_prompter) {
+                    try {
+                        const _dir = msg_lc;
+                        if (/(^(come|come here|come to me|go to me|tp to me|teleport to me|reach me|find me|meet me|stand by me|walk over to me|come over)\b|(^| )((come|go|tp|teleport|walk)( )?(to|over to|near|towards?) (me|here|us|our spot))\b)/.test(_dir)) {
+                            const _goal = `Go to ${username} and stand near them (reach ${username} — climb/pillar/goToPlayer — then stay close).`;
+                            // Already on this reach request (player asked again mid-reach):
+                            // do not stack a redundant copy onto the resume stack.
+                            const _cur = String(this.self_prompter.prompt || '');
+                            if (!_cur.includes(`Go to ${username} and stand near them`) && !_cur.includes(`Go to ${username}`)) {
+                                this.self_prompter.interruptTo(_goal);
+                                console.log(`${this.name} directive from ${username}: "come/go/tp" -> interrupting goal, will resume after.`);
+                            }
+                        }
+                    } catch (e) { console.warn('[directive] come-interrupt failed open:', e.message); }
+                }
                 console.log(this.name, 'received message from', username, ':', message);
                 this.relationship.onMessage(username, message);
                 this.psyche.onMessage(message);

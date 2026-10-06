@@ -37,6 +37,16 @@ export class SelfPrompter {
         this.interrupt = false;
         this.prompt = '';
         this.idle_time = 0;
+        // GOAL RESUME STACK (2026-10-06): when a trusted player directly asks her
+        // to come/tp/go to them, that request must INTERRUPT her current autonomous
+        // goal (e.g. "explore caves for resources") so she actually reaches them,
+        // then RESUME the interrupted goal afterward ("interrupt something and work
+        // after"). Without this the mining goal stayed in the driver's seat and the
+        // command-scorer kept elevating !collectBlocks over the reach command, so
+        // she said "climbing up now" but never climbed. One slot is enough: an
+        // interrupt is a single outstanding request, and a second one replaces the
+        // first (the deeper saved goal stays the one to come back to).
+        this._resume_stack = [];
         // ── HUMAN TIMING, NOT A METRONOME ─────────────────────────────────
         // The owner: "people dont talk in fixed intervals, i might be off
         // screen, thinking what to type, bored to type, depending on how much i
@@ -275,6 +285,20 @@ export class SelfPrompter {
         this.startLoop();
     }
 
+    // INTERRUPT-WITH-RESUME (2026-10-06): a trusted player's direct come/go/tp
+    // request takes the hand from whatever she was doing, and once done the
+    // interrupted goal comes back. Preserves her autonomy: solo she keeps her own
+    // goal; only a direct player ask overrides, and only for the duration of the
+    // reach. The interrupted goal is restored by advanceGoal when the interrupt
+    // goal completes (see the _resume_stack checks there).
+    interruptTo(goal) {
+        const prev = String(this.prompt || '').trim();
+        this._resume_stack.push(prev);     // may be '' (no prior goal) — fine
+        this.start(goal);
+        console.log(`Self-prompting interrupted: \"${prev}\" -> \"${goal}\" (will resume \"${prev}\" after).`);
+        return prev;
+    }
+
     isActive() {
         return this.state === ACTIVE;
     }
@@ -451,6 +475,21 @@ export class SelfPrompter {
     // Verify the current goal with the critic, then advance to the next goal via
     // the curriculum when it's done/impossible (or stuck too long). Returns an
     // info object, or null if it couldn't run. Non-fatal: never throws.
+    // When a goal completes and an INTERRUPT-request is outstanding (see
+    // interruptTo/_resume_stack), the interrupted goal is restored here instead
+    // of proposing a fresh curriculum goal — "interrupt something and work
+    // after".
+    // RESUME the interrupted (stacked) goal when the current one is done. When
+    // the stack is empty this returns null and the caller falls back to its own
+    // new-goal proposal (the normal curriculum path).
+    _resumeGoalIfAny() {
+        if (!this._resume_stack || !this._resume_stack.length) return null;
+        const prev = this._resume_stack.pop();
+        if (!String(prev || '').trim()) return null;   // was '' (nothing to resume)
+        console.log(`[curriculum] resuming interrupted goal: \"${prev}\"`);
+        return prev;
+    }
+
     async advanceGoal() {
         const agent = this.agent;
         if (!this.prompt) return null;
@@ -462,7 +501,8 @@ export class SelfPrompter {
             const v = verdict && verdict.verdict ? verdict.verdict : 'incomplete';
             if (v === 'complete') {
                 agent.curriculum.recordComplete(this.prompt);
-                const next = await agent.curriculum.proposeNextGoal();
+                const resumed = this._resumeGoalIfAny();
+                const next = resumed || await agent.curriculum.proposeNextGoal();
                 this.goal_cycles = 0;
                 this.stuck_cycles = 0;
                 if (next) this.prompt = next;
@@ -470,7 +510,8 @@ export class SelfPrompter {
             }
             if (v === 'impossible') {
                 agent.curriculum.recordFailure(this.prompt, verdict.critique || 'impossible');
-                const next = await agent.curriculum.proposeNextGoal();
+                const resumed = this._resumeGoalIfAny();
+                const next = resumed || await agent.curriculum.proposeNextGoal();
                 this.goal_cycles = 0;
                 this.stuck_cycles = 0;
                 if (next) this.prompt = next;
@@ -649,7 +690,8 @@ export class SelfPrompter {
             if (this.stuck_cycles >= (settings.goal_stuck_limit || 3)) {
                 agent.curriculum.recordFailure(this.prompt, verdict.critique || 'stuck');
                 const old = this.prompt;
-                const next = await _freshGoal(old);
+                const resumed = this._resumeGoalIfAny();
+                const next = resumed || await _freshGoal(old);
                 this.goal_cycles = 0;
                 this.stuck_cycles = 0;
                 if (next) this.prompt = next;
@@ -937,6 +979,23 @@ export class SelfPrompter {
                 const IN_PLACE = /^!(breedAnimals|pickupItems|nearbyBlocks|entities|surroundings|inventory|lookDir|stats|chunk|map|terrainScan|entities)/i;
                 if (MOVERS.test(n)) s += 45;
                 if (IN_PLACE.test(n)) s -= 35;
+            }
+            // ── A DIRECT PLAYER REQUEST TO COME MUST BEAT MINING ─────────────
+            // The bug (2026-10-06): she said "climbing up now / coming your way"
+            // but never ran a reach command, because her active goal was
+            // "explore caves for resources" and the MATERIAL branch above gave
+            // every !collectBlocks/+40 — decisive — so the REACH commands that
+            // would actually get her to the player never ranked. The fix is in
+            // the GOAL: when a trusted player hands her a come/go/reach request,
+            // interruptTo() sets a reach goal like "Go to YandereDev and stand
+            // near them". THIS branch makes the scorer elect the reach commands
+            // for that goal and push material-mining away, so the interrupt
+            // actually moves her instead of re-electing the mine.
+            if (/(go to|come to|come here|reach|tp to|teleport to|find me|meet |stand near|come near|walk over to|go see|follow)/i.test(g)) {
+                const REACH = /^!(goToPlayer|comehere|goTosurface|climb|goTocordinates|scout|getTo|boat|goTorememberedplace)/i;
+                const AVOID = /^!(collectBlocks|mine|dig|gatherBlocks|searchForBlock)/i;
+                if (REACH.test(n)) s += 60;   // above the +40 material branch
+                if (AVOID.test(n)) s -= 45;   // mining is the thing she's leaving
             }
             return { n, s };
         }).filter(x => x.s > 0)
