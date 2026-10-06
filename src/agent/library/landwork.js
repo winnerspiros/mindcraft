@@ -36,6 +36,14 @@ const SOFT = new Set([
     'blue_orchid', 'allium', 'azure_bluet', 'red_tulip', 'orange_tulip',
     'white_tulip', 'pink_tulip', 'oxeye_daisy', 'cornflower', 'lily_of_the_valley',
     'sunflower', 'oxeye_daisy', 'sweet_berry_bush', 'light',
+    // Mountain/hill terrain blocks that appear under elevated roads between
+    // support pillars. They are natural ground, not "extra" construction.
+    'andesite', 'diorite', 'granite', 'polished_andesite', 'polished_diorite', 'polished_granite',
+    'calcite', 'tuff', 'dripstone_block', 'mud', 'clay', 'farmland', 'snow_block',
+    'deepslate', 'cobbled_deepslate', 'polished_deepslate', 'deepslate_bricks',
+    'deepslate_tiles', 'cracked_deepslate_bricks', 'cracked_deepslate_tiles',
+    'basalt', 'smooth_basalt', 'polished_basalt', 'blackstone', 'polished_blackstone',
+    'end_stone', 'end_stone_bricks',
 ]);
 
 export function isAirName(name) {
