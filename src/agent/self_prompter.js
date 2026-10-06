@@ -992,7 +992,7 @@ export class SelfPrompter {
             // for that goal and push material-mining away, so the interrupt
             // actually moves her instead of re-electing the mine.
             if (/(go to|come to|come here|reach|tp to|teleport to|find me|meet |stand near|come near|walk over to|go see|follow)/i.test(g)) {
-                const REACH = /^!(goToPlayer|comehere|goTosurface|climb|goTocordinates|scout|getTo|boat|goTorememberedplace)/i;
+                const REACH = /^!(goToPlayer|comehere|goTosurface|climb|goTocordinates|scout|getTo|boat|goTorememberedplace|tpa|followPlayer)/i;
                 const AVOID = /^!(collectBlocks|mine|dig|gatherBlocks|searchForBlock)/i;
                 if (REACH.test(n)) s += 60;   // above the +40 material branch
                 if (AVOID.test(n)) s -= 45;   // mining is the thing she's leaving

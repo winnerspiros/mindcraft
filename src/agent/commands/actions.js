@@ -2789,7 +2789,7 @@ export const actionsList = [
     },
     {
         name: '!tpa',
-        description: 'Ask a player for a consensual teleport: sends them a TPA request (they accept with /tpaccept), works with plugin TPA (EssentialsX / SimpleTPA) and needs NO operator powers. ONLY usable when teleport commands were actually seen on this server (probbed at join — otherwise it walks instead). LAST resort, not the commute: never send unless there is a real reason walking cannot do (asked somewhere unreachable, rescue/recall, trip is pointless on foot). Walking is better, always. One pending request per player (no re-send spam). Trusted friends get asked freely; strangers only when you genuinely need to be there.',
+        description: 'Ask a player for a consensual teleport: sends them a TPA request (they accept with /tpaccept), works with plugin TPA (EssentialsX / SimpleTPA) and needs NO operator powers. USE IT when walking/climbing genuinely cannot reach (player far above/below, cave to surface, rescue/recall, trip pointless on foot) — this server HAS TPA, so it is a legit reach tool, not a cheat. Prefer a normal walk when the path is clear, but do NOT keep digging a dead wall for minutes: if the player is on the other side of a vertical wall you cannot climb, send !tpa to them instead. Trusted friends get asked freely; strangers only when you genuinely need to be there. One pending request per player (no re-send spam).',
         params: { 'player_name': { type: 'string', description: 'The player to send the teleport request to.' } },
         perform: runAsAction(async (agent, player_name) => {
             return await skills.tpaRequest(agent.bot, player_name);

@@ -512,7 +512,7 @@ export class Agent {
                         // went out. A lone "come" (no destination) still
                         // counts: it is a call to her.
                         if (/\b(come|come\s+(up|over|here|to\s+me|back|join\s+\w+|my\s+way)|go\s+to\s+me|tp\s+to\s+me|teleport\s+(to\s+me|here)|reach\s+me|meet\s+me|stand\s+(by|near)\s+me|walk\s+over\s+to\s+me|over\s+here)\b/.test(_dir)) {
-                            const _goal = `Go to ${username} and stand near them (reach ${username} — climb/pillar/goToPlayer — then stay close).`;
+                            const _goal = `Go to ${username} and stand near them (reach ${username}: walk if the path is clear, climb/pillar/goToSurface if they're on another level, or !tpa ${username} if a vertical wall blocks you — this server HAS TPA, use it rather than digging a dead wall for minutes).`;
                             // Already on this reach request (player asked again mid-reach):
                             // do not stack a redundant copy onto the resume stack.
                             const _cur = String(this.self_prompter.prompt || '');
