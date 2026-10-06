@@ -521,6 +521,32 @@ export class Agent {
                                 console.log(`${this.name} directive from ${username}: "come/go/tp" -> interrupting goal, will resume after.`);
                             }
                         }
+                        // ── BUILD-DIRECTIVE INTERRUPT (2026-10-06) ──────────────
+                        // A trusted player directly and explicitly asking her to
+                        // BUILD something ("build a dirt house here", "make me a
+                        // shelter") must take the hand from her autonomous goal,
+                        // exactly like the come/go/tp request above. Without this,
+                        // "uwu build a house here" just vanished into her cycle
+                        // (measured live: she kept her creeper/zombie/cave goals,
+                        // recited "Example: i built a dirt house" and never ran a
+                        // single build/dirt command). interruptTo() pushes the
+                        // current goal and sets a build goal; advanceGoal resumes
+                        // the old one after. Only fires on a literal build ask
+                        // from a trusted face — ambient chat does not.
+                        if (/(build|make|create)\s+(me\s+)?(a|an|the|please|pls)?[\s\w]*(house|hut|shelter|home|tower|wall|bridge|road|farm|garden|stairs|cabin|building|structure|castle|shack|barn)/i.test(_dir)) {
+                            // Pull the material word out of the request
+                            // ("dirt house" -> dirt) when it is a known block.
+                            let _mat = '';
+                            const _m = _dir.match(/(?:dirt|sand|stone|brick|wood|oak|plank|glass|clay|cobble|concrete|slate|deepslate|granite|basalt|marble|ice|mud|bamboo)/);
+                            if (_m) _mat = _m[0];
+                            const _th = (_dir.match(/house|hut|shelter|home|tower|wall|bridge|road|farm|garden|stairs|cabin|building|structure|castle|shack|barn/) || [])[0] || 'house';
+                            const _goal = `Build a ${_mat || ''} ${_th} near ${username} (this is what they asked for — do it now:${_mat ? ` gather ${_mat} with !collectBlocks ${_mat}, then ` : ' '}!build to construct it).`;
+                            const _cur = String(this.self_prompter.prompt || '');
+                            if (!_cur.includes('Build a') && !_cur.includes('!build')) {
+                                this.self_prompter.interruptTo(_goal);
+                                console.log(`${this.name} directive from ${username}: "build" -> interrupting goal, will resume after.`);
+                            }
+                        }
                     } catch (e) { console.warn('[directive] come-interrupt failed open:', e.message); }
                 }
                 console.log(this.name, 'received message from', username, ':', message);
