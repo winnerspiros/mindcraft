@@ -397,6 +397,27 @@ export class Prompter {
         });
     }
 
+    // Embedding persistence identity. cacheDir = per-agent dir (bots/<name>/
+    // embed_cache). modelTag must be STABLE per provider+embedding-model so the
+    // vector space the cache was computed in always matches; if it changes, the
+    // hash key changes and the cache rebuilds automatically.
+    _embedCacheOpts(cacheDir, kind) {
+        // modelTag must be STABLE per embedding model so the vector space the
+        // cache was computed in always matches; if the model identity ever
+        // changes, the hash key changes and the cache rebuilds automatically.
+        // Resolve it from the actual model instance (falls back to the profile
+        // setting, then to the known embed default). 'default' is only a last
+        // resort when no identity is available yet.
+        let tag = 'default';
+        try {
+            const em = this.embedding_model;
+            if (em && em.model_name) tag = String(em.model_name);
+            else if (this.profile && this.profile.embedding) tag = String(this.profile.embedding);
+            else tag = 'openai/text-embedding-3-small';
+        } catch (_) {}
+        return { cacheDir, modelTag: tag, kind: kind || 'examples' };
+    }
+
     getName() {
         return this.profile.name;
     }
@@ -407,8 +428,9 @@ export class Prompter {
 
     async initExamples() {
         try {
-            this.convo_examples = new Examples(this.embedding_model, settings.num_examples);
-            this.coding_examples = new Examples(this.embedding_model, settings.num_examples);
+            const cacheOpts = this._embedCacheOpts(`bots/${this.agent?.name || this.profile.name}/embed_cache`, 'convo');
+            this.convo_examples = new Examples(this.embedding_model, settings.num_examples, cacheOpts);
+            this.coding_examples = new Examples(this.embedding_model, settings.num_examples, this._embedCacheOpts(`bots/${this.agent?.name || this.profile.name}/embed_cache`, 'coding'));
             
             // Wait for both examples to load before proceeding
             await Promise.all([
@@ -720,7 +742,7 @@ export class Prompter {
             let examplesSource = isChatTurn ? this.convo_examples : null;
             if (personaExamples && isChatTurn) {
                 if (this._personaExamplesRaw !== personaExamples) {
-                    const pe = new Examples(this.embedding_model, settings.num_examples);
+                    const pe = new Examples(this.embedding_model, settings.num_examples, this._embedCacheOpts(`bots/${this.agent?.name || this.profile.name}/embed_cache`, 'persona'));
                     await pe.load(personaExamples);
                     this._personaExamplesObj = pe;
                     this._personaExamplesRaw = personaExamples;

@@ -1,6 +1,7 @@
 import { cosineSimilarity } from '../../utils/math.js';
 import { getSkillDocs } from './index.js';
 import { wordOverlapScore } from '../../utils/text.js';
+import { loadEmbedCache, saveEmbedCache } from '../../utils/embed_cache.js';
 
 export class SkillLibrary {
     constructor(agent,embedding_model) {
@@ -15,13 +16,44 @@ export class SkillLibrary {
         this.skill_docs = skillDocs;
         if (this.embedding_model) {
             try {
-                const embeddingPromises = skillDocs.map((doc) => {
-                    return (async () => {
-                        let func_name_desc = doc.split('\n').slice(0, 2).join('');
-                        this.skill_docs_embeddings[doc] = await this.embedding_model.embed(func_name_desc);
-                    })();
-                });
-                await Promise.all(embeddingPromises);
+                // Static skill headers are re-embedded (paid) on every boot even
+                // though the text never changes. Persist them keyed on the header
+                // text contents + model so the vectors are computed once and reused.
+                // Behavior identical (same vectors, same cosine ranking).
+                const headers = skillDocs.map(doc => doc.split('\n').slice(0, 2).join(''));
+                const cacheDir = `bots/${this.agent?.name || 'UwU'}/embed_cache`;
+                let modelTag = 'default';
+                try { if (this.agent?.prompter?.profile?.embedding) modelTag = String(this.agent.prompter.profile.embedding); }
+                catch (_) {}
+                const cached = loadEmbedCache(cacheDir, 'skills', modelTag, headers);
+
+                const missed = [];
+                for (let i = 0; i < skillDocs.length; i++) {
+                    const doc = skillDocs[i];
+                    const header = headers[i];
+                    if (cached && cached.embeddings[header] !== undefined) {
+                        this.skill_docs_embeddings[doc] = cached.embeddings[header];
+                    } else {
+                        missed.push({ doc, header });
+                    }
+                }
+
+                if (missed.length) {
+                    const embeddingPromises = missed.map(({ doc, header }) => {
+                        return this.embedding_model.embed(header)
+                            .then(embedding => { this.skill_docs_embeddings[doc] = embedding; });
+                    });
+                    await Promise.all(embeddingPromises);
+                    // persist only when the whole set is present
+                    const complete = {};
+                    let ok = true;
+                    for (let i = 0; i < skillDocs.length; i++) {
+                        const emb = this.skill_docs_embeddings[skillDocs[i]];
+                        if (emb === undefined) { ok = false; break; }
+                        complete[headers[i]] = emb;
+                    }
+                    if (ok) saveEmbedCache(cacheDir, 'skills', modelTag, headers, complete);
+                }
             } catch (error) {
                 console.warn('Error with embedding model, using word-overlap instead.');
                 this.embedding_model = null;
