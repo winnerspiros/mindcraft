@@ -332,8 +332,13 @@ async function run() {
         // 9..26 or it is a no-op that reads like success in the log.
         const STACKS_RAW = [
             ['iron_shovel', 1], ['iron_pickaxe', 1], ['iron_axe', 1],
-            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
-            ['oak_planks', 64], ['oak_planks', 64], ['oak_planks', 64],
+            // 8 dirt stacks = 512 blocks. High-elevation mountain roads need
+            // many fill columns + support pillars + stair steps + re-visits.
+            // The last mountain run exhausted 320 dirt (5 stacks) before finishing.
+            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
+            ['dirt', 64], ['dirt', 64], ['dirt', 64], ['dirt', 64],
+            // Dirt road primary material; keep 2 plank stacks (128) for occasional
+            // bridge decks, but we don't need 5 stacks (320) for a dirt road.
             ['oak_planks', 64], ['oak_planks', 64],
             ['oak_fence', 64], ['oak_fence', 64], ['oak_fence', 64],
             ['cobblestone', 64], ['stone_bricks', 64],
