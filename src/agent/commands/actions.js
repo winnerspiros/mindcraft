@@ -2813,10 +2813,22 @@ export const actionsList = [
     },
     {
         name: '!comeHere',
-        description: 'Someone asks you to come somewhere: go NOW (no debate for trusted friends), WALK the honest road (walk near, sprint far flat, travel-trick 60+, boat water, bridge gaps), and SAY what you chose. NEVER advertise tp yourself ("tp to me"/!teleportMe are yours to RECEIVE when THEY ask — you come on foot). Pass the requester name.',
+        description: 'Someone asks you to come somewhere: go NOW (no debate for trusted friends), WALK the honest road (walk near, sprint far flat, travel-trick 60+, boat water, bridge gaps), and SAY what you chose. If they literally asked you to TELEPORT to them ("tp to me", "come by tp"), send a consensual TPA request first (/tprequest — they accept on their side, no OP needed); only walk when tp is unavailable or they decline. Pass the requester name.',
         params: { 'who': { type: 'string', default: null, description: 'Who asked (player name, optional — defaults to last sender).' } },
         perform: runAsAction(async (agent, who) => {
-            await skills.comeHere(agent.bot, who || agent.last_sender || 'someone');
+            const name = who || agent.last_sender || 'someone';
+            // TP-ASK DETECT (2026-10-06): if the ask literally requested a teleport
+            // ("tp to me", "come by tp", "teleport here"), send an outbound TPA
+            // request instead of only walking. comeHere's paced==='tp' branch sends
+            // the request; without this the brain never passes 'tp' and the branch
+            // was dead code ("tp to me" x8 → she kept walking).
+            let paced = null;
+            try {
+                const ask = String(agent._last_human_msg_text || '').toLowerCase();
+                if (/\b(tp|teleport|tpa)\b/.test(ask) && /(me|here|there|to\s+(me|here|there)|by\s+tp)\b/.test(ask))
+                    paced = 'tp';
+            } catch (_) {}
+            await skills.comeHere(agent.bot, name, paced);
         }, true)
     },
     {
