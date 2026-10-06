@@ -28,8 +28,15 @@ function runAsAction (actionFn, resume = false, timeout = 3) {
             await actionFn(agent, ...args);
         };
         const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
+        // PREEMPT FIX (2026-10-06): a reflex (mob/mode/unstuck) that interrupts
+        // this action mid-run must NOT surface as `undefined` to the brain —
+        // "got: undefined" reads as "nothing happened, try again" and re-issues
+        // the SAME command into a loop (buildShelter fired 26x, digested none).
+        // Return the manager's interrupt message so the brain knows the action
+        // was cut short and can continue/resume deliberately instead of blindly
+        // re-running it.
         if (code_return.interrupted && !code_return.timedout)
-            return;
+            return code_return.message || `${actionLabel} was interrupted by a higher-priority reflex — carrying on.`;
         return code_return.message;
     }
 

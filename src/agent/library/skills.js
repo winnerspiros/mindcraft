@@ -2451,11 +2451,15 @@ export async function buildShelter(bot, block = 'oak_planks') {
                 }
             }
     const placed = await placeBlockList(bot, block, positions);
+    if (placed === 0) {
+        log(bot, `I couldn't build a ${block} shelter — placed 0 blocks (${block} is scarce here; make or gather some first).`);
+        return false;
+    }
     // light the inside: craft torches if needed (charcoal fallback), one in
     // the middle = the whole 5x5 reads 8+ and nothing spawns beside her.
     try { await lightUp(bot); } catch (_) {}
     log(bot, `Built a quick ${block} shelter (${placed} blocks) with a doorway, lit inside.`);
-    return placed > 0;
+    return true;
 }
 
 // Survival ladder — gear tiers, food ranking, hide routine. One honest path:
@@ -7869,7 +7873,18 @@ export async function comeHere(bot, requester, paced = null) {
     // coords, no render needed) and hand the whole leg to goToPlayer, which
     // already knows the RCON homing loop.
     const who = String(requester || 'someone');
-    if (paced === 'tp' || paced === 'teleport') { log(bot, `Tp asked — use !teleportMe for that (gated, friend+). I walk unless you say the word + the gate passes.`); return false; }
+    if (paced === 'tp' || paced === 'teleport') {
+        // OWNER/BELOVED ASKS TO BE TP'D TO (2026-10-06): this used to refuse
+        // outright, sending the brain back into walk+argue ("tp to me" x8 in the
+        // log). Send a real consensual TPA request instead — the requester
+        // accepts on their side, no OP needed. tpaRequest itself falls back to
+        // walking when the server has no teleport commands, so this is safe to
+        // try first on any server.
+        const sent = await tpaRequest(bot, who).catch(() => null);
+        if (sent) return true;
+        log(bot, `Can't teleport to ${who} here — walking over instead.`);
+        // fall through to the walking legs below (no hard refusal)
+    }
     try {
         const t = world.getNearestEntityWhere(bot, e => e && (e.username === who || e.name === who), 128);
         if (t && t.position) {
@@ -7893,7 +7908,17 @@ export async function comeHere(bot, requester, paced = null) {
             return true;
         }
     } catch (_) {}
-    log(bot, `Can't see ${who} yet — walking blind isn't safe, send me coords and I'll walk over.`);
+    log(bot, `Can't see ${who} yet — trying a teleport request first, else walking blind isn't safe.`);
+    // CANNOT-REACH-HANDOFF (2026-10-06): entity withheld AND no RCON position =
+    // she literally cannot path to them on foot. This dead-end used to just give
+    // up ("send me coords"), so an owner/beloved "come to me" on an unrendered
+    // entity churned walk-blind failures with no way forward. tpaRequest is
+    // safe to try here: it requires the other side to consent, falls back to
+    // walking when the server has no teleport commands, and dedupes to one
+    // request per player per 5 min. This is the reachable outbound-hook.
+    const sentTp = await tpaRequest(bot, who).catch(() => null);
+    if (sentTp) return true;
+    log(bot, `Still can't reach ${who} on foot and no teleport possible — send me coords and I'll walk over.`);
     return false;
 }
 
