@@ -503,7 +503,15 @@ export class Agent {
                 if (IS_TRUSTED && this.self_prompter) {
                     try {
                         const _dir = msg_lc;
-                        if (/(^(come|come here|come to me|go to me|tp to me|teleport to me|reach me|find me|meet me|stand by me|walk over to me|come over)\b|(^| )((come|go|tp|teleport|walk)( )?(to|over to|near|towards?) (me|here|us|our spot))\b)/.test(_dir)) {
+                        // Match a come/go/tp DIRECTIVE anywhere in the message,
+                        // not only when the verb leads. "uwu please come" /
+                        // "hurry come up" / "can you come here" all mean the
+                        // same request but only the last matched before (verb
+                        // had to be at position 0) — so she stayed on her cave
+                        // goal, never ran !comeHere/!tpa, and no tp request
+                        // went out. A lone "come" (no destination) still
+                        // counts: it is a call to her.
+                        if (/\b(come|come\s+(up|over|here|to\s+me|back|join\s+\w+|my\s+way)|go\s+to\s+me|tp\s+to\s+me|teleport\s+(to\s+me|here)|reach\s+me|meet\s+me|stand\s+(by|near)\s+me|walk\s+over\s+to\s+me|over\s+here)\b/.test(_dir)) {
                             const _goal = `Go to ${username} and stand near them (reach ${username} — climb/pillar/goToPlayer — then stay close).`;
                             // Already on this reach request (player asked again mid-reach):
                             // do not stack a redundant copy onto the resume stack.
