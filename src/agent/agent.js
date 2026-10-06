@@ -1038,8 +1038,18 @@ export class Agent {
         // is real silence; silence decided afterwards is a discarded message.
         // A system/self prompt with nobody on the server is the agent talking to
         // itself. That belongs in the curriculum loop, not chat.
-        if (!isYandere() && self_prompt && !this.anyHumanOnline()) {
-            console.log(`${this.name} [gate:solo_self_prompt] nobody online, not speaking`);
+        // SOLO-GOAL FIX (2026-10-06): blocking EVERYTHING when alone also killed
+        // goal-command EXECUTION — live, the curriculum assigned "cut stairs into
+        // a slope (!buildStairs)" and she replied [gate:solo_self_prompt] on every
+        // turn, never running the command, so she could not build/mine/gather as
+        // the autonomous caretaker she is meant to be. When she HAS an active
+        // goal, let the turn through (she acts); only suppress goal-less solo
+        // self-prompt monologue (the original no_human_online spam). Her narration
+        // with a goal is still held by speak_gate's no_human_online rule, so this
+        // re-enables ACTION without re-enabling chat-to-nobody.
+        if (!isYandere() && self_prompt && !this.anyHumanOnline()
+            && !(this.self_prompter?.isActive?.() && this.self_prompter.prompt)) {
+            console.log(`${this.name} [gate:solo_self_prompt] nobody online & no goal, not speaking`);
             return false;
         }
 
