@@ -3514,9 +3514,27 @@ export async function attackEntity(bot, entity, kill=true) {
                     // no meaningful progress this poll
                     if (stallSince === null) stallSince = Date.now();
                     else if (Date.now() - stallSince > 8000) {
-                        log(bot, `breaking off ${entity.name}, not closing the gap (${nowGap.toFixed(1)} blocks).`);
-                        bot.pvp.stop();
-                        return false;
+                        // STALL -> CLEAR THE OBSTRUCTION (2026-10-06). The gap is
+                        // not closing at all, and in the field that repeatedly
+                        // means a boat/vehicle or junk entity sits in the path
+                        // between her and the mob — she cannot path/step around
+                        // it, so she freezes and the 1s threat scan re-fires this
+                        // forever (measured live: pillager at a static 4.3 blocks,
+                        // four boats near her, she frozen at her spot). Boats are
+                        // entities: you destroy them by striking them. Try to
+                        // break a blocking boat for a limited time before we
+                        // actually give up, so an obstruction never lands the
+                        // slot in an infinite dead-end.
+                        const cleared = await clearBlockingBoat(bot, entity);
+                        if (cleared) {
+                            log(bot, `Cleared a boat/obstruction in the way of ${entity.name} — pressing the attack.`);
+                            stallSince = null;        // reset stall window, keep fighting
+                            bestGap = bot.entity.position.distanceTo(entity.position);
+                        } else {
+                            log(bot, `breaking off ${entity.name}, not closing the gap (${nowGap.toFixed(1)} blocks).`);
+                            bot.pvp.stop();
+                            return false;
+                        }
                     }
                 } else { bestGap = nowGap; stallSince = null; }
                 await new Promise(resolve => setTimeout(resolve, 1000))
@@ -3536,6 +3554,40 @@ export async function attackEntity(bot, entity, kill=true) {
         await pickupNearbyItems(bot);
         return true;
     }
+}
+
+// CLEAR-BLOCKING-BOAT (2026-10-06): when a fight stalls, a boat/vehicle/junk
+// entity often sits between her and the mob (measured live: pillager at a
+// static 4.3 blocks while FOUR boats sat within 24 blocks of her, one directly
+// in the path, and she froze at her spot because she cannot path/step around
+// it). Boats and vehicles are ENTITIES — you destroy them by striking them, not
+// by breaking a block. Strike any boat within reach of the target for a bounded
+// window; return true the moment one breaks, false if nothing clears.
+async function clearBlockingBoat(bot, targetEntity) {
+    const deadline = Date.now() + 6000;
+    while (Date.now() < deadline) {
+        // A blocking boat is between her and the mob: within a few blocks of
+        // the target's line, or simply the nearest boat/vehicle around her.
+        const boat = world.getNearestEntityWhere(bot, e => /boat|vessel|raft/i.test(e.name || ''), 10);
+        if (!boat) return false;
+        const gap = bot.entity.position.distanceTo(boat.position);
+        // Only strike if the boat is actually in the way — within melee reach of
+        // the target path, or close to her. Do not chase a decorative boat.
+        if (gap <= 4) {
+            try {
+                await equipHighestAttack(bot);
+                await attackAimed(bot, boat, () => bot.pvp.attack(boat));
+            } catch (_) {}
+            // struck; give the break a tick to register before re-scanning
+            await new Promise(r => setTimeout(r, 800));
+            // check it's gone
+            const gone = world.getNearestEntityWhere(bot, e => /boat|vessel|raft/i.test(e.name || ''), 10);
+            if (!gone || bot.entity.position.distanceTo(gone.position) !== gap) return true; // broke it (or it moved)
+            continue;
+        }
+        return false; // nearest boat too far to matter here
+    }
+    return false;
 }
 
 // BOTCRAFT PORT (YieldForCondition: Botcraft's behaviour waits yield until
