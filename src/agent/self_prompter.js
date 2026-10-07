@@ -1002,6 +1002,29 @@ export class SelfPrompter {
                 if (REACH.test(n)) s += 60;   // above the +40 material branch
                 if (AVOID.test(n)) s -= 45;   // mining is the thing she's leaving
             }
+            // ── A CRAFT/BUILD GOAL MUST REACH A GATHER, NOT A CRAFT-OBSERVER ──
+            // For the goal "craft something useful from nearby resources" the
+            // word "craft" scored the three craft-NODE verbs (!craftable,
+            // !getCraftingPlan, !craftRecipe) and NOTHING else, because no
+            // gather command's NAME contains "craft" and the goal names no raw
+            // material (so the material branch above couldn't fire either).
+            // She had no materials and no table, so !craftable returned
+            // "CRAFTABLE_ITEMS: none" and !getCraftingPlan "needs a crafting
+            // table (3x3)" every single turn - no block ever moved, and she
+            // never ran the one command that unblocks the chain: !collectBlocks
+            // (which gathers the oak_log -> planks -> table -> the craft).
+            // Same shape as the travel goal above: the verb "craft/build" lives
+            // in craft-observation names but the ACTION needs the raw world.
+            if (/(craft|build|make|forge|smelt|construct|fashion|weave|assemble)/i.test(g)) {
+                // Gathering the raw material is the unblocking first step of ANY
+                // craft/build goal when the pack is empty of it. Reward the
+                // movers/gatherers so she actually goes and chops wood.
+                if (/^!(collectBlocks|searchForBlock|goTosurface|climb|goTocordinates|fish|scout)/i.test(n)) s += 40;
+                // Pure craft-OBSERVERS never change the world. Push them down or
+                // they re-state the same "none"/"needs a table" forever without
+                // ever running the gather that would change the answer.
+                if (/^!(craftable|getCraftingPlan)/i.test(n)) s -= 35;
+            }
             return { n, s };
         }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {

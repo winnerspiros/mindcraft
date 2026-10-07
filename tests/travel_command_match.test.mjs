@@ -55,6 +55,13 @@ const scoreFor = (goal) => {
             if (/^!(getfood|eat|drink|consume|restoreheal|sethealth)/i.test(n)) hit += 30;
             if (/^!(findshelter|findcave|buildshelter|findsaf(e|er)place)/i.test(n)) hit -= 20;
         }
+        // The craft-goal branch (added 2026-10-07) - the live goal "craft
+        // something useful from nearby resources" must reach a gatherer, not
+        // only the craft-observers whose names happen to contain "craft".
+        if (/(craft|build|make|forge|smelt|construct|fashion|weave|assemble)/i.test(g)) {
+            if (/^!(collectBlocks|searchForBlock|goTosurface|climb|goTocordinates|fish|scout)/i.test(n)) hit += 40;
+            if (/^!(craftable|getCraftingPlan)/i.test(n)) hit -= 35;
+        }
         return hit;
     };
     return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
@@ -94,6 +101,35 @@ test('every command offered for a travel goal actually moves her or is harmless'
     const top = scoreFor(GOAL)[0];
     assert.ok(/scout|goTo|searchFor|findCave|findShelter|climb|comeHere|fish|parkour|rideHorse|boat|recall/i.test(top),
         `top suggestion for a travel goal is ${top}, which does not travel`);
+});
+
+// ── CRAFT/BUILD GOAL MUST REACH A GATHER, NOT A CRAFT-OBSERVER ─────────
+// Regression (2026-10-07): the live goal "craft something useful from nearby
+// resources" scored ONLY the pure craft verbs (!craftable, !getCraftingPlan,
+// !craftRecipe) because "craft" is in both the goal and their names, and
+// nothing else. She had no materials and no crafting table, so those commands
+// answered "CRAFTABLE_ITEMS: none" / "needs a crafting table (3x3)" every
+// turn, she never ran !collectBlocks, and sat frozen on the surface. The
+// craft-goal branch must elect gatherers (which unblock the chain) and push
+// the pure observers out.
+const CRAFT_GOAL = 'craft something useful from nearby resources';
+test('the exact live craft goal now reaches a gatherer, not only craft-observers', () => {
+    const ranked = scoreFor(CRAFT_GOAL);
+    assert.ok(ranked.includes('!collectBlocks'),
+        `the craft goal must reach !collectBlocks (gather oak_log -> planks -> table); got: ${ranked.join(', ')}`);
+    assert.ok(/^!(collectBlocks|searchForBlock|goToSurface|climb|goToCoordinates)$/i.test(ranked[0]),
+        `top suggestion for a craft goal is ${ranked[0]}, which does not gather or move toward the material`);
+    assert.ok(!(ranked.length && ranked.slice(0, 3).includes('!craftable')),
+        `!craftable (pure observer) must not rank in the top 3 for an empty-pack craft goal: ${ranked.slice(0, 3).join(', ')}`);
+});
+
+test('the craft-goal scoring branch exists in the real source', () => {
+    assert.match(code, /collectBlocks\|searchForBlock\|goTosurface\|climb\|goTocordinates/,
+        'the real scorer must reward gatherers for a craft goal');
+    assert.match(code, /craftable\|getCraftingPlan/,
+        'the real scorer must push pure craft-observers down for a craft goal');
+    assert.match(code, /\(craft\|build\|make\|forge\|smelt\|construct\|fashion\|weave\|assemble\)/,
+        'the craft goal pattern must recognise the verbs the curriculum emits');
 });
 
 test('no offered command needs an argument she was never given', () => {
