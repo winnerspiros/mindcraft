@@ -62,6 +62,12 @@ const scoreFor = (goal) => {
             if (/^!(collectBlocks|searchForBlock|goTosurface|climb|goTocordinates|fish|scout)/i.test(n)) hit += 40;
             if (/^!(craftable|getCraftingPlan)/i.test(n)) hit -= 35;
         }
+        // The cave/mine/dig branch (added 2026-10-07) - a cave goal must reach
+        // the dig verbs, or she walks to the cave and can only re-run !findCave
+        // at a blocked mouth instead of tunnelling in.
+        if (/(cave|cavern|cave system|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)/i.test(g)) {
+            if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) hit += 40;
+        }
         return hit;
     };
     return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
@@ -130,6 +136,23 @@ test('the craft-goal scoring branch exists in the real source', () => {
         'the real scorer must push pure craft-observers down for a craft goal');
     assert.match(code, /\(craft\|build\|make\|forge\|smelt\|construct\|fashion\|weave\|assemble\)/,
         'the craft goal pattern must recognise the verbs the curriculum emits');
+});
+
+// ── CAVE/MINE/DIG GOAL MUST REACH THE DIG VERBS ──────────────────────────
+// Regression (2026-10-07): the live cave goal "explore the nearby cave for
+// more resources" offered ONLY travel movers (!findCave, !searchForBlock,
+// ...), so when the cave mouth was blocked and walking nav died 15 blocks
+// short, she had no dig command to tunnel in — and re-ran !findCave for
+// minutes while her memory said "next step is to dig towards the cave".
+const CAVE_GOAL = 'explore the nearby cave for more resources';
+test('the exact live cave goal now reaches the dig verbs', () => {
+    const ranked = scoreFor(CAVE_GOAL);
+    assert.ok(ranked.some(n => /^!(digDown|digUp|collectBlocks)$/i.test(n)),
+        `a cave goal must reach a dig verb to tunnel past a blocked mouth; got: ${ranked.join(', ')}`);
+});
+test('the dig-goal scoring branch exists in the real source', () => {
+    assert.match(code, /digDown\|digUp\|collectBlocks\|levelGround\|searchForBlock/,
+        'the real scorer must reward dig verbs for a cave goal');
 });
 
 test('no offered command needs an argument she was never given', () => {

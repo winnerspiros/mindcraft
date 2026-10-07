@@ -1025,6 +1025,19 @@ export class SelfPrompter {
                 // ever running the gather that would change the answer.
                 if (/^!(craftable|getCraftingPlan)/i.test(n)) s -= 35;
             }
+            // ── A CAVE/MINE/DIG GOAL MUST REACH THE DIG COMMANDS ─────────────
+            // For the goal "explore the nearby cave for more resources" the
+            // travel branch elects !findCave/!searchForBlock/movers (so she
+            // walks to the cave), but nothing that can get her THROUGH a
+            // blocked mouth: the cave at -6,56,4 was 15 blocks away with no
+            // path, her own memory said "next step is to dig towards the cave",
+            // and she narrated "time to dig through!" - yet the offered list
+            // had zero dig verbs, so she re-ran !findCave forever and stood at
+            // the hole. A cave reached by walking still needs a dig verb to
+            // enter when the opening is blocked.
+            if (/(cave|cavern|cave system|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)/i.test(g)) {
+                if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) s += 40;
+            }
             return { n, s };
         }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {
