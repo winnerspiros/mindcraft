@@ -61,7 +61,11 @@ test('the cap is bounded near the turn gear, not merely smaller than 600s', () =
 test('the solo idle gears themselves are untouched', () => {
     // The genuine-idle behaviour must survive: with no goal she may still go
     // quiet for minutes, which is intentional.
-    assert.match(sp, /this\.gear_solo_min = 30000;/);
+    // 2026-10-07 §token-save: solo-idle floor deliberately raised 30s->60s so
+    // idle-with-no-goal turns (which fire a full-context call to decide "do
+    // nothing") happen half as often. The intent the test protects still holds:
+    // solo idle can still stretch to minutes (max 600s); only the FLOOR moved.
+    assert.match(sp, /this\.gear_solo_min = 60000;/);
     assert.match(sp, /this\.gear_solo_max = 600000;/,
         'the long solo silence is deliberate for real idling - do not shrink it as a side effect');
 });
