@@ -75,8 +75,24 @@ export class ActionManager {
         this.agent.requestInterrupt();
         await new Promise(resolve => setTimeout(resolve, 700));
         if (!this.executing) return;
-        const timeout = setTimeout(() => {
-            this.agent.cleanKill('Code execution refused stop after 10 seconds. Killing process.');
+        // 2026-10-07: a refused stop no longer kills the process. The old
+        // cleanKill('...refused stop after 10 seconds...') called process.exit(1)
+        // whenever a gg action refused every interrupt for 10s (a hung model
+        // round-trip, a fight that never ends). systemd restart-cycled her,
+        // dropping position + loot each hard kill, and on a stuck fight it
+        // crash-looped (4 restarts in 25 min). Instead, ABANDON this one action:
+        // bump _actionGen so its eventual cleanup is a ghost no-op (the
+        // generation guard in _executeAction already does this for stale
+        // actions), release the body via _preempt, and let the governor resume.
+        const timeout = setTimeout(async () => {
+            console.warn(`Action refused stop for 10s - abandoning it (no process kill): "${this.currentActionLabel || '(unknown)'}"`);
+            this._actionGen++;                 // ghost the stuck action
+            await this._preempt();             // release controls + interrupt
+            this.executing = false;            // body is free again
+            this.currentActionLabel = '';
+            this.currentActionFn = null;
+            this.timedout = false;
+            this.agent.bot.emit('idle');       // let the scheduler pick the next step
         }, 10000);
         while (this.executing) {
             this.agent.requestInterrupt();

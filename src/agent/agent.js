@@ -2526,11 +2526,34 @@ export class Agent {
                     // instead of re-aiming at the same mob with the same arrows.
                     if (this._threatBowSpentKey === key) this._threatBowSpentKey = null;
                     if (this._fightInFlight) return;
+                    // Disengage cap (2026-10-07): a fight she just FAILED against
+                    // the SAME unhittable mob (melee on a ranged/missed target —
+                    // attackEntity gave up with done=false, no kill) must not be
+                    // re-armed on the very next 1s scan. Measured: she melee'd an
+                    // unreachable skeleton, the fight returned done=false, the scan
+                    // re-armed it instantly, and that fight-loop starved the brain
+                    // until the 3-min action timeout cleanKill'd the process. Give
+                    // the target a cooldown so she can do something else instead of
+                    // swinging at a ghost forever.
+                    const disengagedUntil = (this._threatDisengage || {})[key];
+                    if (disengagedUntil && Date.now() < disengagedUntil) {
+                        console.log(`[threat] ${r.target.name || 'mob'} still unwinnable — disengaged until ${new Date(disengagedUntil).toISOString().slice(11,19)}`);
+                        return;
+                    }
                     this._fightInFlight = true;
                     console.log(`[threat] scan: FIGHTING ${r.target.name || 'mob'} @ ${r.target.position?.toString?.() || '?'}`);
                     this.self_prompter.start(r.goal);
                     skills.attackEntity(this.bot, r.target, true)
-                        .then((won) => console.log(`[threat] scan fight result: done=${won}`))
+                        .then((won) => {
+                            console.log(`[threat] scan fight result: done=${won}`);
+                            // Failed (gave up / broke off, not a kill): cool the
+                            // SAME target down so the scan stops re-arming it.
+                            if (!won) {
+                                (this._threatDisengage = this._threatDisengage || {})[key] = Date.now() + 15000;
+                            } else {
+                                (this._threatDisengage = this._threatDisengage || {})[key] = null;
+                            }
+                        })
                         .catch((e) => console.warn('[threat] scan fight failed:', e?.message))
                         .finally(() => { this._fightInFlight = false; });
                     return;

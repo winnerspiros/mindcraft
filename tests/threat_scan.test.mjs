@@ -24,6 +24,7 @@ import { mobName, assessThreats } from '../src/utils/threat.js'
 const here = dirname(fileURLToPath(import.meta.url))
 const threatSrc = readFileSync(resolve(here, '../src/utils/threat.js'), 'utf8')
 const agentSrc = readFileSync(resolve(here, '../src/agent/agent.js'), 'utf8')
+const agentSrcOf_actionManager = readFileSync(resolve(here, '../src/agent/action_manager.js'), 'utf8')
 
 let ok = 0, failed = 0
 const check = (name, cond, extra = '') => {
@@ -325,6 +326,31 @@ check('the bow path returns, so it never also runs melee on the same target',
   /shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,1000}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')) &&
   agentSrc.indexOf('shootBow(this.bot, r.target, 2, true)') <
     agentSrc.indexOf('if (this._fightInFlight) return;'))
+
+// --- Disengage cap (2026-10-07): a failed fight must not be re-armed ---
+// She melee'd an unreachable skeleton, attackEntity returned done=false, and
+// the 1s scan re-armed the SAME target instantly; the fight-loop starved the
+// brain until the 3-min action timeout cleanKill'd the process (4 restarts in
+// 25 min). A failed same-target fight must cool the target down so the scan
+// can do something else instead of swinging at a ghost forever.
+check('a failed fight cools the same target down (disengage cap)',
+  /if \(!won\) {\s*\n\s*\(this\._threatDisengage = this\._threatDisengage \|\| \{\}\)\[key\] = Date\.now\(\) \+ 15000;/
+    .test(agentSrc))
+check('the disengage guard lets an already-cooled target through',
+  /const disengagedUntil = \(this\._threatDisengage \|\| \{\}\)\[key\];[\s\S]{0,300}?Date\.now\(\) < disengagedUntil/
+    .test(agentSrc))
+check('a killed target drops its disengage cooldown',
+  /else {\s*\n\s*\(this\._threatDisengage = this\._threatDisengage \|\| \{\}\)\[key\] = null;/
+    .test(agentSrc))
+check('the disengage guard sits before the fight starts, not after',
+  agentSrc.indexOf('disengagedUntil') > 0 &&
+  agentSrc.indexOf('disengagedUntil') < agentSrc.indexOf('this._fightInFlight = true;') &&
+  agentSrc.indexOf('this._threatDisengage') < agentSrc.indexOf('attackEntity(this.bot, r.target, true)'))
+check('action_manager: a refused stop abandons the action, it does not kill the process',
+  /Action refused stop for 10s - abandoning it \(no process kill\)/.test(agentSrcOf_actionManager))
+check('action_manager: the refusal handler ghosts the action and recovers (no cleanKill)',
+  /this\._actionGen\+\+;[\s\S]{0,260}?await this\._preempt\(\);[\s\S]{0,260}?this\.agent\.bot\.emit\('idle'\);/
+    .test(agentSrcOf_actionManager))
 
 console.log(`\n${ok} passed, ${failed} failed`)
 if (failed > 0) process.exit(1)
