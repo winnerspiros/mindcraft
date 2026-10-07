@@ -633,6 +633,30 @@ const modes_list = [
                 });
                 return;
             }
+            // EYES EMPTY on a FLYER = the wither is sniping and 26.3 withheld the
+            // entity (the same wall that made zombies invisible). defendSelf has
+            // its own RCON wither probe + bow fight, but it is never CALLED if
+            // this branch returns null. So when a flyer is plausibly near (we
+            // just took heavy damage with no visible cause) ask RCON for the
+            // nearest flyer and, if present, go bow-fight — throttled like the
+            // ground _blindCheck so update() stays <100ms.
+            if ((Date.now() - (this._flyerCheck || 0)) >= 5000) {
+                const damaged = (Date.now() - (agent.bot.lastDamageTime ?? 0) < 12000) ||
+                    ((agent.bot.health ?? 20) < (this._flyerLastHp ?? 20));
+                try { this._flyerLastHp = agent.bot.health; } catch (_) {}
+                if (damaged) {
+                    this._flyerCheck = Date.now();
+                    let r = null;
+                    try { r = await skills.rconLocateHostile(agent.bot, FLYERS, 64); } catch (_) {}
+                    if (r) {
+                        say(agent, `Something's raining down on me — ${r.name.replace(/_/g, ' ')} fight from server truth!`);
+                        execute(this, agent, async () => {
+                            await skills.defendSelf(agent.bot, 48);
+                        });
+                        return;
+                    }
+                }
+            }
             const enemy = world.getNearestEntityWhere(agent.bot,
                 entity => entity?.position && Number.isFinite(entity.position.x) && mc.isHostile(entity), 16);
             if (enemy) {
