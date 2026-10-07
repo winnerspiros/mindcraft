@@ -1052,6 +1052,20 @@ export class SelfPrompter {
             if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
                 if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) s += 55;
             }
+            // ── A FIGHT/THREAT GOAL MUST REACH THE COMBAT VERBS ────────────
+            // She owns a bow + arrows (RCON-verified 2026-10-07) and !shoot is
+            // a real command, but for "kill the wither"/"deal with the zombie"/
+            // "fight the creeper" the scorer offered NO combat verb - !shoot/
+            // !attack/!defendSelf only scored when the goal text LITERALLY
+            // contained the word "shoot"/"attack"/"defend". So a hostile goal
+            // handed her !skillCode/!skillList or NOTHING, and she improvised
+            // (!build, !despawn) instead of arming the bow - dying to an
+            // airborne Wither a melee swing can never reach. Anchor on the mob
+            // itself (wither/zombie/pillager/...) AND the combat verbs, and
+            // word-bound so "wither" doesn't fire on unrelated text.
+            if (/(?:\b(kill|fight|defend|slay|hunt|attack|shoot|hostile|threat|enemy)\b|\b(wither|zombie|pillager|creeper|skeleton|phantom|enderman|hostile)\b)/i.test(g)) {
+                if (/^!(attack|attackPlayer|shoot|shootPlayer|defendSelf|equip|equipElytra)/i.test(n)) s += 55;
+            }
             return { n, s };
         }).filter(x => x.s > 0)
             .sort((a, b) => b.s - a.s).slice(0, 12).map(x => {

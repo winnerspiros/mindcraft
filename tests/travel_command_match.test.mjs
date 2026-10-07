@@ -71,6 +71,13 @@ const scoreFor = (goal) => {
         if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
             if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) hit += 55;
         }
+        // The combat branch (added 2026-10-07) - a hostile goal must reach
+        // !shoot/!attack, or she owns a bow and 64 arrows yet never arms them
+        // against an airborne Wither (she cannot melee it and the scorer only
+        // offered !skillCode/!skillList / nothing).
+        if (/(?:\b(kill|fight|defend|slay|hunt|attack|shoot|hostile|threat|enemy)\b|\b(wither|zombie|pillager|creeper|skeleton|phantom|enderman)\b)/i.test(g)) {
+            if (/^!(attack|attackPlayer|shoot|shootPlayer|defendSelf|equip|equipElytra)/i.test(n)) hit += 55;
+        }
         return hit;
     };
     return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
@@ -156,6 +163,24 @@ test('the exact live cave goal now reaches the dig verbs', () => {
 test('the dig-goal scoring branch exists in the real source', () => {
     assert.match(code, /digDown\|digUp\|collectBlocks\|levelGround\|searchForBlock/,
         'the real scorer must reward dig verbs for a cave goal');
+});
+
+// ── FIGHT/THREAT GOAL MUST REACH THE COMBAT VERBS ────────────────────────
+// Regression (2026-10-07): she owns a bow + 64 arrows and !shoot is a real
+// command, but "kill the wither" / "deal with the zombie" offered
+// !skillCode/!skillList / nothing — !shoot only scored when the goal text
+// literally said "shoot". She could not melee an airborne Wither and died.
+const WITHER_GOAL = 'kill the wither';
+test('a hostile goal now reaches a combat verb', () => {
+    const ranked = scoreFor(WITHER_GOAL);
+    assert.ok(ranked.some(n => /^!(shoot|shootPlayer|attack|attackPlayer|defendSelf)$/i.test(n)),
+        `a Wither/fight goal must reach a ranged/combat verb (she owns a bow); got: ${ranked.join(', ')}`);
+});
+test('the combat-goal scoring branch exists in the real source', () => {
+    assert.match(code, /wither\|zombie\|pillager\|creeper\|skeleton\|phantom\|enderman/,
+        'the real scorer must anchor combat verbs on the mob, not just the word "shoot"');
+    assert.match(code, /attack\|attackPlayer\|shoot\|shootPlayer\|defendSelf\|equip/,
+        'the real scorer must reward the ranged combat verbs');
 });
 
 // ── OVER-FIRE REGRESSION ────────────────────────────────────────────────
