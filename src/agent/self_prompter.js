@@ -80,7 +80,12 @@ export class SelfPrompter {
         // doing all the work and the distribution was effectively uniform.
         // The floor moves down; the ceiling stays, because going silent for
         // many minutes alone is correct and she has nobody to keep company.
-        this.gear_solo_min = 30000;
+        this.gear_solo_min = 60000;
+        // §token-save: solo-idle floor raised 30s→60s (2026-10-07). When alone with no
+        // goal held, she was firing a full-context LLM call to decide "do nothing"
+        // every ~40s. This halves those idle calls. Goal-holding work is unaffected
+        // (capped at gear_solo_goal_max=25s below), and player engagement still uses
+        // the 20s chatty gear, so real interaction latency is untouched.
         this.gear_solo_max = 600000;
         // ...but NOT while she is holding an unfinished goal. The long silence
         // above is right when she has nothing to do; it is wrong when she has a
