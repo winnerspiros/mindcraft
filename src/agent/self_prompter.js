@@ -1015,7 +1015,10 @@ export class SelfPrompter {
             // (which gathers the oak_log -> planks -> table -> the craft).
             // Same shape as the travel goal above: the verb "craft/build" lives
             // in craft-observation names but the ACTION needs the raw world.
-            if (/(craft|build|make|forge|smelt|construct|fashion|weave|assemble)/i.test(g)) {
+            // Tokens word-bounded (noted 2026-10-07): an unbounded `make`/`build`
+            // fires on superstrings in unrelated goals just like `ore`/`mine`
+            // did in the cave branch - see the cave branch warning below.
+            if (/(?:\b(craft|build|make|forge|smelt|construct|fashion|weave|assemble)\b)/i.test(g)) {
                 // Gathering the raw material is the unblocking first step of ANY
                 // craft/build goal when the pack is empty of it. Reward the
                 // movers/gatherers so she actually goes and chops wood.
@@ -1035,7 +1038,14 @@ export class SelfPrompter {
             // had zero dig verbs, so she re-ran !findCave forever and stood at
             // the hole. A cave reached by walking still needs a dig verb to
             // enter when the opening is blocked.
-            if (/(cave|cavern|cave system|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)/i.test(g)) {
+            // WARNING: the material/dig tokens MUST be word-bounded - an
+            // unbounded `ore`/`mine`/`dig` fires on ANY goal containing a
+            // superstring ("before" has "ore", "minecraft"/"determine" have
+            // "mine"), which hands a zombie-fight goal a list of dig verbs and
+            // she digs at a hostile instead of arming. Verified over-fire:
+            // "deal with the zombie before it gets to me" matched the old
+            // ///(cave|...|ore|...|dig...)/// and she ran !digDown 3.
+            if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
                 if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) s += 40;
             }
             return { n, s };

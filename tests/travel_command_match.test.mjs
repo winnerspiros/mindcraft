@@ -58,14 +58,17 @@ const scoreFor = (goal) => {
         // The craft-goal branch (added 2026-10-07) - the live goal "craft
         // something useful from nearby resources" must reach a gatherer, not
         // only the craft-observers whose names happen to contain "craft".
-        if (/(craft|build|make|forge|smelt|construct|fashion|weave|assemble)/i.test(g)) {
+        if (/(?:\b(craft|build|make|forge|smelt|construct|fashion|weave|assemble)\b)/i.test(g)) {
             if (/^!(collectBlocks|searchForBlock|goTosurface|climb|goTocordinates|fish|scout)/i.test(n)) hit += 40;
             if (/^!(craftable|getCraftingPlan)/i.test(n)) hit -= 35;
         }
         // The cave/mine/dig branch (added 2026-10-07) - a cave goal must reach
         // the dig verbs, or she walks to the cave and can only re-run !findCave
-        // at a blocked mouth instead of tunnelling in.
-        if (/(cave|cavern|cave system|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)/i.test(g)) {
+        // at a blocked mouth instead of tunnelling in. Tokens word-bounded: the
+        // over-fire fix (a zombie-fight goal "deal with the zombie before it
+        // gets to me" used to match on "ore" inside "before" and hijacked her
+        // into !digDown at a hostile).
+        if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
             if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) hit += 40;
         }
         return hit;
@@ -153,6 +156,22 @@ test('the exact live cave goal now reaches the dig verbs', () => {
 test('the dig-goal scoring branch exists in the real source', () => {
     assert.match(code, /digDown\|digUp\|collectBlocks\|levelGround\|searchForBlock/,
         'the real scorer must reward dig verbs for a cave goal');
+});
+
+// ── OVER-FIRE REGRESSION ────────────────────────────────────────────────
+// Word-bounding got verified by a real blunder: "deal with the zombie before
+// it gets to me" matched the then-unbounded cave pattern on "ore" inside
+// "before", handed her a dig-only list, and she ran !digDown 3 at a hostile.
+// A fight goal must never be polluted with dig/mine verbs.
+const FIGHT_GOAL = 'deal with the zombie before it gets to me';
+test('a fight goal is not polluted with dig verbs by the cave branch', () => {
+    const ranked = scoreFor(FIGHT_GOAL);
+    assert.ok(!ranked.some(n => /^!(digDown|digUp|collectBlocks|levelGround|mine)$/i.test(n)),
+        `a fight goal must not be offered dig/mine verbs (over-fire - "ore" in "before"); got: ${ranked.join(', ')}`);
+});
+test('the cave and craft branch tokens are word-bounded in the real source', () => {
+    assert.match(code, /\\b\(cave\|cavern\|mine\|underground\|tunnel\|dig\|excavat\|resource\|ore\|mineral\|shaft\)\\b/,
+        'the cave pattern must word-bound its material tokens (ore in before / mine in minecraft)');
 });
 
 test('no offered command needs an argument she was never given', () => {
