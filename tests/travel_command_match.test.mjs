@@ -69,12 +69,12 @@ const scoreFor = (goal) => {
         // gets to me" used to match on "ore" inside "before" and hijacked her
         // into !digDown at a hostile).
         if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
-            if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) hit += 40;
+            if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) hit += 55;
         }
         return hit;
     };
     return names.map(n => ({ n, s: score(n) })).filter(x => x.s > 0)
-        .sort((a, b) => b.s - a.s).map(x => x.n);
+        .sort((a, b) => b.s - a.s).slice(0, 12).map(x => x.n);
 };
 
 test('the exact goal from the live log now reaches several commands, not one', () => {

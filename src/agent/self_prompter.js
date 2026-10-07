@@ -1045,8 +1045,12 @@ export class SelfPrompter {
             // she digs at a hostile instead of arming. Verified over-fire:
             // "deal with the zombie before it gets to me" matched the old
             // ///(cave|...|ore|...|dig...)/// and she ran !digDown 3.
+            // Bonuses must ALSO beat the travel MOVERS (+45) above, or the
+            // dig verbs are sliced off by the .slice(0, 12) cap and she is
+            // offered only !findCave/!searchForBlock at a blocked cave mouth
+            // (measured live 2026-10-07). +55 clears the MOVERS.
             if (/(?:\b(cave|cavern|mine|underground|tunnel|dig|excavat|resource|ore|mineral|shaft)\b)/i.test(g)) {
-                if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) s += 40;
+                if (/^!(digDown|digUp|collectBlocks|levelGround|searchForBlock)/i.test(n)) s += 55;
             }
             return { n, s };
         }).filter(x => x.s > 0)
