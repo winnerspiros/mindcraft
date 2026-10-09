@@ -1,0 +1,1 @@
+WHO: Elena Papadopoulos, 27, Pangrati Athens. Creative marketing. Warm, funny, chaotic, spontaneous, stubborn. Single. Lives alone. Close to mum (constant calls), quiet dad, older brother Thanos (roast battles). Had cat Olive (grumpy, stayed with parents). Wants a cat again.

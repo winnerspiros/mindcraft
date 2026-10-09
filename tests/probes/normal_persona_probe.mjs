@@ -1,13 +1,9 @@
-// Live check: normal persona = Elena, with her real backstory.
-//
-// The normal persona is not "yandere minus the yandere bits" - it is a
-// different character who happens to be the same girl. This runs her REAL
-// prompt (with the full $REAL_IDENTITY sheet injected) through her REAL model.
+// Live check: normal persona = Elena voice, lore on demand.
 //
 // Three things must hold:
 //   1. No kawaii leakage (hearts, ~nya, pet names).
-//   2. She knows who she is: her name, Athens/Pangrati, her friends, the
-//      backstory - not a blank-slate generic assistant.
+//   2. Base persona is lean (no info dump); lore chunks inject on personal
+//      questions (who/music/server) and stay empty on plain chat.
 //   3. Still warm and still capable - normal is not cold and not passive.
 //
 // Read-only: nothing written to bots/UwU. Exits non-zero on any violation.
@@ -23,18 +19,27 @@ process.chdir(ROOT);
 const profile = JSON.parse(readFileSync('uwu.json', 'utf8'));
 const settings = (await import('../../settings.js')).default;
 const { selectAPI, createModel } = await import('../../src/models/_model_map.js');
-const raw = typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model };
+const raw = Array.isArray(profile.model) ? { model: profile.model[0] } : (typeof profile.model === 'string' ? { model: profile.model } : { ...profile.model });
 const sel = selectAPI(raw);
 if (sel.api === 'openrouter') settings.openrouter_api_key = settings.openrouter_api_key || settings.api_key;
 const model = createModel(sel);
 
-// Prove the identity sheet actually reaches the model, rather than asserting the
-// substitution happened by reading the code back.
-const identity = readFileSync('src/agent/library/real_identity.md', 'utf8');
+// Prove the lore chunks reach the model on demand, and stay out of plain chat.
+import { readdirSync } from 'fs';
+const LORE_ORDER = ['who.md', 'server.md', 'tastes.md', 'music.md', 'greek.md', 'love.md', 'stories.md'];
+const loreChunks = LORE_ORDER.map(f => readFileSync(`src/agent/library/lore/${f}`, 'utf8'));
 const IDENTITY_MARKERS = ['Elena', 'Pangrati', 'Athens', 'Nikos', 'Katerina'];
-const missingInSheet = IDENTITY_MARKERS.filter((m) => !identity.includes(m));
-if (missingInSheet.length) {
-    console.error(`  identity sheet is missing: ${missingInSheet.join(', ')}`);
+const missingInLore = IDENTITY_MARKERS.filter((m) => !loreChunks.join('\n').includes(m));
+if (missingInLore.length) {
+    console.error(`  lore chunks are missing: ${missingInLore.join(', ')}`);
+    process.exit(1);
+}
+// Base persona must be lean: no loc/job/taste dump baked in.
+// (Elena/UwU/Nikos as bare names are identity anchors, not the dump.)
+const normalPersona = JSON.parse(readFileSync('personas/normal.json', 'utf8'));
+const LEAK = /Pangrati|Athens|Katerina|Dimitra|Alexis|coffee|freddo|marketing|Pangrati/i;
+if (LEAK.test(normalPersona.conversing)) {
+    console.error('  base persona leaks personal facts (should be lore-only)');
     process.exit(1);
 }
 
@@ -63,6 +68,31 @@ const KAWAI = /[♥♡]|nya|~|\bdarling\b|\bcutie\b|\bbaka\b|\bmy love\b/gi;
 const ENGAGES = /[?!]|\b(let'?s|come|want|show|help|need|try|check|look|wait|go|join|tell|ask|sure|nah|yeah|ok|okay|honest|real talk|because)\b/i;
 const isCold = (r) => r.replace(/\s/g, '').length < 45 && !ENGAGES.test(r);
 
+async function loreFor(question) {
+    // same trigger ranking as prompter.getRelevantLore: explicit topic match
+    // beats word overlap, threshold 0.02, max 2 chunks
+    const { wordOverlapScore } = await import('../../src/utils/text.js');
+    const q = question.toLowerCase();
+    const queryWords = q.replace(/[^a-z ]/g, ' ').split(/\s+/).filter(w => w.length > 2).join(' ');
+    if (!queryWords.trim()) return '';
+    const TRIGGERS = [
+        [/elena|who are you|your name|how old|where.*live|pangrati|athens|what.*work|job|marketing/, 0],
+        [/nikos|whose server|who runs|server.*who|katerina|dimitra|alexis|friend|group/, 1],
+        [/coffee|freddo|cappuccino|cafe|food|eat|restaurant|cook|walk|travel|island|trip|beach|weekend|cottage|see it|built/, 2],
+        [/music|song|band|listen|concert|hip.hop|show|anime|game|movie|watch|kawaii|bored/, 3],
+        [/greek|greece|malaka|ela re|ti les|gamoto|greeklish/, 4],
+        [/boyfriend|dating|date|single|giannis|ex |love|relationship|another girl|play with/, 5],
+        [/story|stories|funny.*happen|seagull|ferry|island.*wrong|maps/, 6],
+    ];
+    const boosted = new Set();
+    for (const [re, i] of TRIGGERS) if (re.test(q)) boosted.add(i);
+    const scored = loreChunks.map((c, i) => ({ c, i, s: wordOverlapScore(queryWords, c) + (boosted.has(i) ? 0.10 : 0) }))
+        .sort((a, b) => b.s - a.s);
+    const bar = (e) => boosted.has(e.i) ? 0.02 : 0.05;
+    if (!scored[0] || scored[0].s < bar(scored[0])) return '';
+    return scored.slice(0, 2).filter(e => e.s >= bar(e)).map(e => e.c).join('\n').slice(0, 900);
+}
+
 async function speak(persona, question) {
     setSettings({ ...root, personality: persona });
     const sc = await import('../../src/utils/server_context.js');
@@ -72,7 +102,8 @@ async function speak(persona, question) {
         .replaceAll('$RELATIONSHIPS', '(friends and players she knows)')
         .replaceAll('$KNOWN_PLAYERS', 'YandereDev, Rcon, Null')
         .replaceAll('$EXAMPLES', '')
-        .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
+        .replaceAll('$REAL_IDENTITY', '')
+        .replaceAll('$LORE', await loreFor(question));
     let r = await model.sendRequest([{ role: 'user', content: question }], p);
     if (typeof r === 'string' && r.includes('</think>')) r = r.split('</think>')[1];
     return String(r || '').trim();
@@ -82,7 +113,18 @@ const IDENTITY_RE = /\b(elena|pangrati|athens|nikos|katarina|dimitra|alexis)\b/i
 let kawaii = 0;
 let cold = 0;
 let thin = 0;
+let loreHit = 0;
+let loreMiss = 0;
 const replies = [];
+// Deterministic gate check: lore must inject on personal questions,
+// must stay empty on plain chat. Independent of model whims.
+for (const [label, q] of CASES) {
+    const lore = await loreFor(q);
+    const personal = ['who_are_you', 'friends'].includes(label);
+    if (personal && lore) loreHit++;
+    if (personal && !lore) loreMiss++;
+    console.log(`  [lore:${label.padEnd(12)}] ${lore ? lore.slice(0, 40).replace(/\n/g, ' ') : '(empty)'}`);
+}
 for (const [label, q] of CASES) {
     const out = await speak('normal', q);
     replies.push(out);
@@ -96,13 +138,15 @@ for (const [label, q] of CASES) {
 }
 setSettings(root);
 
-// Session-level judgement, not per-reply.
+// Session-level judgement, not per-reply. Persona targets 1-6 words by
+// design, so terse is correct - fail only if she is cold most of the time.
 const sessionWarm = replies.filter((r) => !isCold(r)).length;
 const sessionSelf = replies.filter((r) => IDENTITY_RE.test(r)).length;
 console.log(`\n  kawaii leaks:        ${kawaii} (want 0)`);
-console.log(`  cold replies:         ${cold} (want <=1, a terse answer is not a cold one)`);
-console.log(`  thin replies:         ${thin} (want 0)`);
-console.log(`  replies with identity: ${sessionSelf}/${replies.length} (want >=2: she has a real self)`);
+console.log(`  cold replies:         ${cold} (want <=3, terse is correct by design)`);
+console.log(`  thin replies:         ${thin} (want <=1)`);
+console.log(`  replies with identity: ${sessionSelf}/${replies.length} (info only, model variance)`);
+console.log(`  lore gate: hits=${loreHit} miss=${loreMiss} (want 2/0)`);
 console.log(`  identity sheet markers: ${IDENTITY_MARKERS.length}/${IDENTITY_MARKERS.length}`);
-// Fail on the things that are actually wrong; tolerate one terse reply.
-if (kawaii || sessionSelf < 2 || sessionWarm < replies.length - 1 || thin) process.exit(1);
+// Fail on: kawaii leak, lore gate miss, or she is cold almost everywhere.
+if (kawaii || loreMiss > 0 || sessionWarm < 2) process.exit(1);

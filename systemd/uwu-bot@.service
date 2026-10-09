@@ -1,0 +1,26 @@
+[Unit]
+Description=UwU Minecraft AI bot — guest slot %i (public/survival server)
+After=network-online.target
+# NOTE: deliberately NOT bound to minecraft-fabric.service. The home unit
+# follows the local server; a guest slot follows a REMOTE server that this
+# box does not control. It must not stop/restart with the local MC service.
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/uwu-bot
+# UWU_SERVER picks the servers.json entry (host/port/auth/version/op/pacing
+# all come from there + servers.json.local). UWU_COUNT_ID offsets the
+# browser-viewer port (3000 + id) so home (0) and guest (1) share one box.
+Environment="UWU_SERVER=%i"
+Environment="UWU_COUNT_ID=1"
+ExecStart=/home/ubuntu/uwu-bot/tools/boot.sh
+Restart=always
+RestartSec=30
+TimeoutStopSec=60
+OOMScoreAdjust=500
+MemoryHigh=512M
+MemoryMax=768M
+
+[Install]
+WantedBy=multi-user.target

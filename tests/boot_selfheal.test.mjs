@@ -48,10 +48,14 @@ test("boot.sh parses as valid bash", () => {
 
 test("boot.sh waits for the server port before starting", () => {
     const src = read(BOOT);
-    // Pin the exact endpoint: a bare /25565/ match also passes if the probe is
-    // pointed at the wrong port, which was a hole in the first cut of this test.
-    assert.match(src, /\/dev\/tcp\/127\.0\.0\.1\/25565/,
-        "must probe the game server on 127.0.0.1:25565");
+    // Home default stays pinned: WAIT_HOST/WAIT_PORT default to the local game
+    // server, and the probe uses them. A guest slot overrides both from
+    // servers.json (UWU_SERVER) — a bare /25565/ match would also pass if the
+    // probe were pointed at the wrong port, which was a hole in the first cut.
+    assert.match(src, /WAIT_HOST="127\.0\.0\.1"; WAIT_PORT="25565"/,
+        "home wait default must stay 127.0.0.1:25565");
+    assert.match(src, /\/dev\/tcp\/\$WAIT_HOST\/\$WAIT_PORT/,
+        "probe must use the resolved wait host/port");
     assert.match(src, /server is accepting connections/,
         "must log the success branch");
 });

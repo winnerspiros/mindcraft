@@ -154,9 +154,16 @@ export class PlayerProfiles {
     // IP (and uuid confirmation) from the co-located EasyAuth sqlite DB. The vanilla
     // client protocol does not send other players' IPs, so this is the only reliable
     // source. Read-only; cached; fails soft (ip stays null) if the DB is locked/missing.
+    // HOME ONLY: that DB is the home server's auth database. On a guest server
+    // there is no co-located DB — and reading some other server's player IPs
+    // would be wrong even if one existed. Guests keep uuid/skin from live data.
     async enrichIdentity(name) {
         const e = this.get(name);
         if (!e) return;
+        try {
+            const { canOp } = await import('../utils/server_context.js');
+            if (!canOp()) return;
+        } catch (_) { return; }
         const key = this._key(name);
         const cached = this._ipCache[key];
         if (cached && Date.now() - cached.t < this._ipCacheTTL) {

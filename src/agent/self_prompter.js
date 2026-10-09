@@ -156,13 +156,23 @@ export class SelfPrompter {
     // stays where it belongs (reply latency to a human); a turn that is doing
     // something uses its own much tighter range, because what is being paced is a
     // task rather than a message.
+    // GUEST PACING: public servers get a slower self-prompt cadence
+    // (servers.json "pacing.cadenceScale", e.g. 2 = twice the wait).
+    // Home: _paceScale stays 1, zero behavior change. Set once at loop
+    // start (async context allows the import); gears are sync so they
+    // read the cached value. server_context must stay out of module
+    // scope (see the undici/File note at the top of this file).
+    _cadenceScale() { return this._paceScale > 0 ? this._paceScale : 1; }
+
     _actionGear() {
-        return Math.round(ACTION_GEAR_MIN + Math.random() * (ACTION_GEAR_MAX - ACTION_GEAR_MIN));
+        const s = this._cadenceScale();
+        return Math.round((ACTION_GEAR_MIN + Math.random() * (ACTION_GEAR_MAX - ACTION_GEAR_MIN)) * s);
     }
 
     _jitteredGear(solo) {
-        const min = solo ? this.gear_solo_min : this.gear_chatty_min;
-        const max = solo ? this.gear_solo_max : this.gear_chatty_max;
+        const s = this._cadenceScale();
+        const min = (solo ? this.gear_solo_min : this.gear_chatty_min) * s;
+        const max = (solo ? this.gear_solo_max : this.gear_chatty_max) * s;
         // Inverse-CDF sample of a Pareto/power law with the paper's exponent.
         const u = 1 - Math.random();
         const drawn = min * Math.pow(u, -1 / (TURN_TAKING_ALPHA - 1));
@@ -340,6 +350,8 @@ export class SelfPrompter {
         }
         console.log('starting self-prompt loop')
         this.loop_active = true;
+        // GUEST PACING: cache the per-server cadence scale (async OK here).
+        try { const { pacing } = await import('./server_context.js'); this._paceScale = Number(pacing().cadenceScale) > 0 ? Number(pacing().cadenceScale) : 1; } catch (_) { this._paceScale = 1; }
         let no_command_count = 0;
         const MAX_NO_COMMAND = settings.self_prompt_no_command_strikes || 3;
         // WALL-CLOCK critic (added 20:0x): the old per-turn counter never

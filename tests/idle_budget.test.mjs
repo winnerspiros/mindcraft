@@ -133,7 +133,7 @@ const GOAL = { has_goal: true, threat: false, human_present: false };
 {
     const agent = readFileSync('src/agent/agent.js', 'utf8');
     check(/IdleBudget/.test(agent), 'the agent uses IdleBudget', 'IdleBudget is dead code');
-    const i = agent.indexOf('this._idleBudget ||= new IdleBudget()');
+    const i = agent.indexOf('new IdleBudget(');
     const m = agent.indexOf('await this.bot.modes.update()');
     check(i > 0 && i < m, 'the budget is consulted before modes run', 'modes run before the budget');
     check(!/_modeBudgetChecked/.test(agent),

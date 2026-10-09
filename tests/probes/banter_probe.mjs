@@ -92,7 +92,7 @@ async function say(question) {
         .replaceAll('$RELATIONSHIPS', 'YandereDev: friend, 12 interactions.')
         .replaceAll('$KNOWN_PLAYERS', 'YandereDev, Steve, Nikos')
         .replaceAll('$EXAMPLES', (examples && examples.length) ? renderExamples(examples) : '')
-        .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
+        .replaceAll('$REAL_IDENTITY', '').replaceAll('$LORE', '');
     let r = await model.sendRequest([{ role: 'user', content: question }], p);
     if (typeof r === 'string' && r.includes('</think>')) r = r.split('</think>')[1];
     return post(String(r || '')).trim();

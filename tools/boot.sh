@@ -61,10 +61,21 @@ fi
 # Deliberately bounded: if the server never opens the port, we start anyway and let
 # mineflayer + systemd handle it. This wait must never become a reason the bot
 # refuses to boot -- that would convert "flaky" into "permanently down".
-log "waiting for minecraft server on 127.0.0.1:25565 ..."
+#
+# Guest slot (UWU_SERVER set, e.g. uwu-bot@guest): resolve host/port from
+# servers.json (+ .local overlay) so the wait probes the REMOTE server, not
+# localhost. Home keeps the old 127.0.0.1:25565 default.
+WAIT_HOST="127.0.0.1"; WAIT_PORT="25565"
+if [ -n "${UWU_SERVER:-}" ] && [ -f servers.json ]; then
+    WH=$(UWU_SERVER="$UWU_SERVER" node -e "try{const fs=require('fs');const f=JSON.parse(fs.readFileSync('servers.json','utf8'));let l=null;try{l=JSON.parse(fs.readFileSync('servers.json.local','utf8'))}catch(e){}const e=((f.servers||{})[process.env.UWU_SERVER]||{});const o=((l&&l.servers||{})[process.env.UWU_SERVER]||{});console.log((o.host||e.host||'')+':'+(o.port||e.port||''))}catch(e){}" 2>/dev/null || true)
+    WH_HOST="${WH%%:*}"; WH_PORT="${WH##*:}"
+    [ -n "$WH_HOST" ] && WAIT_HOST="$WH_HOST"
+    [ -n "$WH_PORT" ] && WAIT_PORT="$WH_PORT"
+fi
+log "waiting for minecraft server on $WAIT_HOST:$WAIT_PORT ..."
 server_up=0
 for _ in $(seq 1 60); do
-    if (exec 3<>/dev/tcp/127.0.0.1/25565) 2>/dev/null; then
+    if (exec 3<>/dev/tcp/$WAIT_HOST/$WAIT_PORT) 2>/dev/null; then
         server_up=1
         break
     fi

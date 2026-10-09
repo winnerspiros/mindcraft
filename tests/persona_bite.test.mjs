@@ -47,7 +47,7 @@ if (!soft) ok('nothing in the script forces her to be polite');
 
 // The identity line one is still enforced (that is a separate decision, kept
 // narrow and explicit rather than silently broadened).
-const IDENTITY_GUARD = /never voices a slur/i;
+const IDENTITY_GUARD = /never slur/i;
 IDENTITY_GUARD.test(script)
     ? ok('the single narrow guard is still present and explicit')
     : bad('the identity guard was removed — it was a deliberate decision, not an oversight');

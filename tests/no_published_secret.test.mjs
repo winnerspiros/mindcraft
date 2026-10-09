@@ -32,7 +32,7 @@ const tracked = f => { try { git('ls-files', '--error-unmatch', f); return true;
 // seed. It USED to be tracked, which is why the seed was published at the
 // branch tip in plain sight -- scrubbing the literal alone left the door
 // open for the next person to paste their own seed in and commit it.
-for (const f of ['keys.json', 'uwu.json', 'servers.json']) {
+for (const f of ['keys.json', 'uwu.json', 'servers.json', 'servers.json.local']) {
     check(!tracked(f), `${f} is not tracked`, `${f} IS tracked -- it can be committed`);
     check(isIgnored(f), `${f} is gitignored`, `${f} is not gitignored`);
 }

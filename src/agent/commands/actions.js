@@ -14,6 +14,14 @@ import { readFileSync, writeFileSync, existsSync } from 'fs';
 import path from 'path';
 
 
+// Per-agent runtime paths: bots/<bot-name>/ keeps the guest account's
+// builds/projects off the home account (coords/notes from a public server
+// are meaningless at home and vice versa).
+function agentFile(agent, leaf) {
+    const name = (agent && agent.bot && (agent.bot.username || agent.bot.name)) || (agent && agent.name) || 'UwU';
+    return `./bots/${name}/${leaf}`;
+}
+
 function runAsAction (actionFn, resume = false, timeout = 3) {
     let actionLabel = null;  // Will be set on first use
     
@@ -128,7 +136,7 @@ function resolveBuildOrigin(bot, name, origin) {
     }
     const parts = String(origin || '').trim().split(/[\s,]+/).map(Number).filter(v => !Number.isNaN(v));
     if (parts.length >= 3) return { origin: { x: parts[0], y: parts[1], z: parts[2] } };
-    const known = buildsense.loadKnownBuilds?.('UwU') || {};
+    const known = buildsense.loadKnownBuilds?.(bot?.username || bot?.name || 'UwU') || {};
     const k = known[n];
     if (k?.origin) return { origin: k.origin };
     const s = known[n];
@@ -767,7 +775,7 @@ export const actionsList = [
             size = size || 7;
             structure = (structure || 'house').toLowerCase();
             const recordBuild = (blockOverride) => {
-                const p = './bots/UwU/structures.json';
+                const p = agentFile(agent, 'structures.json');
                 let d = { builds: [] };
                 if (existsSync(p)) { try { d = JSON.parse(readFileSync(p, 'utf8')); } catch { d = { builds: [] }; } }
                 d.builds = d.builds || [];
@@ -967,7 +975,7 @@ export const actionsList = [
         description: 'List the structures you have built (type, material, coordinates) so you can find and reference them later — e.g. to fix or decorate "the house".',
         params: {},
         perform: runAsAction(async (agent) => {
-            const p = './bots/UwU/structures.json';
+            const p = agentFile(agent, 'structures.json');
             if (!existsSync(p)) { skills.log(agent.bot, 'No builds recorded yet.'); return; }
             try {
                 const d = JSON.parse(readFileSync(p, 'utf8'));
@@ -1746,7 +1754,7 @@ export const actionsList = [
         description: 'Save a note to your persistent project memory so you can resume complex work later (builds, plans, todos). Use for anything you want to finish across sessions.',
         params: {'note': { type: 'string', description: 'What to remember, e.g. "building an oak bridge north of spawn, deck done, railings left".' }},
         perform: runAsAction(async (agent, note) => {
-            const p = './bots/UwU/projects.json';
+            const p = agentFile(agent, 'projects.json');
             let data = { notes: [] };
             if (existsSync(p)) {
                 try { data = JSON.parse(readFileSync(p, 'utf8')); } catch { data = { notes: [] }; }
@@ -1762,7 +1770,7 @@ export const actionsList = [
         description: 'Recall your saved project notes so you can resume where you left off on complex work.',
         params: {},
         perform: runAsAction(async (agent) => {
-            const p = './bots/UwU/projects.json';
+            const p = agentFile(agent, 'projects.json');
             if (!existsSync(p)) { skills.log(agent.bot, 'No saved notes yet.'); return; }
             try {
                 const data = JSON.parse(readFileSync(p, 'utf8'));

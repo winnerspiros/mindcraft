@@ -47,7 +47,12 @@ const SHARE_CEILING = 0.55;           // she is one of 2-3 people, not the room
 const MIN_SHARE_SAMPLE = 8;            // turns of context before share means anything
 
 export class ChatBudget {
-    constructor() {
+    // opts: per-server pacing overrides (servers.json "pacing.chat").
+    // Empty = the measured home defaults below. Tests construct bare.
+    constructor(opts = {}) {
+        this._minGap = opts.minGapMs ?? MIN_GAP_MS;
+        this._maxWin = opts.maxPerWindow ?? MAX_MESSAGES_PER_WINDOW;
+        this._maxConsec = opts.maxConsecutive ?? MAX_CONSECUTIVE;
         /** @type {number[]} */
         this.sent = [];          // budget ledger: every ATTEMPT, sent or not
         /** @type {number[]} */
@@ -91,7 +96,7 @@ export class ChatBudget {
             this.consecutive = 0;
         }
 
-        if (this.consecutive >= MAX_CONSECUTIVE) {
+        if (this.consecutive >= this._maxConsec) {
             return { ok: false, why: 'too_many_in_a_row' };
         }
         // Same correction: the minimum gap is about how fast she is visibly
@@ -100,7 +105,7 @@ export class ChatBudget {
         const lastMsg = this.deliveredAt.length
             ? this.deliveredAt[this.deliveredAt.length - 1]
             : this.lastSentAt;
-        if (lastMsg && now - lastMsg < MIN_GAP_MS) {
+        if (lastMsg && now - lastMsg < this._minGap) {
             return { ok: false, why: 'too_fast' };
         }
         // The cap counts DELIVERIES, not attempts. `sent` is the reservation
@@ -110,7 +115,7 @@ export class ChatBudget {
         // her (otherwise she would compose forever); only the CEILING is measured
         // against what people actually experienced.
         this.deliveredAt = this.deliveredAt.filter((t2) => now - t2 < WINDOW_MS);
-        if (this.deliveredAt.length >= MAX_MESSAGES_PER_WINDOW) {
+        if (this.deliveredAt.length >= this._maxWin) {
             return { ok: false, why: 'over_budget' };
         }
         // SHARE. If humans have barely spoken and she is on her own, her share

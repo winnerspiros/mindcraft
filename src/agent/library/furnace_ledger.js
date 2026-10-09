@@ -13,11 +13,18 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Vec3 } from 'vec3';
 
-const LEDGER = './bots/UwU/furnaces.json';
+// Furnace ledger path is per-agent: bots/<name>/ keeps the guest account's
+// furnaces off the home account (a public server's coords are meaningless
+// at home and vice versa). bot may be null in tests — fall back to legacy.
+function ledgerPath(bot) {
+    const name = (bot && (bot.username || bot.name)) || 'UwU';
+    return `./bots/${name}/furnaces.json`;
+}
 const KEEP_ENTRIES = 24;      // do not grow without bound
 const STALE_MS = 1000 * 60 * 60 * 24 * 30;  // forget a note after 30 days
 
-function read() {
+function read(bot) {
+    const LEDGER = ledgerPath(bot);
     try {
         if (fs.existsSync(LEDGER)) {
             const d = JSON.parse(fs.readFileSync(LEDGER, 'utf8'));
@@ -27,11 +34,11 @@ function read() {
     return { furnaces: [] };
 }
 
-function write(d) {
+function write(bot, d) {
     try {
         d.furnaces.sort((a, b) => (b.t || 0) - (a.t || 0));
         d.furnaces = d.furnaces.slice(0, KEEP_ENTRIES);
-        fs.writeFileSync(LEDGER, JSON.stringify(d, null, 2));
+        fs.writeFileSync(ledgerPath(bot), JSON.stringify(d, null, 2));
     } catch (_) {}
 }
 
@@ -40,7 +47,7 @@ const keyOf = (x, y, z) => `${x},${y},${z}`;
 // Remember a furnace. `origin` records HOW she got it (crafted / found / given)
 // so she can tell "my furnace" from "one that was already here".
 export function rememberFurnace(bot, pos, extra = {}) {
-    const d = read();
+    const d = read(bot);
     const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z);
     const k = keyOf(x, y, z);
     let e = d.furnaces.find(f => f.k === k);
@@ -53,12 +60,12 @@ export function rememberFurnace(bot, pos, extra = {}) {
     e.alive = true;
     if (extra.origin) e.origin = extra.origin;
     if (extra.placedByHer) e.placedByHer = true;
-    write(d);
+    write(bot, d);
     return e;
 }
 
 export function noteSmelt(bot, pos, itemName, count) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.furnaces.find(f => f.k === k);
     if (!e) return null;
@@ -68,13 +75,13 @@ export function noteSmelt(bot, pos, itemName, count) {
     // keep the tail of recent work, not every item she has ever smelted
     e.recent = (e.recent || []).slice(-5);
     e.recent.push({ item: itemName, n: count, t: Date.now() });
-    write(d);
+    write(bot, d);
     return e;
 }
 
 // Her furnaces, nearest first.
 export function knownFurnaces(bot) {
-    const d = read();
+    const d = read(bot);
     const me = bot && bot.entity ? bot.entity.position : null;
     const out = d.furnaces.map(f => ({
         ...f,
@@ -93,7 +100,7 @@ export function nearestKnownFurnace(bot, maxDist = 256) {
 // 'stolen' (block gone AND she is missing the contents she logged), or
 // 'picked-up' (she collected it back into her pack).
 export function markFurnace(bot, pos, how, detail = '') {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.furnaces.find(f => f.k === k);
     if (!e) return null;
@@ -104,7 +111,7 @@ export function markFurnace(bot, pos, how, detail = '') {
     const nm = detail ? ` (${detail})` : '';
     e.notes = (e.notes || []).slice(-5);
     e.notes.push(`Lost ${how}${nm} at ${new Date().toISOString().slice(0, 16).replace('T', ' ')}`);
-    write(d);
+    write(bot, d);
     return e;
 }
 
@@ -112,7 +119,7 @@ export function markFurnace(bot, pos, how, detail = '') {
 // within scan range of where it was recorded has almost certainly been broken
 // or removed. Called when she goes looking for a furnace she expected to exist.
 export function auditFurnaces(bot, scanRange = 24) {
-    const d = read();
+    const d = read(bot);
     const changed = [];
     const now = Date.now();
     for (const f of d.furnaces) {
@@ -141,7 +148,7 @@ export function auditFurnaces(bot, scanRange = 24) {
             changed.push(f);
         }
     }
-    if (changed.length) write(d);
+    if (changed.length) write(bot, d);
     return changed;
 }
 

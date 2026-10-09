@@ -1,8 +1,8 @@
-import { readFileSync, mkdirSync, writeFileSync} from 'fs';
+import { readFileSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
 import { Examples } from '../utils/examples.js';
 import { getCommandDocs } from '../agent/commands/index.js';
 import { SkillLibrary } from "../agent/library/skill_library.js";
-import { stringifyTurns } from '../utils/text.js';
+import { stringifyTurns, wordOverlapScore } from '../utils/text.js';
 import { getCommand } from '../agent/commands/index.js';
 import settings from '../agent/settings.js';
 import { promises as fs } from 'fs';
@@ -116,24 +116,65 @@ function getRedstoneKnowledge() {
     return _redstoneKnowledge;
 }
 
-// Elena — UwU's real-world identity + the friend/server backstory. Kept in its
-// own markdown file for easy editing. Injected via $REAL_IDENTITY: the FULL
-// sheet only when the conversation has gone real (realness meter >= 0.3),
-// otherwise a compact brief so she always knows who she is without the token cost.
-const REAL_IDENTITY_PATH = path.join(__dirname, '../agent/library/real_identity.md');
-let _realIdentity = null;
-function getRealIdentity() {
-    if (_realIdentity != null) return _realIdentity;
+// Lore chunks: personal facts split by topic (who/server/tastes/music/greek/
+// love/stories). Ranked by word overlap against recent chat, top 1-2 injected
+// via $LORE only when relevant. Base persona carries zero personal facts.
+const LORE_DIR = path.join(__dirname, '../agent/library/lore');
+let _loreChunks = null;
+function getLoreChunks() {
+    if (_loreChunks != null) return _loreChunks;
+    _loreChunks = [];
     try {
-        _realIdentity = readFileSync(REAL_IDENTITY_PATH, 'utf8');
-    } catch (e) {
-        console.warn('Failed to load real identity:', e.message);
-        _realIdentity = '';
-    }
-    return _realIdentity;
+        // fixed order: who server tastes music greek love stories (trigger idx)
+        const ORDER = ['who.md', 'server.md', 'tastes.md', 'music.md', 'greek.md', 'love.md', 'stories.md'];
+        for (const f of ORDER) {
+            try { _loreChunks.push(readFileSync(path.join(LORE_DIR, f), 'utf8').trim()); }
+            catch (_) {}
+        }
+    } catch (_) {}
+    return _loreChunks;
 }
-function getRealIdentityBrief() {
-    return 'Your real-world self is Elena Papadopoulou, 27, from Pangrati, Athens — a warm, funny, spontaneous creative-marketing girl, obsessed with coffee, travel and good food. This Minecraft server is a friend\'s server, set up by your old university friend Nikos (the techy one) as a hangout for your group.';
+function getRelevantLore(messages, maxChars = 900) {
+    const chunks = getLoreChunks();
+    if (!chunks.length || !Array.isArray(messages) || !messages.length) return '';
+    const query = messages.slice(-6).map(m => m && m.content ? String(m.content) : '').join(' ').toLowerCase();
+    if (!query.trim()) return '';
+    // strip 1-2 letter filler so "what are you up to" can't match "u/ur/..."
+    const queryWords = query.replace(/[^a-z ]/g, ' ').split(/\s+/).filter(w => w.length > 2).join(' ');
+    if (!queryWords.trim()) return '';
+    // explicit triggers beat word-overlap (Jaccard dilutes on short queries)
+    const TRIGGERS = [
+        [/elena|who are you|your name|how old|where.*live|pangrati|athens|what.*work|job|marketing/, 0],
+        [/nikos|whose server|who runs|server.*who|katerina|dimitra|alexis|friend|group/, 1],
+        [/coffee|freddo|cappuccino|cafe|café|food|eat|restaurant|cook|walk|travel|island|trip|beach|weekend/, 2],
+        [/music|song|band|listen|concert|hip.hop|novel 729|bloody hawk|lex|show|anime|game|stardew|movie|watch/, 3],
+        [/greek|greece|malaka|ela re|ti les|gamoto|greeklish/, 4],
+        [/boyfriend|dating|date|single|giannis|ex |love|relationship/, 5],
+        [/story|stories|funny.*happen|seagull|ferry|island.*wrong|maps/, 6],
+    ];
+    const boosted = new Set();
+    for (const [re, idx] of TRIGGERS) {
+        try { if (re.test(query)) boosted.add(idx); } catch (_) {}
+    }
+    const scored = chunks.map((c, i) => {
+        let s = 0;
+        try { s = wordOverlapScore(queryWords, c); } catch (_) {}
+        if (boosted.has(i)) s += 0.10;
+        return { c, s, i };
+    }).sort((a, b) => b.s - a.s);
+    // untriggered needs real overlap (>=0.05, 2+ shared words); a topic
+    // trigger lowers the bar to 0.02 so short questions still hit
+    const top = scored[0];
+    if (!top || top.s < (boosted.has(top.i) ? 0.02 : 0.05)) return '';
+    let out = '', n = 0;
+    for (const e of scored.slice(0, 2)) {
+        if (e.s < (boosted.has(e.i) ? 0.02 : 0.05)) break;
+        if (out.length + e.c.length + 1 > maxChars) break;
+        out += (out ? '\n' : '') + e.c;
+        n++;
+        if (n >= 2) break;
+    }
+    return out;
 }
 
 // Why she plays UwU at all — the mascot-joke origin story. YANDERE ONLY:
@@ -497,19 +538,11 @@ export class Prompter {
             prompt = prompt.replaceAll('$UWU_BIT', getUwuBit());
         }
         if (prompt.includes('$REAL_IDENTITY')) {
-            // Yandere gates the full sheet behind the realness meter: the bit is
-            // the default, so she only becomes Elena once the conversation has
-            // gone real. That gate is exactly wrong for the normal persona,
-            // where Elena IS the character and there is no bit to drop - she
-            // would answer as a name and a one-line brief with no backstory,
-            // no friends, no Athens, no life. In normal mode she always gets
-            // the full sheet.
-            const realness = this.agent.realness ? this.agent.realness.value : 0;
-            const isNormal = (() => {
-                try { return !isYandere(); } catch (_) { return false; }
-            })();
-            const identity = isNormal || realness >= 0.30 ? getRealIdentity() : getRealIdentityBrief();
-            prompt = prompt.replaceAll('$REAL_IDENTITY', identity);
+            // legacy (yandere script): full sheet retired, same lore gate
+            prompt = prompt.replaceAll('$REAL_IDENTITY', getRelevantLore(messages));
+        }
+        if (prompt.includes('$LORE')) {
+            prompt = prompt.replaceAll('$LORE', getRelevantLore(messages));
         }
         if (prompt.includes('$STATS')) {
             prompt = prompt.replaceAll('$STATS', await this._getCachedStats());

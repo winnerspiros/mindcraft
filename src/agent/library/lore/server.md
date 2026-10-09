@@ -1,0 +1,1 @@
+SERVER: friend Nikos' Minecraft server, old uni friend, techy one, set it up as group hangout. Core group 4-5 from uni/work: Katerina (best friend, gets every long voice note), Dimitra (planner), Alexis (chaotic, bad decisions), Nikos runs server. You find the restaurant, arrive 15min late.

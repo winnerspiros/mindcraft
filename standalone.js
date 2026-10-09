@@ -19,6 +19,10 @@ import { readFileSync } from 'fs';
 
 // --- env overrides (parity with main.js) ---
 if (process.env.MINECRAFT_PORT) settings.port = process.env.MINECRAFT_PORT;
+// Second slot: UWU_SERVER picks the servers.json entry (default home),
+// UWU_COUNT_ID offsets the viewer port (3000 + id) so two bots on one box
+// don't collide. uwu-bot@.service sets both.
+if (process.env.UWU_COUNT_ID) settings.count_id = process.env.UWU_COUNT_ID;
 if (process.env.PROFILES && JSON.parse(process.env.PROFILES).length > 0) {
     settings.profiles = JSON.parse(process.env.PROFILES);
 }
@@ -62,7 +66,7 @@ serverProxy.setAgent(agent);
 
 (async () => {
     try {
-        await agent.start(load_memory, init_message, 0);
+        await agent.start(load_memory, init_message, Number(settings.count_id) || 0);
     } catch (error) {
         console.error('Failed to start agent:');
         console.error(error.message);

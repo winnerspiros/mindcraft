@@ -4,7 +4,7 @@ import * as mc from '../utils/mcdata.js';
 import Vec3 from 'vec3';
 import settings from './settings.js'
 import convoManager from './conversation.js';
-import { canOp, combatConfig, modeOverrides } from '../utils/server_context.js';
+import { canOp, combatConfig, modeOverrides, pacing } from '../utils/server_context.js';
 import { isYandere } from '../utils/server_context.js';
 
 async function say(agent, message) {
@@ -1399,7 +1399,10 @@ const GLANCE_BUDGET_COOLDOWN_MS = 45000;
 
             // 3) short sprint-dash so she visibly moves around — but never while hurt,
             //    and held short so she can't sprint off into water/lava/mobs blind.
-            if (now < this.dash_until && !recently_hurt) {
+            //    GUEST PACING: no dash on public servers (sprint is barred there).
+            let _dashBarred = false;
+            try { _dashBarred = pacing().noSprint === true; } catch (_) {}
+            if (now < this.dash_until && !recently_hurt && !_dashBarred) {
                 bot.setControlState('sprint', true);
                 bot.setControlState('forward', true);
             } else {

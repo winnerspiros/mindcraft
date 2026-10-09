@@ -28,6 +28,16 @@ function resolvedVersion() {
 let mcdata = null;
 let Item = null;
 
+// Exported for tests: which spawn-hold shape a negotiated version gets.
+// 26.x (tick_end on the wire) = 25s full hold; older = 6s, no tick_end.
+export function holdShapeFor(version) {
+    try {
+        const v = String(version || '26.3');
+        if (v.startsWith('26.')) return { pkts: ['position', 'position_look', 'look', 'flying', 'tick_end'], ms: 25000, shape: '26x-25s' };
+    } catch (_) {}
+    return { pkts: ['position', 'position_look', 'look', 'flying'], ms: 6000, shape: 'old-6s' };
+}
+
 // Static-data fallback: registry reads need a logged-in bot (initBot sets
 // mcdata on login), but sourcing/planning questions are asked headless too
 // (tests, brain prompts before spawn). Lazily load 1.21.4 static data so
@@ -107,22 +117,27 @@ export function initBot(username) {
     // stays silent and doesn't wedge process exit.
     bot.setMaxListeners(0);
 
-    // 26.3: NO position throttle. ServerboundClientTickEnd (0xd) pairs with
-    // each position/look send per-tick (receivedPositionThisTick); delaying
-    // position 50ms while tick_end goes out immediately desyncs the gate and
-    // the server kicks "Invalid move player packet received" ~2s after spawn.
-    // physics.js sendTickEnd() already paces sends correctly.
-    // Spawn hold: block ALL movement writes for 6s after every spawn so the
-    // client never streams falling positions before the server acks spawn.
+    // Spawn hold: block movement writes after spawn so the client never
+    // streams falling positions before the server acks spawn.
     // (mineflayer's physicsEnabled flag doesn't stop updatePosition sends.)
-    // 26.3: teleport_confirm is NOT movement — the server REQUIRES it to
+    // 26.x: teleport_confirm is NOT movement — the server REQUIRES it to
     // finish spawn/teleport placement (awaitingTeleport). Blocking it leaves
     // the spawn teleport unacked; the server keeps her at the stale pre-join
     // spot while the client simulates ahead -> moved-wrongly kick on join.
-    const MOVE_PKTS = new Set(['position', 'position_look', 'look', 'flying', 'tick_end']);
+    // VERSION SHAPE (measured): 26.3 pairs every position/look with
+    // ServerboundClientTickEnd per-tick — delaying position while tick_end
+    // goes out desyncs the gate ("Invalid move player packet" ~2s after
+    // spawn), so 26.x needs the full 25s hold covering login + burst +
+    // settle. Older wires (1.20/1.21) have NO tick_end (supportFeature
+    // hasClientTickEnd=false) and a lighter placement burst: 6s is enough,
+    // and holding 25s would just freeze her under an AuthMe login that
+    // already freezes movement. Shape resolves at FIRST spawn (bot.version
+    // is unknown at init) and physics.js sendTickEnd() self-gates on the
+    // same feature flag, so the two stay in agreement on every version.
     const _write = bot._client.write.bind(bot._client);
     let spawnHoldUntil = 0;
     let spawnedOnce = false;
+    let _holdPkts = new Set(holdShapeFor().pkts);
     // 26.3: the spawn-hold MUST cover EasyAuth /login (chat_command goes out
     // ~280ms after config-finish) plus the post-login placement burst.
     // Re-arming on every 'spawn' event is wrong: mineflayer fires 'spawn' at
@@ -132,7 +147,16 @@ export function initBot(username) {
     // first look always leaked at the worst moment (18:30:52: 2 looks 36ms
     // apart after an 8s hold -> kick). Single 25s hold from the FIRST spawn
     // covers login + burst + settle; physics.js gates handle the rest.
-    bot.on('spawn', () => { if (!spawnedOnce) { spawnedOnce = true; spawnHoldUntil = Date.now() + 25000; } });
+    bot.on('spawn', () => {
+        if (!spawnedOnce) {
+            spawnedOnce = true;
+            // Resolve the shape from the negotiated version (see holdShapeFor).
+            const h = holdShapeFor(bot.version || mc_version || settings.minecraft_version);
+            _holdPkts = new Set(h.pkts);
+            spawnHoldUntil = Date.now() + h.ms;
+            try { bot._holdShape = h.shape; } catch (_) {}
+        }
+    });
     // 26.3 walk-death logger: ring-buffer of last 40 sends of ANY kind.
     // Position-only logging exonerated movement (kicks with d0.00 stand-still);
     // the killer is a non-position packet in the fatal window — log all names
@@ -140,7 +164,7 @@ export function initBot(username) {
     const POSBUF = [];
     bot._posBuf = POSBUF;
     bot._client.write = function (name, data) {
-        if (MOVE_PKTS.has(name) && Date.now() < spawnHoldUntil) return;
+        if (_holdPkts.has(name) && Date.now() < spawnHoldUntil) return;
         try {
             let extra = '';
             if (data) {

@@ -1,6 +1,6 @@
 import * as mc from "../../utils/mcdata.js";
 import * as world from './world.js';
-import { canOp } from '../../utils/server_context.js';
+import { canOp, pacing } from '../../utils/server_context.js';
 import { rconPlayerPos, rconCommand, rconInventory, rconItemCount, rconNearbyEntities } from '../../utils/rcon.js';
 import * as K from '../../utils/mcknowledge.js';
 import * as L from './furnace_ledger.js';
@@ -102,6 +102,11 @@ async function opRcon(cmd) {
 // approaches and bridge runs all share ONE gate instead of 12 stale flags.
 // ============================================================================
 export function moveProfile(bot, mode = 'walk') {
+    // GUEST PACING: no sprint on public servers — sprint-jump spam is the
+    // fastest way to eat an anticheat flag on Grim/Matrix/NoCheatPlus.
+    // Pathfinder legs silently downgrade to walk; the stunt functions below
+    // (sprintJump/neoJump/backwardJump/parkourPlace) refuse outright.
+    try { if (pacing().noSprint && mode !== 'walk') mode = 'walk'; } catch (_) {}
     const m = new pf.Movements(bot);
     if (mode === 'sprint') {
         // flat-out running, no jumps planned: straight legs only
@@ -118,6 +123,10 @@ export function moveProfile(bot, mode = 'walk') {
     }
     return m;
 }
+
+// GUEST PACING helper: sprint stunts are anticheat bait on public servers.
+// True when this server forbids sprint tricks (walk everywhere instead).
+function _sprintBarred() { try { return pacing().noSprint === true; } catch (_) { return false; } }
 
 // Small angle helpers (vendored pattern from firejoust/mineflayer-movement's
 // angle.js: inverse/difference on yaw radians — the smaller signed turn
@@ -256,6 +265,7 @@ export async function edgeSneak(bot, timeoutMs = 5000) {
 }
 
 export async function sprintJump(bot, strafe = null) {
+    if (_sprintBarred()) { log(bot, 'No sprint tricks on this server (anticheat) — walking it instead.'); return false; }
     /**
      * The basic weapon: edge-sneak, release, sprint + (optional 45 strafe) +
      * jump. Strafe 'left'/'right' angles the launch 45 degrees for diagonal
@@ -289,6 +299,7 @@ export async function sprintJump(bot, strafe = null) {
 }
 
 export async function neoJump(bot, side = 'right') {
+    if (_sprintBarred()) { log(bot, 'No sprint tricks on this server (anticheat) — walking it instead.'); return false; }
     /**
      * NEO: sprint-jump AROUND a pillar with (almost) no run-up — edge-sneak,
      * 45-strafe launch around the obstacle, mid-air yaw snap back to the
@@ -322,6 +333,7 @@ export async function neoJump(bot, side = 'right') {
 }
 
 export async function backwardJump(bot) {
+    if (_sprintBarred()) { log(bot, 'No sprint tricks on this server (anticheat) — walking it instead.'); return false; }
     /**
      * BACKWARDS MOMENTUM: short forward sprint for speed, jump, 180 mid-air
      * turn, land travelling backwards — for jumps where the landing faces the
@@ -1093,6 +1105,7 @@ export async function parkour(bot, technique = 'jump', arg = null) {
 // survey before launch (no mat / no neighbour / no safety = refuse, don't
 // splat), place mid-air at the apex window, land on her own block.)
 export async function parkourPlace(bot, block = null, dist = 3) {
+    if (_sprintBarred()) { log(bot, 'No sprint tricks on this server (anticheat) — placing by hand instead.'); return false; }
     if (bot.food <= 6) { log(bot, 'Too hungry to jump-place — feed me first.'); return false; }
     dist = Math.max(2, Math.min(4, Math.floor(dist || 3)));
     let mat = block;
@@ -1927,6 +1940,16 @@ export async function rideHorse(bot) {
      **/
     const horse = world.getNearestEntityWhere(bot, (e) => ['horse', 'donkey', 'mule'].includes(e.name), 16);
     if (!horse) { log(bot, 'No horse nearby.'); return false; }
+    // Survival server (op=false): no /give — she needs a real saddle first
+    // (loot/fish/trade, see saddleMob). Firing /give here would just be
+    // unknown-command noise to a public server's admins.
+    if (!canOp()) {
+        if (!_tackItem(bot, 'saddle')) { log(bot, 'No saddle and no OP powers here — loot/fish/trade one first (!sourcing "saddle"). Bareback for now.'); }
+        else { try { await bot.equip(_tackItem(bot, 'saddle'), 'hand'); } catch (_) {} try { await bot.activateEntity(horse); } catch (_) {} }
+        await new Promise(r => setTimeout(r, 200));
+        try { await bot.mount(horse); log(bot, 'Mounted the horse.'); return true; }
+        catch (e) { log(bot, `Could not mount horse: ${e.message} (tame it first with !tame).`); return false; }
+    }
     bot.chat('/give @s saddle 1');
     await new Promise(r => setTimeout(r, 200));
     const saddle = bot.inventory.items().find(i => i.name === 'saddle');
@@ -2045,6 +2068,8 @@ export async function saddleMob(bot, type) {
             }
         }
         if (!_tackItem(bot, 'saddle')) {
+            // Survival server: no /give at all — report the honest chain.
+            if (!canOp()) { log(bot, 'No saddle in reach and no OP powers here — loot one from dungeon/mineshaft/temple chests, fish treasure loot, trade a master leatherworker (~6 emeralds), or kill a ravager (!sourcing "saddle").'); return false; }
             log(bot, 'No saddle in reach — taking the quick way (OP give), since saddles have NO recipe. Loot/fish/trade one honestly when you can.');
             bot.chat('/give @s saddle 1'); // uncraftable — last resort, announced
             await new Promise(r => setTimeout(r, 300));
@@ -2286,7 +2311,7 @@ export async function waterBucketClutch(bot) {
         // Ensure she has an empty bucket. Clear a cheap item first if the bag is
         // full, otherwise the /give drops the bucket on the ground instead of into
         // her inventory.
-        if (!bot.inventory.findInventoryItem('bucket') && bot.modes && bot.modes.isOn('cheat')) {
+        if (!bot.inventory.findInventoryItem('bucket') && canOp() && bot.modes && bot.modes.isOn('cheat')) {
             const junk = bot.inventory.items().find(i => i.name === 'cobblestone' || i.name === 'dirt');
             if (junk) await discard(bot, junk.name, 1);
             bot.chat('/give @s bucket 1');
@@ -4596,11 +4621,14 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         return false;
     }
 
-    // ensure a bow — she's OP, but /give only resolves into inventory when there's a
-    // free slot. With a full bag the /give DROPS the bow on the ground, the re-check
-    // still finds none, and every self-defense/hunting tick /gives another → a pile of
-    // bows on the floor. Only /give when there's room; otherwise tell her to make space.
+    // ensure a bow — OP servers /give one; survival servers craft or skip.
     let bow = bot.inventory.items().find(i => i.name === 'bow');
+    if (!bow && !canOp()) {
+        // Bow IS craftable (3 string + 3 sticks) — make one, don't give one.
+        try { await craftRecipe(bot, 'bow', 1, true); } catch (_) {}
+        bow = bot.inventory.items().find(i => i.name === 'bow');
+        if (!bow) { log(bot, 'No bow and no OP powers here — craft one: 3 string + 3 sticks, or fight melee.'); return false; }
+    }
     if (!bow) {
         if (bot.inventory.items().length < 36) {
             bot.chat(`/give ${bot.username} bow 1`);
@@ -6739,6 +6767,9 @@ export async function placeBlockState(bot, blockType, props, x, y, z) {
     const keys = props ? Object.keys(props) : [];
     if (keys.length)
         block += '[' + keys.map(k => `${k}=${props[k]}`).join(',') + ']';
+    // Survival server: no /setblock powers — exact block-states need OP.
+    // The caller (schematic paste) falls back to honest placement.
+    if (!canOp()) { log(bot, `No /setblock powers here — can't place exact-state ${blockType}, placing by hand instead.`); return false; }
     bot.chat(`/setblock ${Math.floor(x)} ${Math.floor(y)} ${Math.floor(z)} ${block}`);
     if (useDelay) await new Promise(resolve => setTimeout(resolve, blockPlaceDelay));
     return true;

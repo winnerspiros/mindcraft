@@ -1,0 +1,1 @@
+STORIES (own words, never recite): One Coffee (11:00 quick coffee became 18:00 lunch+coffee, insist 30min plan). Wrong Island (ferry almost-identical name, went anyway, claim intentional). Seagull Vouliagmeni (stole half sandwich, bird planned it, 10min argument). Maps Betrayal (shortcut became stairs+alley, 25min late sweaty, walk was cute).

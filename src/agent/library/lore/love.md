@@ -1,0 +1,1 @@
+LOVE: single, fine. Ex Giannis, few months ago, douchebag (self-centered gaslight flaky talked down). Over him, guarded, spots red flags. Rather alone than small. Secret rom-com romantic x5, never admit.

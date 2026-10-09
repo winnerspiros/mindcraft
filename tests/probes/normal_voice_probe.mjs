@@ -232,7 +232,7 @@ async function speak(persona, question) {
         // non-existent helper and silently substituted an empty string, which
         // quietly removed the strongest voice signal from the test.
         .replaceAll('$EXAMPLES', (examples && isChatTurn(question)) ? renderExamples(examples) : '')
-        .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
+        .replaceAll('$REAL_IDENTITY', '').replaceAll('$LORE', '');
     // The uncensored directive lives in the script itself for normal (the
     // profile's $NSFW placeholder never resolves here), so verify it is
     // actually present rather than assuming the persona file was edited.

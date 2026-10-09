@@ -22,7 +22,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable, isYandere } from '../utils/server_context.js';
+import { needsLogin, canOp, worldSeed, authFlow, teleportConfig, combatConfig, setTeleportsAvailable, isYandere, pacing } from '../utils/server_context.js';
 import { ModerationWatcher } from './moderation.js';
 import { PlayerActivityWatcher } from './player_activity.js';
 import { InteractionTracker } from '../utils/interaction.js';
@@ -96,6 +96,14 @@ export class Agent {
         this.actions = new ActionManager(this);
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
+        // Per-server username override (servers.json "username"): public
+        // offline servers often have the name taken — a guest entry picks
+        // its own (e.g. "UwU_Guest"). Home entries leave it unset = profile.
+        try {
+            const { serverContext } = await import('../utils/server_context.js');
+            const srv = serverContext();
+            if (srv && srv.username) this.name = String(srv.username).trim() || this.name;
+        } catch (_) {}
         console.log(`Initializing agent ${this.name}...`);
         
         // Validate Name Format
@@ -341,13 +349,16 @@ export class Agent {
                 this.startEvents();
               
                 if (!load_mem) {
-                    if (settings.task) {
+                    // Survival server (op=false): legacy task files fire raw
+                    // /give /fill /tp /summon — never run them on someone
+                    // else's server, even if settings.task is set.
+                    if (settings.task && canOp()) {
                         this.task.initBotTask();
                         this.task.setAgentGoal();
                     }
                 } else {
                     // set the goal without initializing the rest of the task
-                    if (settings.task) {
+                    if (settings.task && canOp()) {
                         this.task.setAgentGoal();
                     }
                 }
@@ -1610,10 +1621,16 @@ export class Agent {
 
     // Lazy ChatBudget, null on import failure. Fails open: a broken chat budget
     // must never stop her acting.
+    _chatOpts() {
+        // GUEST PACING: per-server chat overrides (servers.json "pacing.chat").
+        // Split out so _budgetGate stays small.
+        try { return pacing().chat || {}; } catch (_) { return {}; }
+    }
+
     async _budgetGate() {
         try {
             const { ChatBudget } = await import('../utils/chat_budget.js');
-            this._budget ||= new ChatBudget();
+            this._budget ||= new ChatBudget(this._chatOpts());
             return this._budget.canSpeak({ now: Date.now() });
         } catch (e) {
             console.warn('[gate] budget failed open:', e.message);
@@ -2044,6 +2061,17 @@ export class Agent {
             this._typing ||= new TypingState();
             this._typing.begin(String(message ?? '').trim());
         } catch (e) { console.warn('[typing] failed open:', e.message); }
+
+        // GUEST AUTH GATE: pre-login on an AuthMe server, nothing may go out.
+        // The /register-/login lines bypass via bot.chat directly; everything
+        // funneled here (replies, mode turns, bursts) holds silent instead of
+        // leaking chat to players while the plugin still has her frozen.
+        // Home: _guestAuthed starts true, zero behavior change. Sits after
+        // the typing block so the typing-window wiring stays in place.
+        if (this._guestAuthed === false) {
+            try { console.log(this.name, 'held pre-auth chat:', String(message).slice(0, 100)); } catch (_) {}
+            return;
+        }
 
         // RAW /summon INTERCEPT: the model can emit a bare /summon as chat text
         // (it has no !command wrapper), which runs as the op bot with NO power
@@ -2678,6 +2706,25 @@ export class Agent {
                     console.log(`${this.name} recovered drops near death spot (safe Y=${safeY}).`);
                 }
                 await this._reArmor();
+                // Guest: she respawned naked and a starter kit is known — a
+                // free /kit re-claim beats punching trees again. Respects the
+                // same cooldown bookkeeping as the join probe (rank gates
+                // never retry). No-op on home (never armed there).
+                if (!canOp()) {
+                    try {
+                        const items = (this.bot.inventory?.items() || []).map(i => ({ name: i?.name }));
+                        const equipped = [this.bot.inventory?.slots?.[5], this.bot.inventory?.slots?.[6], this.bot.inventory?.slots?.[7], this.bot.inventory?.slots?.[8]].filter(Boolean).map(i => ({ name: i?.name }));
+                        const needs = respawnKitNeeds(items, equipped);
+                        if (!needs.hasArmor || !needs.hasWeapon) {
+                            if (this._guestKit) {
+                                console.log(`[guest-kit] respawn naked — re-claiming '${this._guestKit}'.`);
+                                try { this.bot.chat(`/kit ${this._guestKit}`); } catch (_) {}
+                            } else if (this._guestKitCooldown) {
+                                console.log('[guest-kit] respawn naked, kit still on cooldown — honest rebuild until it clears.');
+                            }
+                        }
+                    } catch (_) {}
+                }
             } catch (e) {
                 console.warn('respawn recovery failed (non-fatal):', e.message);
             }
@@ -2762,7 +2809,11 @@ export class Agent {
         // action is not a cosmetic preference.
         try {
             const { IdleBudget } = await import('../utils/idle_budget.js');
-            this._idleBudget ||= new IdleBudget();
+            if (!this._idleBudget) {
+                let opts = {};
+                try { opts = pacing().idle || {}; } catch (_) {}
+                this._idleBudget = new IdleBudget(opts);
+            }
             // Checked on EVERY tick. An earlier version latched this behind a
             // flag that only cleared on success, so one "settling" verdict froze
             // her until restart. The budget object holds the memory, not a flag.
@@ -3249,6 +3300,14 @@ export class Agent {
         try { flow = authFlow(); } catch (_) { flow = { auto: false, password: null, probeKit: false }; }
         const bot = this.bot;
         const pw = (flow && flow.password) || null;
+        // Guest auth gate: until the server confirms auth (or confirms there
+        // is none), she must not speak, move, or act. AuthMe servers FREEZE
+        // movement pre-login anyway, and any chat line sent pre-/login is
+        // either eaten by the plugin or, worse, readable by everyone online.
+        // Held lines are NOT replayed — chat context from before she could
+        // act is stale by definition. Home (auto_auth:false) sets authed
+        // immediately: EasyAuth /login already rode the login event.
+        this._guestAuthed = (flow && flow.auto === true) ? false : true;
         const st = { reg: 0, log: 0, authed: false, kitDone: false, lastTry: 0 };
         const COOL = 8000, MAXT = 2;
         const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -3263,39 +3322,63 @@ export class Agent {
             await sleep(6000);
             bot.removeListener('message', collect);
             const blob = lines.join('\n');
-            if (!blob || /unknown command|no such command|doesn.t exist|no kits available|no permission/i.test(blob)) {
-                console.log('[guest-kit] no kits on this server — playing honest.');
-                return;
-            }
-            // Harvest candidate kit names from "/kit <name>" hints or comma lists in the reply.
-            const names = new Set();
-            for (const m of blob.matchAll(/\/kit\s+([A-Za-z0-9_\-]+)/g)) {
-                const n = m[1].toLowerCase();
-                if (!['list', 'preview', 'show', 'info'].includes(n)) names.add(m[1]);
-            }
-            for (const line of blob.split('\n')) {
-                if (/kit/i.test(line) && line.split(',').length >= 2) {
-                    for (const tok of line.split(',')) {
-                        const w = tok.replace(/[^A-Za-z0-9_\- ]/g, '').trim().split(/\s+/).pop();
-                        if (w && /^[A-Za-z0-9_\-]{2,24}$/.test(w) && !/kit/i.test(w)) names.add(w);
-                    }
+            let names = [];
+            try {
+                const { parseKitNames, pickStarterKit, noKitsReply } = await import('../utils/guest_kit.js');
+                if (noKitsReply(blob)) { console.log('[guest-kit] no kits on this server — playing honest.'); return; }
+                names = parseKitNames(blob);
+                const pick = pickStarterKit(names);
+                if (!pick) {
+                    console.log(`[guest-kit] kits seen but no obvious starter (${names.join(', ') || 'unparsed'}) — not claiming, playing honest.`);
+                    try { this.handleMessage('system', `(AUTO) Kit check: this server offers kits (${names.join(', ') || 'could not parse the list'}) but none is clearly a free starter, so you claimed nothing. Mention it to the players only if they ask about kits; otherwise just play honest survival.`); } catch (_) {}
+                    return;
                 }
+                await _claimGuestKit(pick);
+            } catch (e) {
+                console.warn('[guest-kit] probe failed:', e.message);
             }
-            const STARTER = /^(starter|start|basic|default|free|food|tools|beginner|welcome|newbie|player|survival|daily|common)s?$/i;
-            const pick = [...names].find(n => STARTER.test(n));
-            if (!pick) {
-                console.log(`[guest-kit] kits seen but no obvious starter (${[...names].join(', ') || 'unparsed'}) — not claiming, playing honest.`);
-                try { this.handleMessage('system', `(AUTO) Kit check: this server offers kits (${[...names].join(', ') || 'could not parse the list'}) but none is clearly a free starter, so you claimed nothing. Mention it to the players only if they ask about kits; otherwise just play honest survival.`); } catch (_) {}
-                return;
-            }
-            const after = [];
-            const collect2 = (jm) => { try { after.push(String(jm.toString()).slice(0, 200)); } catch (_) {} };
-            bot.on('message', collect2);
-            try { bot.chat(`/kit ${pick}`); } catch (_) {}
-            await sleep(4000);
-            bot.removeListener('message', collect2);
-            console.log(`[guest-kit] claimed starter kit '${pick}'. server said: ${after.join(' | ').slice(0, 200) || '(nothing)'}`);
         };
+    // Claim a guest starter kit and remember it. Cooldown/no-permission
+    // replies are classified: cooldowns re-arm a single retry, rank gates
+    // teach the brain and never retry, success is remembered for respawn
+    // re-claims. All player commands, no OP, no RCON.
+        const _claimGuestKit = async (pick) => {
+        const bot = this.bot;
+        const after = [];
+        const collect2 = (jm) => { try { after.push(String(jm.toString()).slice(0, 200)); } catch (_) {} };
+        bot.on('message', collect2);
+        try { bot.chat(`/kit ${pick}`); } catch (_) {}
+        await new Promise(r => setTimeout(r, 4000));
+        bot.removeListener('message', collect2);
+        const said = after.join(' | ').slice(0, 300);
+        let verdict = { ok: true };
+        try { const { classifyKitReply } = await import('../utils/guest_kit.js'); verdict = classifyKitReply(after.join('\n')); } catch (_) {}
+        if (verdict.ok && !verdict.uncertain) {
+            this._guestKit = pick;
+            console.log(`[guest-kit] claimed starter kit '${pick}'. server said: ${said || '(nothing)'}`);
+            return true;
+        }
+        if (verdict.noPerm) {
+            console.log(`[guest-kit] kit '${pick}' is rank-gated (${said}) — not retrying, playing honest.`);
+            try { this.handleMessage('system', `(AUTO) Kit check: /kit ${pick} needs a rank or playtime you don't have (${said}). Don't retry it unasked — play honest survival; if a player offers a kit or rank, take them up on it then.`); } catch (_) {}
+            return false;
+        }
+        if (verdict.retryMs) {
+            const mins = Math.max(1, Math.round(verdict.retryMs / 60000));
+            console.log(`[guest-kit] kit '${pick}' on cooldown (${said}) — one retry in ~${mins}min.`);
+            this._guestKitCooldown = { name: pick, at: Date.now() + verdict.retryMs };
+            setTimeout(() => {
+                this._guestKitCooldown = null;
+                console.log(`[guest-kit] cooldown elapsed — retrying /kit ${pick}.`);
+                try { bot.chat(`/kit ${pick}`); } catch (_) {}
+            }, Math.min(verdict.retryMs, 12 * 3600 * 1000));
+            return false;
+        }
+        // Uncertain or empty reply: assume it worked if gear appears, else honest.
+        this._guestKit = pick;
+        console.log(`[guest-kit] claimed '${pick}' (unconfirmed: ${said || 'no reply'}) — remembered, will verify by inventory.`);
+        return true;
+    };
         const onMsg = async (jsonMsg) => {
             if (st.authed && st.kitDone) return;
             let plain = '';
@@ -3307,11 +3390,43 @@ export class Agent {
             if (pw) {
             // Success lines first: "successfully registered" contains "register",
             // so it must win over the prompt check below.
-            if (/successfully (registered|logged)|successfully (register|login)|you (are now|have been) (registered|logged in)|login successful|registration complete|logged in successfully/i.test(plain)) {
+            if (/successfully (registered|logged)|successfully (register|login)|you (are now|have been) (registered|logged in)|login successful|registration complete|logged in successfully|authentication successful|you are now logged in/i.test(plain)) {
                 if (!st.authed) {
                     st.authed = true;
+                    try { this._guestAuthed = true; } catch (_) {}
                     console.log('[guest-auth] authenticated per server message.');
                     setTimeout(() => tryKitProbe().catch(() => {}), 5000);
+                }
+                return;
+            }
+            // Already-registered name: this is a /login-only server (returning
+            // join, name taken from last time). Answer with /login, not /register.
+            if (/already registered|account (already exists|is registered)|please (log ?in|login) (to|with|using)/i.test(plain)) {
+                if (st.log >= MAXT || !pw) return;
+                const now2 = Date.now();
+                if (now2 - st.lastTry < COOL) return;
+                st.log++; st.lastTry = now2;
+                try { bot.chat(`/login ${pw}`); console.log(`[guest-auth] login-only server, sent /login (try ${st.log}/${MAXT}).`); } catch (e) { console.warn('[guest-auth] /login send failed:', e.message); }
+                return;
+            }
+            // /verify or captcha step (email code, image code): she cannot
+            // solve it — say so honestly to the owner instead of retrying blind.
+            if (/\/verify\b|verification code|enter the code|captcha|prove you.?re (human|not a bot)|complete the captcha/i.test(plain)) {
+                if (!st._verifyTold) {
+                    st._verifyTold = true;
+                    try { this.handleMessage('system', `(AUTO) Join gate: this server wants a /verify or captcha code before login, which you cannot solve — a human needs to complete it (or ask an admin to exempt the name). You are holding silent until auth clears.`); } catch (_) {}
+                    console.log('[guest-auth] verify/captcha gate seen — holding for a human.');
+                }
+                return;
+            }
+            // Email-gated /register (some AuthMe configs demand
+            // /register <pw> <email>): she has no email — tell the owner
+            // instead of burning tries on a form that can never succeed.
+            if (/email (address|required)|provide an email|\/register .+email|invalid email/i.test(plain)) {
+                if (!st._emailTold) {
+                    st._emailTold = true;
+                    try { this.handleMessage('system', `(AUTO) Join gate: this server wants an EMAIL with /register, which you don't have — ask the owner for one (or ask an admin to register the name manually). Holding silent until auth clears.`); } catch (_) {}
+                    console.log('[guest-auth] email-gated register seen — holding for a human.');
                 }
                 return;
             }
@@ -3335,8 +3450,11 @@ export class Agent {
         };
         bot.on('message', onMsg);
         // No-auth server: no prompts ever come — still do the one kit probe
-        // after things settle, then play honest.
-        setTimeout(() => { if (!st.authed && !st.kitDone) tryKitProbe().catch(() => {}); }, 30000);
+        // after things settle, then play honest. Mark authed so the speech
+        // gate opens: a server with no auth plugin never gates anything.
+        setTimeout(() => {
+            if (!st.authed && !st.kitDone) { try { this._guestAuthed = true; } catch (_) {} tryKitProbe().catch(() => {}); }
+        }, 30000);
         console.log('[guest-auth] watcher armed (prompt-gated /register-/login, one /kit probe).');
         // TPA inbox: watch server chat for incoming teleport requests and
         // route them — auto-accept for trusted ranks, everyone else to the
@@ -3362,6 +3480,16 @@ export class Agent {
         let cfg = null;
         try { cfg = teleportConfig(); } catch (_) { return; }
         if (!cfg || cfg.enabled === false) return;
+        // Pre-auth: the server has her frozen — tab-complete probes now are
+        // noise on a session that can't act yet. Wait for the auth gate
+        // (max ~90s), then probe. Home: _guestAuthed is already true.
+        if (this._guestAuthed === false) {
+            for (let i = 0; i < 90; i++) {
+                await new Promise(r => setTimeout(r, 1000));
+                if (this._guestAuthed !== false) break;
+            }
+            if (this._guestAuthed === false) { console.log('[tpa] auth never cleared — inbox off.'); return; }
+        }
         if (cfg.probe === true) {
             // Capability probe via tab-complete: zero chat, zero noise. If the
             // server has no TPA plugin, disable for this session.

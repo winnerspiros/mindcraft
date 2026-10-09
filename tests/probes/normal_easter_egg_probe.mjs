@@ -52,7 +52,7 @@ async function speak(question, who) {
         .replaceAll('$RELATIONSHIPS', standings)
         .replaceAll('$KNOWN_PLAYERS', known.join(', ') || '(none yet)')
         .replaceAll('$EXAMPLES', '')
-        .replaceAll('$REAL_IDENTITY', readFileSync('src/agent/library/real_identity.md', 'utf8'));
+        .replaceAll('$REAL_IDENTITY', '').replaceAll('$LORE', '');
     let r = await model.sendRequest([{ role: 'user', content: `[${who}] ${question}` }], p);
     if (typeof r === 'string' && r.includes('</think>')) r = r.split('</think>')[1];
     return String(r || '').trim();

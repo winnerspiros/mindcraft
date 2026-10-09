@@ -11,10 +11,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { Vec3 } from 'vec3';
 
-const LEDGER = './bots/UwU/stations.json';
+// Station ledger path is per-agent (see furnace_ledger.js): the guest
+// account's tables/stands stay off the home account.
+function ledgerPath(bot) {
+    const name = (bot && (bot.username || bot.name)) || 'UwU';
+    return `./bots/${name}/stations.json`;
+}
 const KEEP = 24;
 
-function read() {
+function read(bot) {
+    const LEDGER = ledgerPath(bot);
     try {
         if (fs.existsSync(LEDGER)) {
             const d = JSON.parse(fs.readFileSync(LEDGER, 'utf8'));
@@ -23,7 +29,8 @@ function read() {
     } catch (_) {}
     return { tables: [], stands: [] };
 }
-function write(d) {
+function write(bot, d) {
+    const LEDGER = ledgerPath(bot);
     try {
         d.tables = (d.tables || []).slice(0, KEEP);
         d.stands = (d.stands || []).slice(0, KEEP);
@@ -33,7 +40,7 @@ function write(d) {
 const keyOf = (x, y, z) => `${x},${y},${z}`;
 
 function upsert(bucket, blockName, pos, extra = {}) {
-    const d = read();
+    const d = read(bot);
     const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z);
     const k = keyOf(x, y, z);
     let e = d[bucket].find(r => r.k === k);
@@ -45,7 +52,7 @@ function upsert(bucket, blockName, pos, extra = {}) {
     e.lastSeen = Date.now();
     e.alive = true;
     if (extra.origin) e.origin = extra.origin;
-    write(d);
+    write(bot, d);
     return e;
 }
 
@@ -58,19 +65,19 @@ export function rememberTable(bot, pos, extra = {}) {
 // Record that she left an item sitting in the table. This is the "did someone
 // take it" breadcrumb.
 export function noteTableItem(bot, pos, itemName, n = 1) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.tables.find(r => r.k === k);
     if (!e) return null;
     e.t = Date.now();
     e.inside = (e.inside || []).filter(x => x.item !== itemName);
     e.inside.push({ item: itemName, n, t: Date.now() });
-    write(d);
+    write(bot, d);
     return e;
 }
 
 export function noteEnchant(bot, pos, enchantName, level, itemName) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.tables.find(r => r.k === k);
     if (!e) return null;
@@ -79,12 +86,12 @@ export function noteEnchant(bot, pos, enchantName, level, itemName) {
     e.history = (e.history || []).slice(-5);
     e.history.push({ ench: enchantName, level, item: itemName, t: Date.now() });
     e.inside = [];   // the item came back out with the enchantment on it
-    write(d);
+    write(bot, d);
     return e;
 }
 
 export function nearestTable(bot, maxDist = 256) {
-    const d = read();
+    const d = read(bot);
     const me = bot && bot.entity ? bot.entity.position : null;
     const list = d.tables
         .filter(e => e.alive !== false)
@@ -96,7 +103,7 @@ export function nearestTable(bot, maxDist = 256) {
 
 // Did the table vanish, or is its contents gone?
 export function auditTables(bot, scanRange = 24) {
-    const d = read();
+    const d = read(bot);
     const changed = [];
     const me = bot && bot.entity ? bot.entity.position : null;
     for (const e of d.tables) {
@@ -119,14 +126,14 @@ export function auditTables(bot, scanRange = 24) {
             changed.push(e);
         }
     }
-    if (changed.length) write(d);
+    if (changed.length) write(bot, d);
     return changed;
 }
 
 // The important one: the table is still there, but the item she left in it is
 // gone. That is theft, and it is NOT the same as the table being broken.
 export function noteTableItemMissing(bot, pos, expectedItem) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.tables.find(r => r.k === k);
     if (!e) return null;
@@ -136,7 +143,7 @@ export function noteTableItemMissing(bot, pos, expectedItem) {
     e.stolen = (e.stolen || []).slice(-4);
     e.stolen.push({ item: expectedItem, t: Date.now() });
     e.inside = (e.inside || []).filter(x => x.item !== expectedItem);
-    write(d);
+    write(bot, d);
     return e;
 }
 
@@ -148,18 +155,18 @@ export function rememberStand(bot, pos, extra = {}) {
 
 // What was loaded in the stand, and what brew was in progress.
 export function noteStandLoad(bot, pos, { bottles = 0, ingredient = null, fuel = 0, effect = null }) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.stands.find(r => r.k === k);
     if (!e) return null;
     e.t = Date.now();
     e.brewing = { bottles, ingredient, fuel, effect, startedAt: Date.now() };
-    write(d);
+    write(bot, d);
     return e;
 }
 
 export function noteBrewed(bot, pos, effect, count) {
-    const d = read();
+    const d = read(bot);
     const k = keyOf(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z));
     const e = d.stands.find(r => r.k === k);
     if (!e) return null;
@@ -168,12 +175,12 @@ export function noteBrewed(bot, pos, effect, count) {
     e.brewing = null;   // the stand is empty now
     e.history = (e.history || []).slice(-5);
     e.history.push({ effect, count, t: Date.now() });
-    write(d);
+    write(bot, d);
     return e;
 }
 
 export function nearestStand(bot, maxDist = 256) {
-    const d = read();
+    const d = read(bot);
     const me = bot && bot.entity ? bot.entity.position : null;
     const list = d.stands
         .filter(e => e.alive !== false)
@@ -184,7 +191,7 @@ export function nearestStand(bot, maxDist = 256) {
 }
 
 export function auditStands(bot, scanRange = 24) {
-    const d = read();
+    const d = read(bot);
     const changed = [];
     const me = bot && bot.entity ? bot.entity.position : null;
     for (const e of d.stands) {
@@ -207,7 +214,7 @@ export function auditStands(bot, scanRange = 24) {
             changed.push(e);
         }
     }
-    if (changed.length) write(d);
+    if (changed.length) write(bot, d);
     return changed;
 }
 

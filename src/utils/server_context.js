@@ -19,6 +19,9 @@
 //   auth_password — password used for those prompts. null = reuse the
 //       profile password. Per-server override when she needs a different
 //       one elsewhere.
+//   username — per-server login name override. null = profile name. Public
+//       offline servers often have "UwU" taken — a guest entry sets its own
+//       (e.g. "UwU_Guest") so she doesn't hit a fatal name conflict.
 //   kit_probe — after auth settles on a survival server, send /kit list
 //       once and claim only an obvious starter kit; otherwise report and
 //       play honest. No default kit is assumed anywhere but home.
@@ -43,6 +46,12 @@
 //   modes — per-server mode on/off overrides applied after the profile
 //       (e.g. { hunting: false } keeps her hands off animals there).
 //       cheat:false is forced anyway when op=false.
+//   pacing — how fast she moves and talks on this server. Home keeps the
+//       measured defaults. A public guest entry sets the quiet profile:
+//       no sprint (walk everywhere — sprint-jump spam is the fastest way
+//       to eat an anticheat flag on Grim/Matrix/NoCheatPlus), tighter chat
+//       budget, longer settle between actions, slower solo/idle cadence.
+//       Undefined = home defaults, so live behavior never changes by accident.
 //   seed — world seed string, or null = unknown. Null switches !seed and
 //       slime math to ask-the-op mode. SeedcrackerX is a Java CLIENT mod
 //       and cannot run inside this Node bot; the flow is: the owner runs
@@ -61,9 +70,14 @@ const HOME_DEFAULTS = {
     auth: 'offline',
     version: '26.3',
     op: true,
+    // Pacing overrides for this server; null = the measured home defaults
+    // baked into each subsystem (chat_budget, idle_budget, self_prompter).
+    // A public guest entry sets the quiet profile (see GUEST_PACING below).
+    pacing: null,
     easyauth: true,
     auto_auth: false,
     auth_password: null,
+    username: null,
     kit_probe: false,
     // null = no per-server opinion; personality() then uses settings.personality.
     // Only servers.json that explicitly names a personality overrides the
@@ -97,8 +111,24 @@ export function serverContext() {
     let file = null;
     try { file = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'servers.json'), 'utf8')); }
     catch (_) { file = null; }
+    // servers.json.local (gitignored): per-server secrets overlay. The public
+    // server's /register-/login password lives HERE, never in servers.json
+    // and never the home EasyAuth password. Merged over the base entry.
+    let local = null;
+    try { local = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'servers.json.local'), 'utf8')); }
+    catch (_) { local = null; }
     const want = process.env.UWU_SERVER || (file && file.active) || 'home';
     const entry = (file && file.servers && file.servers[want]) || {};
+    try {
+        const over = local && local.servers && local.servers[want];
+        if (over && typeof over === 'object') {
+            for (const k of Object.keys(over)) {
+                if (over[k] && typeof over[k] === 'object' && !Array.isArray(over[k]) && entry[k] && typeof entry[k] === 'object')
+                    entry[k] = { ...entry[k], ...over[k] };
+                else entry[k] = over[k];
+            }
+        }
+    } catch (_) {}
     if (_ctxOverride) Object.assign(entry, _ctxOverride);
     const ctx = {
         ...HOME_DEFAULTS,
@@ -125,6 +155,13 @@ export function serverContext() {
 }
 
 export function applyServerContext() { return serverContext(); }
+
+// Pacing overrides for this server ({} = the measured home defaults baked
+// into each subsystem). A public guest entry sets the quiet profile: no
+// sprint, tighter chat budget, longer settle, slower cadence.
+export function pacing() {
+    try { return serverContext().pacing || {}; } catch (_) { return {}; }
+}
 
 // Tests that swap the active server's "personality" between yandere and
 // normal need the cached context rebuilt, otherwise personality() keeps
@@ -396,13 +433,21 @@ export function isTeleportsAvailable() {
 
 export function authFlow() {
     // { auto, password, probeKit }: password falls back to the profile
-    // password when the server entry leaves auth_password null.
+    // password when the server entry leaves auth_password null — EXCEPT the
+    // fallback is refused on guest entries (op=false + auto_auth): handing a
+    // public server the HOME EasyAuth password would burn it. Guest without
+    // its own auth_password in servers.json.local gets password:null and the
+    // join flow stays silent + honest instead of registering under the home pw.
     try {
         const ctx = serverContext();
         let pw = ctx.auth_password || null;
-        if (!pw) {
+        const isGuest = ctx.op === false && ctx.auto_auth === true;
+        if (!pw && !isGuest) {
             try { pw = (settings.profile && settings.profile.auth_password) || null; }
             catch (_) { pw = null; }
+        }
+        if (!pw && isGuest) {
+            console.warn(`[server] ${ctx.name}: no auth_password in servers.json.local — guest auth stays silent (will NOT reuse the home password). Set servers[${ctx.name}].auth_password in servers.json.local to enable /register-/login.`);
         }
         return { auto: ctx.auto_auth === true, password: pw, probeKit: ctx.kit_probe === true };
     } catch (_) { return { auto: false, password: null, probeKit: false }; }

@@ -32,7 +32,13 @@ const MIN_GAP_BETWEEN_ACTIONS_MS = 20000;
 const MAX_ACTIONS_PER_5MIN = 6;
 
 export class IdleBudget {
-    constructor() {
+    // opts: per-server pacing overrides (servers.json "pacing.idle").
+    // Empty = the measured home defaults. Tests construct bare.
+    constructor(opts = {}) {
+        this._settleAction = opts.settleAfterActionMs ?? SETTLE_AFTER_ACTION_MS;
+        this._settleIdle = opts.settleWhenIdleMs ?? SETTLE_WHEN_IDLE_MS;
+        this._minGap = opts.minGapMs ?? MIN_GAP_BETWEEN_ACTIONS_MS;
+        this._maxActions = opts.maxPer5Min ?? MAX_ACTIONS_PER_5MIN;
         /** @type {number[]} */
         this.actions = [];     // timestamps of movement/fidget actions
         this.lastActionAt = 0;
@@ -61,10 +67,10 @@ export class IdleBudget {
         // a bot that keeps shifting and fidgeting in front of a person is the
         // exact tell the owner named. It was inverted, which gave 45s with a
         // human present and 90s when alone - backwards on both counts.
-        const settle = ctx.human_present ? SETTLE_WHEN_IDLE_MS : SETTLE_AFTER_ACTION_MS;
+        const settle = ctx.human_present ? this._settleIdle : this._settleAction;
         if (since < settle) return { ok: false, why: 'settling' };
-        if (since < MIN_GAP_BETWEEN_ACTIONS_MS) return { ok: false, why: 'too_soon' };
-        if (this.actions.length >= MAX_ACTIONS_PER_5MIN) return { ok: false, why: 'over_active' };
+        if (since < this._minGap) return { ok: false, why: 'too_soon' };
+        if (this.actions.length >= this._maxActions) return { ok: false, why: 'over_active' };
         return { ok: true, why: 'has_goal' };
     }
 
