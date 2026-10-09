@@ -8908,9 +8908,7 @@ export async function goToPlayer(bot, username, distance=3) {
             const rpos = await rconPlayerPos(username).catch(() => null);
             if (!rpos) { log(bot, `Could not find ${username}.`); return false; }
             log(bot, `${username} is near but I can't see them clearly — walking to where they are.`);
-            const lg = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
-            lg._pathTimeout = 4000;
-            const okg = await goToGoal(bot, lg);
+            const okg = await reachPosition(bot, Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2), `to ${username}`);
             try {
                 const d = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
                 if (d <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
@@ -8937,9 +8935,7 @@ export async function goToPlayer(bot, username, distance=3) {
                             if (_dGain > 0 && bot.entity.position.y >= rpos.y - 1.5) {
                                 log(bot, `Diagonal reach got me to ${username}'s height — closing in.`);
                                 try {
-                                    const _wgD = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
-                                    _wgD._pathTimeout = 4000;
-                                    await goToGoal(bot, _wgD);
+                                    await reachPosition(bot, Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2), `to ${username}`);
                                     const _wdD = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
                                     if (_wdD <= Math.max(distance, 2) + 1) { log(bot, `You have reached ${username}.`); return true; }
                                 } catch (_) {}
@@ -8961,9 +8957,7 @@ export async function goToPlayer(bot, username, distance=3) {
                             if (gained > 0) {
                                 log(bot, `Pillared up ${gained} — walking over now.`);
                                 try {
-                                    const _wg = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
-                                    _wg._pathTimeout = 4000;
-                                    await goToGoal(bot, _wg);
+                                    await reachPosition(bot, Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2), `to ${username}`);
                                     const _wd = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
                                     if (_wd <= Math.max(distance, 2) + 1) {
                                         log(bot, `You have reached ${username}.`);
@@ -9021,9 +9015,7 @@ export async function goToPlayer(bot, username, distance=3) {
                                     if (g2 > 0) {
                                         log(bot, `Pillared up ${g2} — walking over now.`);
                                         try {
-                                            const _wg2 = new pf.goals.GoalNear(Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2));
-                                            _wg2._pathTimeout = 4000;
-                                            await goToGoal(bot, _wg2);
+                                            await reachPosition(bot, Math.floor(rpos.x), Math.floor(rpos.y), Math.floor(rpos.z), Math.max(distance, 2), `to ${username}`);
                                             const _wd2 = bot.entity.position.distanceTo(new Vec3(rpos.x, rpos.y, rpos.z));
                                             if (_wd2 <= Math.max(distance, 2) + 1) {
                                                 log(bot, `You have reached ${username}.`);
@@ -9102,7 +9094,7 @@ export async function goToPlayer(bot, username, distance=3) {
                     // vertical or long legs get more planning time: the default
                     // 1s budget fails indoor→outdoor stairs/doors on first try
                     // and reports "no path" while a path exists.
-                    legGoal._pathTimeout = (Math.abs(t.y - bot.entity.position.y) > 3 || dist0 > 24) ? 4000 : 1000;
+                    legGoal._pathTimeout = (Math.abs(t.y - bot.entity.position.y) > 3 || dist0 > 24) ? 4000 : 3000;
                     if (dist0 > 12) {
                         legGoal._sprintTrial = true;
                         log(bot, `Sprinting this leg (far, flat).`);
