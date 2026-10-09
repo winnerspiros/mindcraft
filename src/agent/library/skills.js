@@ -5059,6 +5059,52 @@ export function serverCanBreakBlock(bot, bpos, range = 4.5) {
     } catch (_) { return false; }
 }
 
+// HONEST-HAUL DROP MAP (2026-10-09): what actually lands in pockets when a
+// block breaks. collectBlock used to count BREAKS (`collected++` on a landed
+// swing) and log "Collected N" while the drops sat on the ground — live proof:
+// 2x "Collected N deepslate_coal_ore" with zero coal server-side. The fix
+// snapshots server-held drop counts before, re-reads after each break+vacuum
+// (countLandedDrops), and counts only what LANDED.
+export function dropNamesForBlock(blockType) {
+    const b = String(blockType || '');
+    const m = {
+        coal_ore: ['coal'], deepslate_coal_ore: ['coal'], coal: ['coal'],
+        iron_ore: ['raw_iron'], deepslate_iron_ore: ['raw_iron'], iron: ['raw_iron'],
+        gold_ore: ['raw_gold'], deepslate_gold_ore: ['raw_gold'], gold: ['raw_gold'],
+        nether_gold_ore: ['gold_nugget'],
+        copper_ore: ['raw_copper'], deepslate_copper_ore: ['raw_copper'],
+        diamond_ore: ['diamond'], deepslate_diamond_ore: ['diamond'], diamond: ['diamond'],
+        emerald_ore: ['emerald'], deepslate_emerald_ore: ['emerald'],
+        lapis_ore: ['lapis_lazuli'], deepslate_lapis_ore: ['lapis_lazuli'],
+        redstone_ore: ['redstone'], deepslate_redstone_ore: ['redstone'],
+        nether_quartz_ore: ['quartz'], ancient_debris: ['ancient_debris'],
+        stone: ['cobblestone'], cobblestone: ['cobblestone'],
+        deepslate: ['cobbled_deepslate'], cobbled_deepslate: ['cobbled_deepslate'],
+        grass_block: ['dirt'], dirt: ['dirt'],
+        gravel: ['gravel', 'flint'], sand: ['sand'],
+    };
+    if (m[b]) return m[b].slice();
+    return [b]; // logs, sand, generic blocks drop themselves
+}
+
+// Server-side pocket delta since `before` ({drop: total}), via rconCountAll
+// (override-seamed for tests). Returns {verified, gained, after}: verified is
+// false when every read failed (UNKNOWN, never zero), so callers can fall back
+// to break-counting with an "unverified" flag instead of a confident lie.
+export async function countLandedDrops(username, dropNames, before) {
+    const { rconCountAll } = await import('../../utils/rcon.js');
+    let verified = false, gained = 0;
+    const after = { ...(before || {}) };
+    for (const d of (dropNames || [])) {
+        let now = null;
+        try { const c = await rconCountAll(username, d); now = (c && Number.isFinite(c.total)) ? c.total : null; } catch (_) { now = null; }
+        const was = (before && Number.isFinite(before[d])) ? before[d] : null;
+        if (now !== null && was !== null) { verified = true; gained += Math.max(0, now - was); }
+        if (now !== null) after[d] = now;
+    }
+    return { verified, gained, after };
+}
+
 export async function collectBlock(bot, blockType, num=1, exclude=null) {
     /**
      * Collect one of the given block type.
@@ -5086,6 +5132,12 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
     const isLiquid = blockType === 'lava' || blockType === 'water';
 
     let collected = 0;
+    let unverifiedBreaks = 0; // swings landed but server reads failed: reported as unverified, never as haul
+    const _drops = dropNamesForBlock(blockType);
+    // baseline: server-held drop totals before the first swing.
+    try {
+        bot._haulBefore = (await countLandedDrops(bot.username, _drops, {})).after || {};
+    } catch (_) { try { bot._haulBefore = {}; } catch (_) {} }
 
     const movements = moveProfile(bot, 'sprint');
     movements.dontMineUnderFallingBlock = false;
@@ -5592,8 +5644,35 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                     success = true;
                 }
             }
-            if (success)
-                collected++;
+            // HONEST-HAUL (2026-10-09): a landed swing is a BREAK, not a haul —
+            // the coal-ore case proved drops stay on the ground while the log
+            // says "Collected". Re-vacuum the drop spot, then count what
+            // LANDED in server pockets. Zero landed = step onto the dig spot
+            // and vacuum once more (magnet radius) before calling it lost.
+            if (success) {
+                try { await pickupNearbyItems(bot); } catch (_) {}
+                let _v = { verified: false, gained: 0, after: null };
+                try { _v = await countLandedDrops(bot.username, _drops, bot._haulBefore || {}); } catch (_) {}
+                if (_v.verified && _v.gained > 0) {
+                    collected += _v.gained;
+                    try { bot._haulBefore = _v.after; } catch (_) {}
+                } else if (_v.verified) {
+                    // pockets provably unchanged: drops are on the ground.
+                    // Walk onto the dig spot, vacuum again, re-count once.
+                    try {
+                        if (bot._lastDigPos) await goToPosition(bot, bot._lastDigPos.x + 0.5, bot._lastDigPos.y, bot._lastDigPos.z + 0.5, 1);
+                    } catch (_) {}
+                    try { await pickupNearbyItems(bot); } catch (_) {}
+                    let _v2 = { verified: false, gained: 0 };
+                    try { _v2 = await countLandedDrops(bot.username, _drops, (_v.after || bot._haulBefore || {})); } catch (_) {}
+                    if (_v2.verified && _v2.gained > 0) {
+                        collected += _v2.gained;
+                        try { bot._haulBefore = _v2.after; } catch (_) {}
+                    } else if (_v2.verified) {
+                        log(bot, `Broke ${block.name} but the ${_drops.join('/')} never landed — drops are on the ground here, picking them up next pass.`);
+                    } else unverifiedBreaks++;
+                } else unverifiedBreaks++;
+            }
             await autoLight(bot);
         }
         catch (err) {
@@ -5610,7 +5689,16 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         if (bot.interrupt_code)
             break;  
     }
-    log(bot, `Collected ${collected} ${blockType}.`);
+    // Final report: verified haul only. Unverified breaks are named, never
+    // folded into the count — "Collected 0 coal (2 breaks unverified)" beats
+    // the old confident "Collected 2" with empty pockets.
+    if (unverifiedBreaks > 0 && collected === 0)
+        log(bot, `Collected 0 ${blockType} (${unverifiedBreaks} break(s) landed but pockets unreadable — check !inventory).`);
+    else if (unverifiedBreaks > 0)
+        log(bot, `Collected ${collected} ${blockType} (+${unverifiedBreaks} break(s) unverified — check !inventory).`);
+    else
+        log(bot, `Collected ${collected} ${blockType}.`);
+    try { delete bot._haulBefore; } catch (_) {}
     return collected > 0;
 }
 

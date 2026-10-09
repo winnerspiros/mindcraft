@@ -415,7 +415,15 @@ export class SelfPrompter {
             try { _gap = this.toolGapNote(); } catch (_) {}
             let _cmds = '';
             try { _cmds = await this._realCommandsFor(this.prompt); } catch (_) {}
-            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''}${_cmds ? ' ' + _cmds : ''} Respond:`;
+            // NO FILLER, NO PHANTOM CLAIMS (2026-10-09): she spent turns saying
+            // "still blocked. need a new plan" / "got another coal ore.
+            // checking inventory again" with NO command attached — filler that
+            // advances nothing and lies she'll verify (she never ran
+            // !inventory). And collectBlock's "Collected N" counted BREAKS,
+            // not pocketed drops. So: prose without a command is a wasted
+            // turn, and a result claim without a verifying command is BS.
+            const _nobs = ` Never reply with status prose alone — every turn moves the goal with a command. Never claim you HAVE/CHECKED something unless that same turn runs the command that proves it (!inventory, !stats); say what you DID (broke 2 ore, drops unconfirmed) not what you wish were true.`;
+            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''}${_cmds ? ' ' + _cmds : ''}${_nobs} Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
             if (!used_command) {
