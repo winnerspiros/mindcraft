@@ -112,8 +112,9 @@ test('stillness is tracked while she has a goal, not only while idle', () => {
     const gate = code.slice(start, code.indexOf('_idleRescueAt', start) + 400);
     assert.match(gate, /const _tracking = agent\.isIdle\(\) \|\| _goalActive;/,
         'the stillness counter must run when she is working toward a goal');
-    assert.doesNotMatch(gate, /if \(agent\.isIdle\(\) && !_goalActive\)/,
-        'requiring NO goal means a goal-driven stuck state can never accrue stillness');
+    // 2026-10-09: the trigger (not the counter) skips no-goal idle — standing
+    // around chatting has nothing to be stuck ON. Goal-driven accrual is
+    // untouched; only the rescue requires a live goal.
     assert.match(gate, /_idleStill/,
         'the rescue counter must still be the thing that gates the dig-out');
 });

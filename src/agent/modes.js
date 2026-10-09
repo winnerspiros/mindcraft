@@ -396,6 +396,17 @@ const modes_list = [
                 return;
             }
             if (_tracking) {
+                // MINING IS NOT STUCK (verified live 18:3x): she stood at
+                // (15,64,15) running !collectBlocks gravel — position
+                // byte-identical for minutes because digging doesn't move
+                // feet. idleStill accrued, and every 60s the rescue preempted
+                // the dig (interrupts:['all']) for ±3 probe walks to
+                // (18,65,15)/(12,65,15)/(15,65,12) — the "on cocaine" jerk:
+                // yank pick, shuffle 3 blocks, resume, repeat. A mid-swing
+                // dig is progress by definition; the dig action's own
+                // watchdog handles a truly failed break. So: stillness while
+                // the pick is swinging never counts.
+                try { if (agent.bot.targetDigBlock) { this._idleStill = 0; this._idlePrev = null; return; } } catch (_) {}
                 // IDLE-STILL WATCH (2026-09-27): the old code reset here, so an
                 // idle bot in a hole never accrued stuck_time and the rescue
                 // below never fired. Track stillness separately: unmoved for a
@@ -410,7 +421,13 @@ const modes_list = [
                     }
                     // update() ticks fast; ~20s of stillness trips it. Cooldown
                     // after each rescue so she digs 3, re-plans, digs 3 more.
+                    // NO-GOAL IDLE IS NOT STUCK either: standing around
+                    // chatting with no active goal has nothing to be stuck
+                    // ON — a rescue walk just jerks her for no reason. A
+                    // genuinely wedged bot always has a live goal (the idle-
+                    // in-a-hole case that motivated this watch had one).
                     if ((this._idleStill || 0) >= 40 && Date.now() - (this._idleRescueAt || 0) > 60000) {
+                        if (agent.isIdle() && !_goalActive) { this._idleStill = 0; return; }
                         this._idleStill = 0;
                         this._idleRescueAt = Date.now();
                         const bot = agent.bot;
