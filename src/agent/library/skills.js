@@ -8348,7 +8348,9 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
     // cost-increase backoff and 5-move lookahead validation below.)
     let _planCost = null, _planPath = null;
 
-    const pathfind_timeout = (goal && Number.isFinite(goal._pathTimeout)) ? goal._pathTimeout : 1000;
+    // Planning budget: 1s starved real routes (doors/stairs/chunk edges read
+    // "no path" on first probe). 3s base; legs pass their own via _pathTimeout.
+    const pathfind_timeout = (goal && Number.isFinite(goal._pathTimeout)) ? goal._pathTimeout : 3000;
     // Discovery's onlyCheckPath, ported: plan both probes, report, move nothing.
     if (goal && goal._dryRun === true) {
         try {
@@ -8752,30 +8754,40 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
     const walkMovements = moveProfile(bot, mode);
     if (mode !== 'walk') log(bot, `${mode === 'parkour' ? 'Parkouring' : 'Sprinting'} to ${x}, ${y}, ${z}.`);
     bot.pathfinder.setMovements(walkMovements);
+    // THE LADDER: straight walk first (fast path, same as before), then
+    // waypoints → sidestep → climb/pillar → dig-down → tunnel → pearl/swim.
+    // goToGoal alone quits at the first "no path"; reachPosition doesn't.
+    const label = `${x}, ${y}, ${z}`;
     try {
         const _goal = new pf.goals.GoalNear(x, y, z, min_distance);
         if (mode === 'sprint' || mode === 'parkour') _goal._moveMode = mode;
-        await goToGoal(bot, _goal);
-        try { if (progressInterval) clearInterval(progressInterval); } catch (_) {}
-        // BOTCRAFT PORT (goal window: Botcraft's min_end_dist_xz — for block
-        // approach the XZ plane is what matters; Y mismatches (standing a
-        // block above/below the target) must not read as failure. Measure
-        // arrival in XZ when the caller passes a block-ish goal.
-        const dxz = Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z);
-        const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
-        if (dxz <= min_distance + 1) {
-            log(bot, `You have reached at ${x}, ${y}, ${z}.`);
-            return true;
-        }
-        else {
-            log(bot, `Unable to reach ${x}, ${y}, ${z}, you are ${Math.round(distance)} blocks away.`);
-            return false;
+        _goal._pathTimeout = 4000;
+        if (await goToGoal(bot, _goal)) {
+            const dxz = Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z);
+            if (dxz <= min_distance + 1) {
+                log(bot, `You have reached at ${x}, ${y}, ${z}.`);
+                return true;
+            }
         }
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
-        try { if (progressInterval) clearInterval(progressInterval); } catch (_) {}
-        return false;
     }
+    if (bot.interrupt_code) return false;
+    if (Math.hypot(bot.entity.position.x - x, bot.entity.position.z - z) <= min_distance + 1) {
+        log(bot, `You have reached at ${x}, ${y}, ${z}.`);
+        return true;
+    }
+    // straight leg failed — climb the ladder (it logs each rung itself).
+    const ok = await reachPosition(bot, x, y, z, min_distance, label);
+    if (ok) {
+        log(bot, `You have reached at ${x}, ${y}, ${z}.`);
+        return true;
+    }
+    try {
+        const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
+        log(bot, `Unable to reach ${x}, ${y}, ${z}, you are ${Math.round(distance)} blocks away.`);
+    } catch (_) {}
+    return false;
 }
 
 export async function goToBlockAdjacent(bot, block, min_distance=2) {
@@ -8785,8 +8797,9 @@ export async function goToBlockAdjacent(bot, block, min_distance=2) {
      * goToPosition lands the bot inside the block, so chests/furnaces must walk.
      */
     try {
-        await goToGoal(bot, new pf.goals.GoalNear(block.position.x, block.position.y, block.position.z, min_distance));
-        return true;
+        // ladder: walk first, then the rungs log themselves on failure.
+        const ok = await reachPosition(bot, block.position.x, block.position.y, block.position.z, min_distance, `beside ${block.name || 'the block'}`);
+        return ok;
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
         return false;
@@ -9345,6 +9358,188 @@ export async function moveAway(bot, distance, mode='walk') {
     }
     log(bot, `Moved away from ${pos.floored()} to ${new_pos.floored()}.`);
     return true;
+}
+
+/**
+ * NEVER-GIVE-UP LADDER (2026-10-09): the reason legs died at "no path" while
+ * a way existed. goToGoal plans ONE route and quits; this climbs, in order:
+ *  1. walk the straight leg (goToGoal, generous planning)
+ *  2. waypoint it: split long legs into ≤16-block hops (planner's horizon)
+ *  3. go AROUND: fresh sidestep midpoint + re-plan (doors/corners unstick)
+ *  4. go UP: target above → diagonalAscent, then pillarUp on dug-wall blocks
+ *  5. go DOWN: target below → digDown toward it
+ *  6. go THROUGH: dig a straight 1x2 tunnel toward the target (needs pick)
+ *  7. panic buttons: pearl (far + healthy + pearls) or swimUp (in water)
+ * Returns true the moment she arrives (XZ + Y checked); false only after
+ * every rung failed. Every goTo* funnels here — one ladder, not N copies.
+ * @returns {Promise<boolean>}
+ **/
+export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'there') {
+    x = Math.floor(Number(x)); y = Math.floor(Number(y)); z = Math.floor(Number(z));
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) {
+        log(bot, `Nowhere to go — bad coordinates for ${label}.`);
+        return false;
+    }
+    const rad = Math.max(min_distance, 0.5);
+    const arrived = () => {
+        try {
+            const p = bot.entity.position;
+            return Math.hypot(p.x - x, p.z - z) <= rad + 1 && Math.abs(p.y - y) <= 3;
+        } catch (_) { return false; }
+    };
+    const leg = async (gx, gy, gz, timeout) => {
+        const g = new pf.goals.GoalNear(Math.floor(gx), Math.floor(gy), Math.floor(gz), Math.max(Math.floor(rad), 1));
+        g._pathTimeout = timeout;
+        try { return await goToGoal(bot, g); } catch (_) { return false; }
+    };
+    if (arrived()) return true;
+    // RUNG 1 — straight walk, generous planning for doors/stairs/chunks.
+    if (await leg(x, y, z, 4000)) return arrived();
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 2 — waypoints: split into ≤16-block hops toward the target.
+    try {
+        const p = bot.entity.position;
+        const dist = Math.hypot(x - p.x, z - p.z);
+        if (dist > 16) {
+            const hops = Math.min(Math.ceil(dist / 16), 8);
+            let walked = true;
+            for (let i = 1; i <= hops; i++) {
+                if (bot.interrupt_code) break;
+                const wx = p.x + (x - p.x) * (i / hops), wz = p.z + (z - p.z) * (i / hops);
+                const wy = Math.round(p.y + (y - p.y) * (i / hops));
+                if (!await leg(wx, wy, wz, 3000)) { walked = false; break; }
+            }
+            if (walked && arrived()) { log(bot, `Waypoint walk reached ${label}.`); return true; }
+        }
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 3 — around: sidestep to open ground, re-plan from there.
+    try {
+        log(bot, `Straight walk blocked — sidestepping to open ground first.`);
+        if (await escapeStuck(bot) && await leg(x, y, z, 4000)) return arrived();
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 4 — up: climb toward an above-target, then re-walk.
+    try {
+        const dy = y - bot.entity.position.y;
+        if (dy > 3) {
+            const h = Math.min(Math.ceil(dy) + 1, 12);
+            const p = bot.entity.position;
+            const horiz = Math.hypot(x - p.x, z - p.z);
+            if (horiz > 0.8 && horiz < 8) {
+                try {
+                    const g0 = await diagonalAscent(bot, { x, y, z }, h);
+                    if (g0 > 0 && bot.entity.position.y >= y - 1.5 && await leg(x, y, z, 4000)) return arrived();
+                } catch (_) {}
+            }
+            // straight pillar on dug-wall blocks when diagonal didn't finish it
+            if (bot.entity.position.y < y - 1.5) {
+                try {
+                    const invm = (await import('../../utils/rcon.js'));
+                    try { invm.rconInventoryBust(bot.username); } catch (_) {}
+                    const counts = {};
+                    for (const e of ((await invm.rconInventory(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+                    let mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (counts[n] || 0) > 0);
+                    if (!mat) {
+                        // the wall around her IS the material: dig 3 eye-level, scoop, pillar
+                        const eye = bot.blockAt(bot.entity.position.offset(0, 1, 0));
+                        const faces = [[1, 0], [-1, 0], [0, 1], [0, -1]].map(([dx, dz]) => { try { return bot.blockAt(eye.position.offset(dx, 0, dz)); } catch (_) { return null; } }).filter(b => b && b.name !== 'air' && b.name !== 'water' && b.name !== 'lava');
+                        for (const wb of faces.slice(0, 3)) {
+                            if (bot.interrupt_code) break;
+                            try { await equipRightTool(bot, wb).catch(() => {}); } catch (_) {}
+                            try { await bot.dig(wb, true).catch(() => {}); } catch (_) {}
+                        }
+                        try { await bot.waitForTicks(20); } catch (_) {}
+                        try { await pickupNearbyItems(bot); } catch (_) {}
+                        try { invm.rconInventoryBust(bot.username); } catch (_) {}
+                        const c2 = {};
+                        for (const e of ((await invm.rconInventory(bot.username, true)) || [])) c2[e.name] = (c2[e.name] || 0) + e.count;
+                        mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (c2[n] || 0) > 0);
+                    }
+                    if (mat) {
+                        const tBase = bot.entity.position.clone();
+                        await ensureBlocks(bot, mat, h);
+                        const gained = await pillarUp(bot, mat, h);
+                        if (gained > 0 && await leg(x, y, z, 4000)) {
+                            if (arrived()) {
+                                try { await tearDownTower(bot, tBase, gained); } catch (_) {}
+                                return true;
+                            }
+                        }
+                    } else log(bot, `Nothing to pillar with (no blocks, wall gave nothing) — can't climb to ${label}.`);
+                } catch (_) {}
+            }
+        }
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 5 — down: dig toward a below-target.
+    try {
+        const dy = y - bot.entity.position.y;
+        if (dy < -3) {
+            const drop = Math.min(Math.ceil(-dy), 6);
+            log(bot, `${label} is ${Math.round(-dy)} down — digging down ${drop}.`);
+            try { await digDown(bot, drop); } catch (_) {}
+            if (await leg(x, y, z, 4000)) return arrived();
+        }
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 6 — through: straight 1x2 tunnel toward the target (needs a pick).
+    try {
+        const p = bot.entity.position;
+        if (Math.hypot(x - p.x, z - p.z) > 4) {
+            const hasPick = (() => { try { return bot.inventory.items().some(i => /pickaxe/.test(i.name)); } catch (_) { return false; } })();
+            if (hasPick) {
+                log(bot, `No way around — tunnelling toward ${label}.`);
+                const yaw = Math.atan2(-(x - p.x), -(z - p.z));
+                const dx = Math.round(-Math.sin(yaw)), dz = Math.round(-Math.cos(yaw));
+                let dug = 0;
+                for (let i = 0; i < 8 && dug < 8; i++) {
+                    if (bot.interrupt_code) break;
+                    const fp = bot.entity.position.floored();
+                    const fx = fp.x + dx, fz = fp.z + dz;
+                    let step = false;
+                    for (const [ox, oy, oz] of [[fx, fp.y, fz], [fx, fp.y + 1, fz]]) {
+                        let b = null;
+                        try { b = bot.blockAt(new Vec3(ox, oy, oz)); } catch (_) {}
+                        if (b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'water') {
+                            try { await equipRightTool(bot, b).catch(() => {}); } catch (_) {}
+                            try { await bot.dig(b, true); step = true; } catch (_) {}
+                        } else step = true;
+                    }
+                    if (!step) break;
+                    dug++;
+                    // step into the hole, then re-plan — the tunnel IS the path
+                    try {
+                        const ng = new pf.goals.GoalNear(fx, fp.y, fz, 1);
+                        ng._pathTimeout = 3000;
+                        await goToGoal(bot, ng, 8000);
+                    } catch (_) {}
+                    if (arrived()) return true;
+                }
+                if (await leg(x, y, z, 4000)) return arrived();
+            } else log(bot, `Walled in and no pickaxe — can't tunnel to ${label}. Need a pick (stone: cobble + sticks).`);
+        }
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 7 — panic buttons: pearl far, swim when wet.
+    try {
+        const p = bot.entity.position;
+        const d = Math.hypot(x - p.x, z - p.z);
+        const pearls = (() => { try { return bot.inventory.items().filter(i => i.name === 'ender_pearl').reduce((a, i) => a + i.count, 0); } catch (_) { return 0; } })();
+        if (d > 24 && pearls > 0 && (bot.health ?? 20) >= 6) {
+            log(bot, `Nothing walked — pearling to ${label} (${Math.round(d)} blocks).`);
+            try { if (await throwPearl(bot, x, y, z) && await leg(x, y, z, 4000)) return arrived(); } catch (_) {}
+        }
+        const feet = (() => { try { return bot.blockAt(bot.entity.position); } catch (_) { return null; } })();
+        if (feet && (feet.name === 'water' || feet.name === 'bubble_column')) {
+            log(bot, `Stuck in water — swimming up first.`);
+            try { await swimUp(bot); } catch (_) {}
+            if (await leg(x, y, z, 4000)) return arrived();
+        }
+    } catch (_) {}
+    if (arrived()) return true;
+    log(bot, `Can't reach ${label} — walked, waypointed, sidestepped, climbed, dug and tunnelled. Something structural (bedrock/void/claim) is in the way.`);
+    return false;
 }
 
 export async function moveProbe(bot, x, y, z, min_distance = 2) {
