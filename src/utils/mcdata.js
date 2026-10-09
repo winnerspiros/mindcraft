@@ -197,7 +197,6 @@ export function initBot(username) {
     };
 
     bot.loadPlugin(pathfinder);
-    installPathfinderGuard(bot);
     bot.loadPlugin(pvp);
     bot.loadPlugin(collectblock);
     bot.loadPlugin(autoEat);
@@ -227,6 +226,12 @@ export function initBot(username) {
             'pickaxe', 'axe', 'shovel', 'hoe', 'bow', 'arrow', 'elytra', 'firework_rocket', 'chest'];
         bot.collectBlock.itemFilter = (item) => !_gearParts.some((p) => item.name.includes(p));
     });
+
+    // LAST: collectblock re-loads the pathfinder plugin (its index.js calls
+    // bot.loadPlugin(pathfinder)), which REPLACES bot.pathfinder.getPathTo —
+    // installing the empty-generator guard earlier gets wiped. So it goes here,
+    // after every plugin load.
+    installPathfinderGuard(bot);
 
     return bot;
 }
