@@ -32,7 +32,7 @@ function worldBot({ plan, items = [], pos = new Vec3(0, 64, 0), cells = new Map(
         modes: { isOn: () => false, pause: () => {} },
         inventory: {
             items: () => items.slice(),
-            slots: Object.fromEntries(items.map((it, i) => [i, { name: it.name, count: it.count, slot: i }])),
+            slots: items.map((it, i) => ({ name: it.name, count: it.count, slot: i })),
             findInventoryItem: (n) => items.find(i => i.name === n) || null,
         },
         players: {},

@@ -9117,12 +9117,13 @@ export async function goToPlayer(bot, username, distance=3) {
                     ok = await goToPosition(bot, Math.floor(t.x), Math.floor(t.y), Math.floor(t.z), Math.max(distance, 2));
                 }
                 if (!ok) {
-                    // one honest retry with a fresh read before giving up — the
-                    // player may have stepped around a corner mid-leg.
+                    // leg blocked — climb the ladder (waypoints, sidestep,
+                    // climb, tunnel) toward the fresh position before giving
+                    // up. The player may have stepped around a corner mid-leg.
                     const retry = await rconPlayerPos(username).catch(() => null);
                     const rt = retry || t;
-                    log(bot, `Leg blocked — one retry toward fresh position.`);
-                    ok = await goToPosition(bot, Math.floor(rt.x), Math.floor(rt.y), Math.floor(rt.z), Math.max(distance, 2));
+                    log(bot, `Leg blocked — climbing the ladder toward fresh position.`);
+                    ok = await reachPosition(bot, Math.floor(rt.x), Math.floor(rt.y), Math.floor(rt.z), Math.max(distance, 2), `to ${username}`);
                     if (!ok) {
                         log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside and I'll walk right over.`);
                         break;
@@ -9494,6 +9495,54 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                     } else log(bot, `Nothing to pillar with (no blocks, wall gave nothing) — can't climb to ${label}.`);
                 } catch (_) {}
             }
+        }
+    } catch (_) {}
+    if (bot.interrupt_code || arrived()) return arrived();
+    // RUNG 4b — SKY: target far above (climb budget exceeded). Fly when
+    // geared (elytra + rockets), else pillar the last stretch, else say so.
+    try {
+        const dyS = y - bot.entity.position.y;
+        if (dyS > 13) {
+            const hasElytra = (() => { try { return bot.inventory.items().some(i => i.name === 'elytra') || isElytraEquipped(bot); } catch (_) { return false; } })();
+            const rockets = (() => { try { return countFireworkRockets(bot); } catch (_) { return 0; } })();
+            if (hasElytra && rockets > 0) {
+                log(bot, `${label} is ${Math.round(dyS)} up — flying it (elytra + rockets).`);
+                try {
+                    if (await flyWithElytra(bot, x, y, z, Math.max(Math.floor(rad), 3))) return arrived();
+                } catch (_) {}
+            } else if (hasElytra) {
+                log(bot, `${label} is ${Math.round(dyS)} up — I have wings but no rockets (paper + gunpowder). Pillaring what I can.`);
+            } else {
+                log(bot, `${label} is ${Math.round(dyS)} up — no elytra (End City ship), so climbing by hand.`);
+            }
+            // hand-climb fallback: pillar in capped lifts, re-walk each time.
+            // (full height at once risks the 12/layer cap + footing loss.)
+            try {
+                const invm2 = (await import('../../utils/rcon.js'));
+                try { invm2.rconInventoryBust(bot.username); } catch (_) {}
+                const cS = {};
+                for (const e of ((await invm2.rconInventory(bot.username, true)) || [])) cS[e.name] = (cS[e.name] || 0) + e.count;
+                let matS = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (cS[n] || 0) > 0);
+                if (!matS) {
+                    try {
+                        const haveS = {};
+                        for (const it of (bot.inventory.items() || [])) haveS[it.name] = (haveS[it.name] || 0) + (it.count || 0);
+                        matS = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (haveS[n] || 0) > 0);
+                    } catch (_) {}
+                }
+                if (matS) {
+                    for (let lift = 0; lift < 4; lift++) {
+                        if (bot.interrupt_code || arrived()) break;
+                        if (bot.entity.position.y >= y - 1.5) break;
+                        const tB = bot.entity.position.clone();
+                        await ensureBlocks(bot, matS, 12);
+                        const gS = await pillarUp(bot, matS, 12);
+                        if (gS <= 0) break;
+                        if (await leg(x, y, z, 4000)) { if (arrived()) { try { await tearDownTower(bot, tB, gS); } catch (_) {} return true; } }
+                    }
+                    if (arrived()) return true;
+                } else log(bot, `Nothing to pillar with — can't hand-climb to ${label}.`);
+            } catch (_) {}
         }
     } catch (_) {}
     if (bot.interrupt_code || arrived()) return arrived();
