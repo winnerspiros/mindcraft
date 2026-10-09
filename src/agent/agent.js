@@ -510,7 +510,14 @@ export class Agent {
                 // chat/whisper events (self-prompt turns go straight through
                 // handleMessage('system', ...), never here), so no self_prompt
                 // guard is needed — a system self-turn can never reach this.
-                const IS_TRUSTED = isBeloved || isYandere();
+                // OWNER IS ALWAYS TRUSTED (2026-10-09): the beloved slot is
+                // empty and the persona is normal, so the old gate (beloved
+                // OR yandere-persona) failed closed for YandereDev — five
+                // "come to me" in a row never interrupted her mining goals
+                // and she answered "no way, got stuff to do here". The
+                // server owner outranks any persona setting.
+                const _isOwner = /^(yanderedev|yandere_dev)$/i.test(username);
+                const IS_TRUSTED = isBeloved || isYandere() || _isOwner;
                 if (IS_TRUSTED && this.self_prompter) {
                     try {
                         const _dir = msg_lc;
