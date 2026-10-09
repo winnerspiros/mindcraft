@@ -2373,6 +2373,86 @@ export async function findShelter(bot, range = 40) {
     return false;
 }
 
+export async function ensureTorchSupply(bot, want = 8) {
+    /**
+     * The torch supply chain, cheapest first. Torches (1 coal/charcoal +
+     * 1 stick = 4) beat every other light: lantern needs iron, campfire
+     * needs 3 logs + coal, glowstone needs the nether. So: count torches,
+     * craft what craftRecipe can (it auto-makes sticks<-planks<-logs),
+     * else smelt a spare log into charcoal (place carried furnace if none
+     * nearby) and craft again. Reports the FULL chain when stuck: what she
+     * has, what she lacks, where it comes from.
+     * @returns {number} torches carried now.
+     **/
+    const counts = () => world.getInventoryCounts(bot);
+    let have = counts()['torch'] || 0;
+    if (have >= want) return have;
+    try { await craftRecipe(bot, 'torch', Math.ceil((want - have) / 4), true); } catch (_) {}
+    have = counts()['torch'] || 0;
+    if (have >= 1) return have;
+    // charcoal fallback: smelt a spare log (needs 2+: 1 becomes charcoal, 1+ stays wood)
+    const inv = counts();
+    const logType = Object.keys(inv).find(n => n.endsWith('_log') && inv[n] > 1)
+        || Object.keys(inv).find(n => n.endsWith('_log') && inv[n] > 0);
+    if (logType) {
+        let furnace = world.getNearestBlock(bot, 'furnace', 16);
+        if (!furnace && (inv['furnace'] || 0) > 0) {
+            try { const st = await ensureStation(bot, 'furnace', 16); if (st) furnace = st; } catch (_) {}
+        }
+        if (furnace || (inv['furnace'] || 0) > 0) {
+            try { await smeltItem(bot, logType, 1); } catch (_) {}
+            try { await craftRecipe(bot, 'torch', 2, true); } catch (_) {}
+            have = counts()['torch'] || 0;
+            if (have >= 1) return have;
+        }
+    }
+    if (have < 1) {
+        const inv2 = counts();
+        const bits = [];
+        bits.push(`sticks/planks/logs: ${inv2['stick'] || 0} sticks, ${Object.keys(inv2).filter(k => k.endsWith('_planks')).map(k => inv2[k]).reduce((a, b) => a + b, 0)} planks, ${Object.keys(inv2).filter(k => k.endsWith('_log')).map(k => inv2[k]).reduce((a, b) => a + b, 0)} logs`);
+        bits.push(`coal: ${inv2['coal'] || 0} (mine coal_ore, best y 96+, mountains)`);
+        bits.push(`charcoal path: ${inv2[logType] ? `has ${logType} + ` : 'needs a log + '}${world.getNearestBlock(bot, 'furnace', 16) || (inv2['furnace'] || 0) ? 'furnace OK' : 'needs furnace (8 cobble)'}`);
+        log(bot, `No torches and can't make any yet — torch = 1 coal/charcoal + 1 stick = 4. Now: ${bits.join('; ')}. !sourcing("coal") says where.`);
+    }
+    return have;
+}
+
+export async function placeTorchSmart(bot, x, y, z) {
+    /**
+     * Stick ONE torch at (x,y,z): floor first (brightest, covers most),
+     * else any of the 4 walls (wall_torch on a solid neighbour), else the
+     * ceiling. Returns 'floor' | 'wall' | 'ceiling' | false.
+     **/
+    const V = (await import('vec3')).default;
+    x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
+    // floor: air cell + solid below
+    try {
+        const ok = await placeBlock(bot, 'torch', x, y, z, 'bottom', true);
+        if (ok) return 'floor';
+    } catch (_) {}
+    // walls: torch cell must be air, neighbour solid to hang on
+    const sides = [
+        ['north', 0, 0, -1], ['south', 0, 0, 1], ['east', 1, 0, 0], ['west', -1, 0, 0],
+    ];
+    for (const [side, dx, dy, dz] of sides) {
+        try {
+            const cell = bot.blockAt(new V(x, y, z));
+            const anchor = bot.blockAt(new V(x + dx, y, z + dz));
+            if (!cell || !anchor) continue;
+            if (!['air', 'cave_air', 'water'].includes(cell.name)) continue;
+            if (anchor.boundingBox !== 'block') continue;
+            const ok = await placeBlock(bot, 'torch', x, y, z, side, true);
+            if (ok) return 'wall';
+        } catch (_) {}
+    }
+    // ceiling: hang under a solid block above
+    try {
+        const ok = await placeBlock(bot, 'torch', x, y, z, 'top', true);
+        if (ok) return 'ceiling';
+    } catch (_) {}
+    return false;
+}
+
 export async function lightUp(bot, radius = 8) {
     /**
      * Spawn-proof the ground around her: craft torches if short (charcoal
@@ -2387,27 +2467,10 @@ export async function lightUp(bot, radius = 8) {
      * await skills.lightUp(bot);
      **/
     const counts = () => world.getInventoryCounts(bot);
-    let torches = counts()['torch'] || 0;
-    if (torches < 4) {
-        // craft a batch (pipeline makes sticks from planks; needs coal/charcoal)
-        try { await craftRecipe(bot, 'torch', 2, true); } catch (_) {}
-        torches = counts()['torch'] || 0;
-        if (torches < 1) {
-            // charcoal fallback: smelt a spare log, then craft again
-            const inv = counts();
-            const logType = Object.keys(inv).find(n => n.endsWith('_log') && inv[n] > 1);
-            if (logType && (inv['furnace'] > 0 || world.getNearestBlock(bot, 'furnace', 16))) {
-                try { await smeltItem(bot, logType, 1); } catch (_) {}
-                try { await craftRecipe(bot, 'torch', 2, true); } catch (_) {}
-                torches = counts()['torch'] || 0;
-            }
-        }
-        if (torches < 1) {
-            log(bot, 'No torches and nothing to make them with — need coal (mine coal_ore, best y 96+) or a log + furnace (smelt = charcoal, works the same). !sourcing("coal") says where.');
-            return false;
-        }
-    }
-    const airy = new Set(['air', 'water', 'short_grass', 'tall_grass', 'grass', 'snow', 'dead_bush', 'fern']);
+    // self-supply first: craft (sticks<-planks<-logs auto), else charcoal via furnace
+    let torches = await ensureTorchSupply(bot, 8);
+    if (torches < 1) return false; // ensureTorchSupply already reported the full chain
+    const airy = new Set(['air', 'water', 'short_grass', 'tall_grass', 'grass', 'snow', 'dead_bush', 'fern', 'cave_air']);
     const c = bot.entity.position.floored();
     const step = 7; // torch light 14 -> 8+ reaches ~6; 7-apart overlaps safely
     const pts = [[0, 0]];
@@ -2438,11 +2501,23 @@ export async function lightUp(bot, radius = 8) {
         if (ty === null) continue;
         try { await goToPosition(bot, tx, ty, tz, 2); } catch (_) { continue; }
         try {
-            const ok = await placeBlock(bot, 'torch', tx, ty, tz, 'bottom', true);
-            if (ok) placed++;
+            // floor first, wall on a solid neighbour, ceiling last — max coverage per torch
+            const how = await placeTorchSmart(bot, tx, ty, tz);
+            if (how) placed++;
         } catch (_) {}
     }
-    log(bot, placed > 0 ? `Lit the area (${placed} torches, ~${step}-grid — floor reads 8+, nothing spawns here).` : 'Area already torch-covered — nothing spawns here.');
+    // verify: sample the grid — how many tiles now read 8+?
+    let bright = 0, sampled = 0;
+    try {
+        for (const [dx, dz] of pts) {
+            const t = bot.blockAt(new Vec3(c.x + dx, c.y + 1, c.z + dz));
+            if (!t) continue;
+            sampled++;
+            if (Math.max(t.light ?? 0, t.skyLight ?? 0) >= 8) bright++;
+        }
+    } catch (_) {}
+    const cover = sampled ? ` (${bright}/${sampled} grid tiles read 8+)` : '';
+    log(bot, placed > 0 ? `Lit the area (${placed} torches, ~${step}-grid — floor reads 8+, nothing spawns here)${cover}.` : 'Area already torch-covered — nothing spawns here.');
     return placed > 0;
 }
 

@@ -867,7 +867,10 @@ const modes_list = [
                 }
                 execute(this, agent, async () => {
                     const pos = agent.bot.entity.position;
-                    await skills.placeBlock(agent.bot, 'torch', pos.x, pos.y, pos.z, 'bottom', true);
+                    // self-supply: craft (or charcoal-smelt) a torch if empty-handed
+                    try { await skills.ensureTorchSupply(agent.bot, 4); } catch (_) {}
+                    // floor, else a wall, else ceiling — max coverage per torch
+                    try { await skills.placeTorchSmart(agent.bot, pos.x, pos.y, pos.z); } catch (_) {}
                 });
                 this.last_place = Date.now();
             }

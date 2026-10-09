@@ -519,6 +519,46 @@ export async function isClearPath(bot, target) {
     return path.status === 'success';
 }
 
+export function getLightReading(bot) {
+    /**
+     * Raw + interpreted light where she stands. block light = torches/lava/etc,
+     * skyLight = sun/moon. brightness = max of the two. 8+ = spawn-proof,
+     * 1-7 = dim (mobs CAN spawn), 0 = dark (mobs WILL spawn).
+     * @returns {{block:number, sky:number, brightness:number, verdict:string}}
+     **/
+    try {
+        const pos = getPosition(bot);
+        const b = bot.blockAt(pos);
+        if (!b) return { block: 0, sky: 0, brightness: 0, verdict: 'unknown' };
+        const block = b.light ?? 0, sky = b.skyLight ?? 0;
+        const brightness = Math.max(block, sky);
+        const verdict = brightness >= 8 ? 'bright — mobs cannot spawn here'
+            : brightness >= 1 ? 'dim — mobs CAN spawn here' : 'DARK — mobs WILL spawn here';
+        return { block, sky, brightness, verdict };
+    } catch (_) { return { block: 0, sky: 0, brightness: 0, verdict: 'unknown' }; }
+}
+
+export function getDarknessSense(bot) {
+    /**
+     * One natural sentence: does SHE know how dark it is? Combines time of
+     * day, open sky vs enclosed, and measured light. This is what makes
+     * darkness "natural" to her — she reads it, she doesn't guess it.
+     * @returns {string} e.g. "night, out in the open, dark (0/15) — ..."
+     **/
+    try {
+        const t = bot.time && typeof bot.time.timeOfDay === 'number' ? bot.time.timeOfDay : 0;
+        const isNight = t > 13000 && t < 23000;
+        const clock = t < 6000 ? 'morning' : t < 12000 ? 'afternoon' : isNight ? 'night' : 'dusk';
+        const pos = bot.entity.position;
+        const roof = (() => { try { return bot.blockAt(pos.offset(0, 2, 0)); } catch (_) { return null; } })();
+        const enclosed = roof && roof.boundingBox === 'block' && roof.name !== 'leaves';
+        const r = getLightReading(bot);
+        const where = enclosed ? 'enclosed (roof overhead — sky gives no light)' : 'open sky above';
+        const need = r.brightness >= 8 ? 'no need to light' : r.brightness >= 1 ? 'should light soon' : 'needs light NOW';
+        return `${clock} (t=${Math.floor(t)}), ${where}, light ${r.brightness}/15 (${r.verdict}) — ${need}.`;
+    } catch (_) { return 'light unknown.'; }
+}
+
 export function shouldPlaceTorch(bot) {
     if (!bot.modes.isOn('torch_placing') || bot.interrupt_code) return false;
     const pos = getPosition(bot);
@@ -532,7 +572,16 @@ export function shouldPlaceTorch(bot) {
     if (brightness >= 8) return false;
     // Don't stack torches right on top of each other.
     if (getNearestBlock(bot, 'torch', 4) || getNearestBlock(bot, 'wall_torch', 4)) return false;
-    return bot.inventory.findInventoryItem('torch') != null;
+    if (bot.inventory.findInventoryItem('torch') != null) return true;
+    // No torch carried but the chain is at hand? Come back true so the mode
+    // crafts one (coal/charcoal + stick/planks/log) instead of standing dark.
+    try {
+        const inv = getInventoryCounts(bot);
+        const fuel = (inv['coal'] || 0) + (inv['charcoal'] || 0);
+        const wood = (inv['stick'] || 0) + Object.keys(inv).filter(k => k.endsWith('_planks') || k.endsWith('_log')).reduce((a, k) => a + inv[k], 0);
+        if (fuel > 0 && wood > 0) return true;
+    } catch (_) {}
+    return false;
 }
 
 export function getBiomeName(bot) {

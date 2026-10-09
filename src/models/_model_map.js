@@ -75,6 +75,8 @@ function _loadPrefix(prefix) {
 }
 
 export function selectAPI(profile) {
+    // uwu.json carries [primary, ...fallbacks] — run the primary.
+    if (Array.isArray(profile)) profile = profile[0];
     if (typeof profile === 'string' || profile instanceof String) {
         profile = {model: profile};
     }

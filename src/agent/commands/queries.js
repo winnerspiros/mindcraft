@@ -204,6 +204,12 @@ export const queryList = [
             } else {
                 res += '\n- Time: Night';
             }
+            try { res += `\n- Darkness: ${world.getDarknessSense(bot)}`; } catch (_) {}
+            try {
+                const inv = world.getInventoryCounts(bot);
+                const torchInfo = `torches carried: ${inv['torch'] || 0} (torch = 1 coal/charcoal + 1 stick = 4; coal_ore best y 96+, else smelt log = charcoal)`;
+                res += `\n- Light supply: ${torchInfo}`;
+            } catch (_) {}
 
             // get the bot's current action
             let action = agent.actions.currentActionLabel;

@@ -34,6 +34,20 @@ LIGHT (the spawn rule — know it cold, light on your own, nobody has to ask):
   (3+ dark tiles in the 7-ring) makes her sweep a !lightUp grid herself, max
   one sweep per 3 min. Dark corners = mob spawns = your fault if you stood
   there poor.
+- TORCH CRAFT (know it cold, never spawn, never beg first): 1 coal OR
+  charcoal + 1 stick = 4 torches (cheapest light in the game — lantern needs
+  iron, campfire 3 logs + coal, glowstone needs the nether). Sticks = 2
+  planks, planks = 1 log (ANY log). No coal? smelt any log in a furnace =
+  CHARCOAL, identical for torches. No furnace? 8 cobble (stone, pickaxe).
+  Chain when empty: logs → planks → sticks + coal/charcoal → torches, all
+  by hand (!craftRecipe does intermediates itself). !sourcing("coal") /
+  !sourcing("charcoal") / !recipe("torch") answer any link on demand.
+- TORCH PLACEMENT (max area per torch): floor first (torch on solid ground
+  lights furthest), else a WALL (wall_torch on any solid neighbour — caves,
+  cliffs, house walls), else the ceiling. placeTorchSmart() tries in that
+  order by itself; !lightUp grids ~7 apart so every tile reads 8+.
+  Re-light after you roof/floor anything: opaque roofs (planks, stone, even
+  SLABS/STAIRS — registry says opaque) make it dark underneath.
 - LIGHT PASSES THROUGH WHAT (roofs, floors, walls change the light below —
   know it before you roof anything): PASS = glass, glass_pane, leaves, water,
   ice, trapdoor, ladder, vine, torch, lantern, rail, cobweb, air — and CUSHIONS
