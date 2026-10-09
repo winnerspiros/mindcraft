@@ -197,6 +197,7 @@ export function initBot(username) {
     };
 
     bot.loadPlugin(pathfinder);
+    installPathfinderGuard(bot);
     bot.loadPlugin(pvp);
     bot.loadPlugin(collectblock);
     bot.loadPlugin(autoEat);
@@ -228,6 +229,34 @@ export function initBot(username) {
     });
 
     return bot;
+}
+
+// PATHFINDER NOT-ITERABLE GUARD (2026-10-09): stock getPathTo does
+//   const { value: { result } } = generator.next()
+// and monitorMovement re-plans mid-tick the same way. When the world is
+// unloaded around her (respawn/warp/chunk gap) getPathFromTo's generator
+// yields NOTHING — .next() returns {value: undefined, done: true} and the
+// destructuring throws "TypeError: {} is not iterable", which escapes the
+// physics tick and kills the process (crash-loop 18:52+, systemd rate
+// limit). A plan that cannot start is a no-path, never a crash.
+// Exported so tests can prove the behaviour on a fake bot.
+export function installPathfinderGuard(bot) {
+    try {
+        const _gpt = bot.pathfinder.getPathTo;
+        bot.pathfinder.getPathTo = (movements, goal, timeout) => {
+            try { return _gpt.call(bot.pathfinder, movements, goal, timeout); }
+            catch (e) {
+                const m = String((e && e.message) || e);
+                // Node <22: "TypeError: {} is not iterable" (the live crash);
+                // Node 22+: "Cannot read properties of undefined (reading
+                // 'result')" for the identical destructuring. Same empty-
+                // generator, same verdict.
+                if (m.includes('is not iterable') || /reading 'result'/.test(m))
+                    return { status: 'no-path', cost: Infinity, path: [] };
+                throw e;
+            }
+        };
+    } catch (_) {}
 }
 
 export function isHuntable(mob) {
