@@ -2155,6 +2155,16 @@ def ensure_pathfinder_prs(base):
          "          placingBlock = nextPoint.toPlace.shift()\n          if (!placingBlock) {\n            placing = false\n          }",
          "          placingBlock = nextPoint.toPlace.shift()\n          if (!placingBlock) {\n            // A useOne is the whole of this node's work — without this the next tick falls through to scaffolding with nothing to place.\n            placing = false\n            lastNodeTime = performance.now()\n          }",
          "#371 placing reset + lastNodeTime"),
+        # EMPTY-GENERATOR GUARD (2026-10-09): when the world is unloaded around
+        # her (respawn/warp/chunk gap) getPathFromTo's generator yields NOTHING
+        # — .next() = {value: undefined} — and the stock destructuring throws
+        # "TypeError: {} is not iterable", escaping the physics tick and killing
+        # the process (crash-loop 18:52+, systemd rate limit). A plan that
+        # cannot start is a no-path, never a crash.
+        ("index.js", "EMPTY-GENERATOR GUARD",
+         "    const generator = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, { timeout })\n    const { value: { result, astarContext: context } } = generator.next()\n    astarContext = context\n    return result",
+         "    const generator = bot.pathfinder.getPathFromTo(movements, bot.entity.position, goal, { timeout })\n    // EMPTY-GENERATOR GUARD (2026-10-09): an unloaded world yields NOTHING —\n    // stock destructuring throws and kills the process; no-path instead.\n    const _first = generator.next()\n    if (!_first || !_first.value || !_first.value.result) return { status: 'no-path', cost: Infinity, path: [] }\n    const { result, astarContext: context } = _first.value\n    astarContext = context\n    return result",
+         "#387 empty-generator no-path"),
     ]
     # #386 multi-site guard: handled as one block (decl above + 4 sites)
     rev_sites = [
