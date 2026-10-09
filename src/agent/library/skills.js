@@ -6167,6 +6167,15 @@ export async function diagonalAscent(bot, target, maxHeight = 12, blockType = nu
             try { invmod.rconInventoryBust(bot.username); } catch (_) {}
             for (const e of ((await invmod.rconInventory(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
             blockType = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (counts[n] || 0) > 0);
+            if (!blockType) {
+                // CLIENT-PACK FALLBACK (same as the ladder rung 4): RCON can be
+                // unreachable while her own pack clearly holds scaffold.
+                try {
+                    const have = {};
+                    for (const it of (bot.inventory.items() || [])) have[it.name] = (have[it.name] || 0) + (it.count || 0);
+                    blockType = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks'].find(n => (have[n] || 0) > 0);
+                } catch (_) {}
+            }
         }
         if (!blockType) return 0;
         maxHeight = Math.max(1, Math.min(24, Math.floor(maxHeight || 12)));
@@ -9385,6 +9394,18 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
         try { return await goToGoal(bot, g); } catch (_) { return false; }
     };
     if (arrived()) return true;
+    // RUNG 0 — wet first: a bot standing in water will never walk, waypoint,
+    // pillar or tunnel out. Swim before any of that (drowning is timed).
+    try {
+        const feet0 = (() => { try { return bot.blockAt(bot.entity.position); } catch (_) { return null; } })();
+        if (feet0 && (feet0.name === 'water' || feet0.name === 'bubble_column')) {
+            log(bot, `In water — swimming up before walking anywhere.`);
+            let swam0 = false;
+            try { swam0 = await swimUp(bot); } catch (_) {}
+            if (swam0) log(bot, `Swam up — walking now.`);
+            if (arrived()) return true;
+        }
+    } catch (_) {}
     // RUNG 1 — straight walk, generous planning for doors/stairs/chunks.
     if (await leg(x, y, z, 4000)) return arrived();
     if (bot.interrupt_code || arrived()) return arrived();
@@ -9432,6 +9453,18 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                     const counts = {};
                     for (const e of ((await invm.rconInventory(bot.username, true)) || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
                     let mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (counts[n] || 0) > 0);
+                    if (!mat) {
+                        // CLIENT-PACK FALLBACK: RCON truth can be unreachable
+                        // (hiccup) while her own pack clearly holds scaffold.
+                        // Stale-client risk is nil for dirt/cobble — and digging
+                        // a wall she doesn't need to is worse than trusting it.
+                        try {
+                            const have = {};
+                            for (const it of (bot.inventory.items() || [])) have[it.name] = (have[it.name] || 0) + (it.count || 0);
+                            mat = ['dirt', 'cobblestone', 'stone', 'deepslate', 'cobbled_deepslate', 'sand', 'gravel', 'netherrack', 'oak_planks'].find(n => (have[n] || 0) > 0);
+                            if (mat) log(bot, `RCON quiet — pillaring on ${mat} from my own pack.`);
+                        } catch (_) {}
+                    }
                     if (!mat) {
                         // the wall around her IS the material: dig 3 eye-level, scoop, pillar
                         const eye = bot.blockAt(bot.entity.position.offset(0, 1, 0));
@@ -9484,29 +9517,44 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                 log(bot, `No way around — tunnelling toward ${label}.`);
                 const yaw = Math.atan2(-(x - p.x), -(z - p.z));
                 const dx = Math.round(-Math.sin(yaw)), dz = Math.round(-Math.cos(yaw));
+                if (dx === 0 && dz === 0) {
+                    log(bot, `Tunnel heading is zero (on top of ${label} XZ?) — skipping tunnel.`);
+                } else {
                 let dug = 0;
                 for (let i = 0; i < 8 && dug < 8; i++) {
                     if (bot.interrupt_code) break;
                     const fp = bot.entity.position.floored();
                     const fx = fp.x + dx, fz = fp.z + dz;
-                    let step = false;
+                    let dugThisStep = false, blockedHard = false;
                     for (const [ox, oy, oz] of [[fx, fp.y, fz], [fx, fp.y + 1, fz]]) {
                         let b = null;
                         try { b = bot.blockAt(new Vec3(ox, oy, oz)); } catch (_) {}
                         if (b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'water') {
+                            if (b.name === 'bedrock' || b.name === 'obsidian' || b.name === 'lava') { blockedHard = true; break; }
                             try { await equipRightTool(bot, b).catch(() => {}); } catch (_) {}
-                            try { await bot.dig(b, true); step = true; } catch (_) {}
-                        } else step = true;
+                            try { await bot.dig(b, true); dugThisStep = true; } catch (_) {}
+                        }
                     }
-                    if (!step) break;
-                    dug++;
-                    // step into the hole, then re-plan — the tunnel IS the path
+                    if (blockedHard) { log(bot, `Tunnel hit unbreakable rock — stopping the dig.`); break; }
+                    if (dugThisStep) dug++;
+                    // step into the hole DIRECTLY (raw goto, no planning gate:
+                    // goToGoal re-plans the same failed route and never moves).
+                    // only advance when something was actually dug OR the way
+                    // is open; air-only steps still move her forward.
                     try {
                         const ng = new pf.goals.GoalNear(fx, fp.y, fz, 1);
-                        ng._pathTimeout = 3000;
-                        await goToGoal(bot, ng, 8000);
+                        bot.pathfinder.setMovements(moveProfile(bot, 'walk'));
+                        await bot.pathfinder.goto(ng);
                     } catch (_) {}
                     if (arrived()) return true;
+                    // nothing dug AND no closer: tunnel is not advancing (wall
+                    // deeper than the budget, or feet not moving) — stop
+                    // grinding instead of counting air as progress.
+                    try {
+                        const still = bot.entity.position.floored();
+                        if (!dugThisStep && still.x === fp.x && still.z === fp.z) break;
+                    } catch (_) {}
+                }
                 }
                 if (await leg(x, y, z, 4000)) return arrived();
             } else log(bot, `Walled in and no pickaxe — can't tunnel to ${label}. Need a pick (stone: cobble + sticks).`);
@@ -9525,7 +9573,9 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
         const feet = (() => { try { return bot.blockAt(bot.entity.position); } catch (_) { return null; } })();
         if (feet && (feet.name === 'water' || feet.name === 'bubble_column')) {
             log(bot, `Stuck in water — swimming up first.`);
-            try { await swimUp(bot); } catch (_) {}
+            let swam = false;
+            try { swam = await swimUp(bot); } catch (_) {}
+            if (swam) log(bot, `Swam up — re-walking to ${label}.`);
             if (await leg(x, y, z, 4000)) return arrived();
         }
     } catch (_) {}
