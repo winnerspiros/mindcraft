@@ -1964,6 +1964,26 @@ export const actionsList = [
         })
     },
     {
+        name: '!memo',
+        description: 'Write YOUR OWN private memo about a player in your own words — your personal judgment of them: how they like to be talked to, whether to seek them out or keep distance, what play they enjoy, what annoys them, anything you noticed. Nothing predetermined: write whatever YOUR gut says. Your memos shape how you treat them next time, and they fade after ~7 days unless you refresh them. Use mode=add to jot a new one, mode=rewrite with memos separated by ||| to revise your whole view of them.',
+        params: {
+            'player_name': { type: 'string', description: 'The player the memo is about.' },
+            'text': { type: 'string', description: 'For mode=add: the memo itself, in your own words. For mode=rewrite: ALL your current memos joined with ||| (replaces everything).' },
+            'mode': { type: 'string', description: 'add (default) or rewrite.', default: 'add' }
+        },
+        perform: runAsAction(async (agent, player_name, text, mode) => {
+            if (!player_name || !text) return 'Usage: !memo <player> <your memo> [add|rewrite].';
+            if ((mode || 'add') === 'rewrite') {
+                const parts = String(text).split('|||').map(s => s.trim()).filter(Boolean);
+                agent.profiles.rewriteMemos(player_name, parts);
+                return parts.length ? `Rewrote your view of ${player_name}: ${parts.length} memo(s) now.` : `Cleared your memos on ${player_name} — fresh slate.`;
+            }
+            agent.profiles.addMemo(player_name, text);
+            const n = agent.profiles.freshMemos(player_name).length;
+            return `Noted about ${player_name} (${n} live memo(s)).`;
+        })
+    },
+    {
         name: '!goToBed',
         description: 'Go to the nearest bed and sleep.',
         perform: runAsAction(async (agent) => {

@@ -86,8 +86,19 @@ function defaultEntry() {
         facts: {},
         asked: {},   // slot -> timestamp (ms) of last time she asked about it
         notes: '',
+        memos: [],   // her own handwritten memos: [{text, t}] — freeform judgments
+                     // in HER words ("avoids eye contact, be gentle", "loves being
+                     // teased, don't hold back"). Written AND rewritten by her via
+                     // !memo. Stale memos (older than MEMO_TTL_MS) fade automatically
+                     // so a memo is a living impression, never a permanent label.
     };
 }
+
+// A memo is a living impression, not a file entry: impressions fade.
+// Anything older than this stops shaping her behavior (kept on disk,
+// just not shown). Fresh interactions re-write them.
+const MEMO_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const MEMO_MAX = 20; // per player — oldest fade first, she keeps what matters
 
 export class PlayerProfiles {
     constructor(agent) {
@@ -260,6 +271,45 @@ export class PlayerProfiles {
         this.save();
     }
 
+    // ---- memos: her own handwritten impressions, in her own words ----
+    // No schema, no slots, no code deciding what matters — she writes whatever
+    // her judgment says ("talks shy, don't tease too hard", "loves being
+    // chased, play hard to get", "avoid crafting with him, he steals mats").
+    // addMemo appends; rewriteMemos replaces the whole live set (she revises
+    // her view after her memos prove right or wrong); freshMemos returns only
+    // what hasn't faded (stale ones stay on disk, just stop shaping her).
+    addMemo(name, text) {
+        const e = this.get(name);
+        if (!e || !text) return false;
+        const t = String(text).trim().slice(0, 280);
+        if (!t) return false;
+        if (!Array.isArray(e.memos)) e.memos = [];
+        e.memos.push({ text: t, t: Date.now() });
+        while (e.memos.length > MEMO_MAX) e.memos.shift();
+        e.lastSeen = Date.now();
+        this.save();
+        return true;
+    }
+    rewriteMemos(name, texts) {
+        const e = this.get(name);
+        if (!e) return false;
+        const now = Date.now();
+        e.memos = (Array.isArray(texts) ? texts : [])
+            .map(t => String(t || '').trim().slice(0, 280))
+            .filter(Boolean)
+            .slice(-MEMO_MAX)
+            .map(text => ({ text, t: now }));
+        e.lastSeen = now;
+        this.save();
+        return true;
+    }
+    freshMemos(name) {
+        const e = this.get(name);
+        if (!e || !Array.isArray(e.memos)) return [];
+        const now = Date.now();
+        return e.memos.filter(m => m && m.text && (now - (m.t || 0)) < MEMO_TTL_MS);
+    }
+
     // Compact per-player dossier line for the prompt.
     _factSummary(e) {
         const bits = [];
@@ -286,6 +336,14 @@ export class PlayerProfiles {
         out += `\n- known: ${known || 'nothing yet'}`;
         if (id) out += `\n- identity: ${id}`;
         if (e.aliases.length) out += `\n- aliases: ${e.aliases.join(', ')}`;
+        // Her own handwritten memos — living impressions in her own words.
+        // These are HERS: she wrote them, she revises them, they fade.
+        // Follow them the way you'd follow your own gut about someone.
+        const memos = this.freshMemos(name);
+        if (memos.length) {
+            out += `\n- your own memos on ${e.username} (you wrote these — trust your own judgment):`;
+            for (const m of memos) out += `\n  * ${m.text}`;
+        }
         const q = this.suggestQuestion(name);
         if (q) {
             out += `\n- You still don't know their ${q.slot}. If it feels natural this turn, gently ask: "${q.question}" (don't force it, and don't ask if you asked recently).`;
