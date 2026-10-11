@@ -1354,3 +1354,19 @@ diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/minef
    bot.on('login', () => {
      shouldUsePhysics = false
      if (doPhysicsTimer === null) {
+
+--- a/node_modules/mineflayer/lib/plugins/digging.js
++++ b/node_modules/mineflayer/lib/plugins/digging.js
+@@ -304,7 +304,12 @@
+     // Append helmet enchantments (because Aqua Affinity actually affects dig speed)
+     const headEquipmentSlot = bot.getEquipmentDestSlot('head')
+     const headEquippedItem = bot.inventory.slots[headEquipmentSlot]
+-    if (headEquippedItem) {
++    // 26.3 enchants-guard: item.enchants can be a non-array (object map) when
++    // components carry data-driven enchants (e.g. curse-of-vanishing kit).
++    // concat on a non-array throws and kills every dig/collect. Guard both.
++    if (!Array.isArray(enchantments)) enchantments = []
++    if (headEquippedItem && Array.isArray(headEquippedItem.enchants)) {
+       const helmetEnchantments = headEquippedItem.enchants
+       enchantments = enchantments.concat(helmetEnchantments)
+     }
