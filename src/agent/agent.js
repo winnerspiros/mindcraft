@@ -3188,13 +3188,40 @@ export class Agent {
         } catch (e) {
             console.warn('gear-up equip failed (non-fatal):', e.message);
         }
-        const have = (n) => { try { return this.bot.inventory.items().some(i => i.name === n); } catch (_) { return false; } };
+        // CLIENT items() LIES after a restart (server gear not yet synced —
+        // measured: RCON shows full kit, items() shows 1). Cross-check the
+        // SERVER before calling anything "missing": serverHave wins, and if
+        // the server read truncates (refusal shape) we give NOTHING — a blind
+        // /give of 15 items overflows her pack and litters the ground.
+        let _serverHave = null;
+        try {
+            const { rconCommand } = await import('../utils/rcon.js');
+            const inv = String(await rconCommand(`data get entity ${this.name} Inventory`));
+            const eq = String(await rconCommand(`data get entity ${this.name} equipment`));
+            if (/\]/.test(inv) && /offhand\s*:/.test(eq)) {
+                _serverHave = new Set([...inv.matchAll(/id:\s*"minecraft:([a-z_]+)"/g)].map(m => m[1])
+                    .concat([...eq.matchAll(/id:\s*"minecraft:([a-z_]+)"/g)].map(m => m[1])));
+            }
+        } catch (_) {}
+        const have = (n) => {
+            if (_serverHave) return _serverHave.has(n);
+            try { return this.bot.inventory.items().some(i => i.name === n); } catch (_) { return false; }
+        };
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
             'diamond_sword', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
             'bow', 'chest', 'water_bucket',
         ];
+        // No server truth AND client blind (restart desync) = do nothing.
+        // Giving from a blind read is exactly the bow-on-the-ground bug.
+        let _clientCount = -1;
+        try { _clientCount = this.bot.inventory.items().length; } catch (_) {}
+        if (!_serverHave && _clientCount <= 1) {
+            console.warn('gear-up blind (no server read, client nearly empty) — giving nothing, retry next cycle.');
+            try { this.bot.armorManager.equipAll(); } catch (_) {}
+            return;
+        }
         const missing = gear.filter(g => !have(g));
         const needArrows = !have('arrow');
         const needElytra = !have('elytra');
