@@ -85,7 +85,7 @@ const HOME_DEFAULTS = {
     personality: null,
     teleports: {
         enabled: true, probe: false,
-        send: '/tprequest', accept: '/tpaccept', deny: '/tpdeny', autoaccept: '/tpautoaccept',
+        send: '/tpa', accept: '/tpaccept', deny: '/tpdeny', autoaccept: '/tpautoaccept',
         auto_accept: 'trusted',
     },
     combat: { fight_back: true, retaliate: true, warn_hits: 2, no_console_punish: true },
@@ -418,7 +418,7 @@ export function modeOverrides() {
 // Teleport-capability cache: NOTHING tp-related is said or sent until this
 // is true. Set by the TPA inbox probe (agent.js); home defaults true
 // (SimpleTPA mod installed, verified). Guest starts null (unknown) until
-// the tab-complete probe confirms /tprequest exists.
+// the tab-complete probe confirms the send command exists.
 let _tpaAvailable = null;
 export function setTeleportsAvailable(v) { _tpaAvailable = v === true; }
 export function isTeleportsAvailable() {

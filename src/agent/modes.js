@@ -1136,14 +1136,24 @@ const GLANCE_BUDGET_COOLDOWN_MS = 60000;
             const _key = this.last_entity?.username || this.last_entity?.name || this.last_entity?.id;
             if (_key && this.last_entity !== this._glanceBudgetFor) {
                 this._glanceBudgetFor = this.last_entity;
-                this._glanceCount = (this._glanceLog.get(_key) || 0) + 1;
-                this._glanceLog.set(_key, this._glanceCount);
+                this._glanceCount = (this._glanceTimes?.get(_key)?.length || 0) + 1;
+                if (!this._glanceTimes) this._glanceTimes = new Map();
+                const _arr = this._glanceTimes.get(_key) || [];
+                _arr.push(now2);
+                this._glanceTimes.set(_key, _arr);
+                this._glanceLog.set(_key, now2);
             }
             // prune so the map cannot grow without bound over a long session
             for (const [k, t] of this._glanceLog) {
                 if (now2 - t > GLANCE_BUDGET_WINDOW_MS) this._glanceLog.delete(k);
             }
-            const _n = this._glanceLog.get(_key) || 0;
+            // prune per-target timestamps outside the window, then count
+            try {
+                if (!this._glanceTimes) this._glanceTimes = new Map();
+                const _arr2 = (this._glanceTimes.get(_key) || []).filter(t => now2 - t <= GLANCE_BUDGET_WINDOW_MS);
+                if (_arr2.length) this._glanceTimes.set(_key, _arr2); else this._glanceTimes.delete(_key);
+            } catch (_) {}
+            const _n = (this._glanceTimes?.get(_key)?.length) || 0;
             if (_n > GLANCE_BUDGET_MAX) {
                 // Enough. Look away, and do not re-acquire this target for a while.
                 this.staring = false;

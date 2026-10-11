@@ -3563,7 +3563,8 @@ export class Agent {
             // Capability probe via tab-complete: zero chat, zero noise. If the
             // server has no TPA plugin, disable for this session.
             try {
-                const matches = await bot.tabComplete('/tprequest ', false, false, 4000).catch(() => null);
+                const _tpaSend = (() => { try { return teleportConfig().send || '/tpa'; } catch (_) { return '/tpa'; } })();
+                const matches = await bot.tabComplete(_tpaSend + ' ', false, false, 4000).catch(() => null);
                 if (!matches || !matches.length) {
                     console.log('[tpa] no /tprequest on this server (tab-complete empty) — TPA inbox off.');
                     try { setTeleportsAvailable(false); } catch (_) {}

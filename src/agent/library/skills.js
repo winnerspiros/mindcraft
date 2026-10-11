@@ -8194,7 +8194,7 @@ export async function teleportSelf(bot, x, y, z) {
 export async function tpaRequest(bot, playerName) {
     // Consensual teleport that needs NO operator powers: sends a TPA request
     // the other side accepts (/tpaccept) or ignores. Command names come from
-    // servers.json teleports (EssentialsX + SimpleTPA share /tprequest).
+    // servers.json teleports (EssentialsX uses /tpa, SimpleTPA /tprequest — home servers.json wins).
     // Disabled context (teleports.enabled=false) = walk instead, said aloud.
     // SPAM RULE: she never sends unless the brain has a concrete reason
     // (asked to come somewhere unreachable counts). One pending request per
@@ -8204,7 +8204,7 @@ export async function tpaRequest(bot, playerName) {
     let cfg = null;
     try { const sc = await import('../../utils/server_context.js'); cfg = sc.teleportConfig(); }
     catch (_) { cfg = null; }
-    const send = (cfg && cfg.send) || '/tprequest';
+    const send = (cfg && cfg.send) || '/tpa';
     const who = String(playerName || '').trim();
     if (!who) { log(bot, `TPA needs a name — who should I ask?`); return `No name given.`; }
     // No TPA capability = no send, ever. Probe (agent.js inbox) sets this;
