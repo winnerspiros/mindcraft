@@ -9194,12 +9194,24 @@ export async function goToPlayer(bot, username, distance=3) {
             try {
                 const rposY0 = Number.isFinite(rpos.y) ? rpos.y : 0;
                 const upGap = rposY0 - bot.entity.position.y;
-                if (upGap > 4) {
-                    log(bot, `They're ${Math.round(upGap)} blocks above me — getting out of this cave first.`);
+                // escape check BEFORE the legs: wet feet (water pocket/cave
+                // pool pathfinder can't leave) or target above (solid rock
+                // between). Either way goToSurface/swim first or every leg
+                // below dies at "no path" and she reports failure from water.
+                let _feet = null;
+                try { _feet = bot.blockAt(bot.entity.position); } catch (_) {}
+                const _wet = _feet && (_feet.name === 'water' || _feet.name === 'bubble_column' || _feet.name === 'lava');
+                if (upGap > 4 || _wet) {
+                    log(bot, _wet
+                        ? `I'm in water — getting out first, then walking over.`
+                        : `They're ${Math.round(upGap)} blocks above me — getting out of this cave first.`);
                     const beforeY = Math.floor(bot.entity.position.y);
-                    try { await goToSurface(bot); } catch (_) {}
+                    try {
+                        if (_wet) { try { await swimUp(bot); } catch (_) {} }
+                        await goToSurface(bot);
+                    } catch (_) {}
                     const afterY = Math.floor(bot.entity.position.y);
-                    log(bot, afterY > beforeY
+                    log(bot, (afterY > beforeY || !_wet)
                         ? `Climbed out: y=${beforeY} -> y=${afterY}. Now walking over.`
                         : `Couldn't climb out (still y=${afterY}); walking anyway to see if a path exists.`);
                 }
@@ -9242,6 +9254,20 @@ export async function goToPlayer(bot, username, distance=3) {
                     log(bot, `Leg blocked — climbing the ladder toward fresh position.`);
                     ok = await reachPosition(bot, Math.floor(rt.x), Math.floor(rt.y), Math.floor(rt.z), Math.max(distance, 2), `to ${username}`);
                     if (!ok) {
+                        // WALK FAILED — escalate, never dead-end. If they're far
+                        // or on another level (cave-to-surface, deep water,
+                        // walled in), a consensual TPA is the honest fix this
+                        // server supports — send it ourselves (dedupe inside
+                        // stops spam) instead of asking the player to move.
+                        try {
+                            const _dy = Math.abs((rt.y ?? t.y ?? 0) - bot.entity.position.y);
+                            const _dh = Math.hypot((rt.x ?? t.x ?? 0) - bot.entity.position.x, (rt.z ?? t.z ?? 0) - bot.entity.position.z);
+                            if (_dy > 4 || _dh > 24) {
+                                log(bot, `Walking can't get there (walls/height/water) — sending ${username} a teleport request instead.`);
+                                try { await tpaRequest(bot, username); } catch (_) {}
+                                break;
+                            }
+                        } catch (_) {}
                         log(bot, `Still can't reach ${username} (walls/doors between us?) — ask them to step outside and I'll walk right over.`);
                         break;
                     }
@@ -9742,6 +9768,21 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
             let swam = false;
             try { swam = await swimUp(bot); } catch (_) {}
             if (swam) log(bot, `Swam up — re-walking to ${label}.`);
+            else {
+                // Swim failed = capped pocket or blocked column. Don't re-walk
+                // into the same water — dig the ceiling (breakBlockAt aims the
+                // fixed digger) then swim the opened shaft, same turn.
+                log(bot, `Swim failed — digging the ceiling open, then swimming out.`);
+                try {
+                    const hp = bot.entity.position;
+                    const above = bot.blockAt(hp.offset(0, 2, 0));
+                    if (above && above.name !== 'air' && above.name !== 'water' && above.diggable !== false) {
+                        await breakBlockAt(bot, Math.floor(hp.x), Math.floor(hp.y) + 2, Math.floor(hp.z));
+                    }
+                    swam = await swimUp(bot, 6000);
+                    if (swam) log(bot, `Dug out and swam up — re-walking to ${label}.`);
+                } catch (_) {}
+            }
             if (await leg(x, y, z, 4000)) return arrived();
         }
     } catch (_) {}
