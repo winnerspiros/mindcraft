@@ -2000,6 +2000,42 @@ export const actionsList = [
         })
     },
     {
+        name: '!wearHead',
+        description: 'Put a cheap everyday item or block on YOUR OWN head (helmet slot renders anything). Only cheap common stuff — never rare/expensive. Needs the item in inventory (creative: auto-stocked).',
+        params: {
+            'item': { type: 'string', description: 'Item/block name, e.g. glass, dirt, pumpkin, tnt, cake, torch.' }
+        },
+        perform: runAsAction(async (agent, item) => {
+            const bot = agent.bot;
+            const norm = (s) => String(s || '').toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_');
+            const want = norm(item);
+            let it = bot.inventory.slots.find(s => s && (s.name === item || norm(s.name) === want))
+                || bot.inventory.items().find(i => norm(i.name) === want);
+            if (!it && bot.game.gameMode === 'creative') {
+                try {
+                    const { default: mc } = await import('minecraft-data');
+                    const mcd = mc(bot.version);
+                    await bot.creative.setInventorySlot(36, mcd.makeItem(want, 1));
+                    await new Promise(r => setTimeout(r, 300));
+                    it = bot.inventory.slots.find(s => s && norm(s.name) === want) || bot.inventory.items().find(i => norm(i.name) === want);
+                } catch (e) { return 'couldnt stock ' + want + ': ' + e.message; }
+            }
+            if (!it) return 'i dont have any ' + want + ' — get one first (!collectBlocks) then !wearHead again.';
+            try {
+                await bot.equip(it, 'head');
+                return 'wearing ' + want + ' on my head now.';
+            } catch (e) { return 'couldnt put it on: ' + e.message; }
+        })
+    },
+    {
+        name: '!unwearHead',
+        description: 'Take whatever is on your head off (back to inventory).',
+        perform: runAsAction(async (agent) => {
+            try { await agent.bot.unequip('head'); return 'head clear.'; }
+            catch (e) { return 'couldnt take it off: ' + e.message; }
+        })
+    },
+    {
         name: '!goToBed',
         description: 'Go to the nearest bed and sleep.',
         perform: runAsAction(async (agent) => {
