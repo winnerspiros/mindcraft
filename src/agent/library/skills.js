@@ -8049,6 +8049,35 @@ export async function fish(bot, timeoutMs = 30000) {
     }
 }
 
+export async function hookEntity(bot, entity) {
+    /**
+     * Cast a fishing rod AT a player/mob (not for fish): the hook flies as a
+     * projectile, knocks them back and yanks them toward you on reel. Combat
+     * opener (hook -> reel -> sword crit), runner catcher, aim breaker, or a
+     * playful tug on a friend. Costs rod durability per cast-hit.
+     * @param {MinecraftBot} bot - the bot.
+     * @param {Entity} entity - the player/mob entity to hook.
+     * @returns {Promise<boolean>} true if the hook was cast and reeled.
+     * @example
+     * await skills.hookEntity(bot, playerEntity);
+     **/
+    const rod = bot.inventory.findInventoryItem('fishing_rod');
+    if (!rod) { log(bot, 'No fishing rod to hook with.'); return false; }
+    try { await bot.lookAt(entity.position.offset(0, 1.2, 0)); } catch (_) {}
+    try { await bot.equip(rod, 'hand'); } catch (_) { return false; }
+    try {
+        await bot.activateItem(); // cast — hook flies toward crosshair
+        await new Promise(r => setTimeout(r, 900)); // flight time to target
+        await bot.deactivateItem(); // reel — yank on touch, retrieve on miss
+        log(bot, `Hooked at ${entity.username || entity.name || 'target'}.`);
+        return true;
+    } catch (e) {
+        log(bot, `Hook failed: ${e.message}`);
+        try { await bot.deactivateItem(); } catch {}
+        return false;
+    }
+}
+
 export async function pointAt(bot, target, range = 48) {
     /**
      * Turn to look at something and swing the arm (punch air) to gesture toward it,

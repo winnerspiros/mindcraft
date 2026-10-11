@@ -2875,6 +2875,20 @@ export const actionsList = [
         })
     },
     {
+        name: '!hook',
+        description: 'Cast your fishing rod AT a player or mob (not for fish): the hook flies as a projectile, knocks them back and yanks them on reel. Combat opener, runner catcher, or a playful tug on a friend. Needs a rod.',
+        params: {
+            'target': { type: 'string', description: 'Player name or mob type to hook.' }
+        },
+        perform: runAsAction(async (agent, target) => {
+            const bot = agent.bot;
+            const ent = bot.players[target]?.entity
+                || Object.values(bot.entities || {}).find(e => e.name === String(target).toLowerCase() || e.username === target);
+            if (!ent) return `dont see ${target} anywhere.`;
+            return await skills.hookEntity(bot, ent);
+        })
+    },
+    {
         name: '!pointAt',
         description: 'Turn to face something and punch the air to gesture toward it so nearby players see what you mean — a player, a mob, a block, water, or a place you saved. Use it to point something out or show which way you want to go: point first, then ask; if they agree, head there with !goToNearestEntity or !goToPosition.',
         params: {
