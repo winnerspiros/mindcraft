@@ -89,6 +89,10 @@ export function rconCommand(cmd, timeoutMs = 5000) {
 }
 
 const ARMOR_SLOT = { diamond_helmet: 'armor.head', diamond_chestplate: 'armor.chest', diamond_leggings: 'armor.legs', diamond_boots: 'armor.feet' };
+// Curse of vanishing on EVERYTHING she owns: when she dies it disappears
+// instead of dropping for strangers to loot. Verified 26.3 syntax:
+// minecraft:enchantments={vanishing_curse:1} (scalar map, NOT levels:{...}).
+const VANISH = '[minecraft:enchantments={vanishing_curse:1}]';
 const KIT_GIVE = [ // [item, count]
     ['cooked_beef', 16], ['diamond_pickaxe', 1], ['diamond_axe', 1],
     ['diamond_shovel', 1], ['diamond_hoe', 1], ['bow', 1], ['arrow', 64],
@@ -403,15 +407,15 @@ export async function rconEnsureKit(name) {
     const have = new Set([...parseIds(inv), ...parseIds(eq)]);
     const actions = [];
     for (const [piece, slot] of Object.entries(ARMOR_SLOT))
-        if (!have.has(piece)) actions.push(`item replace entity ${safe} ${slot} with minecraft:${piece} 1`);
+        if (!have.has(piece)) actions.push(`minecraft:item replace entity ${safe} ${slot} with minecraft:${piece}${VANISH} 1`);
     // 26.3 equipment has NO mainhand slot (only offhand/head/chest/legs/feet), so
     // `item replace ... weapon.mainhand` is not a valid recovery path. If the
     // sword is ever genuinely missing, GIVE it — that lands in the inventory,
     // which is where she carries it anyway.
-    if (!have.has('diamond_sword')) actions.push(`give ${safe} minecraft:diamond_sword 1`);
-    if (!have.has('shield')) actions.push(`item replace entity ${safe} weapon.offhand with minecraft:shield 1`);
+    if (!have.has('diamond_sword')) actions.push(`minecraft:give ${safe} minecraft:diamond_sword${VANISH} 1`);
+    if (!have.has('shield')) actions.push(`minecraft:item replace entity ${safe} weapon.offhand with minecraft:shield${VANISH} 1`);
     for (const [item, n] of KIT_GIVE)
-        if (!have.has(item)) actions.push(`give ${safe} minecraft:${item} ${n}`);
+        if (!have.has(item)) actions.push(item === 'cooked_beef' || item === 'arrow' || item === 'firework_rocket' ? `minecraft:give ${safe} minecraft:${item} ${n}` : `minecraft:give ${safe} minecraft:${item}${VANISH} ${n}`);
     if (actions.length === 0) return { ok: true, gave: false, detail: 'already kitted per RCON, silent' };
     let done = 0;
     for (const c of actions) {

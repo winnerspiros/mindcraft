@@ -2009,6 +2009,14 @@ export const actionsList = [
             const bot = agent.bot;
             const norm = (s) => String(s || '').toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_');
             const want = norm(item);
+            // hard refuse: rare/expensive stays in the chest, never on her head
+            const REFUSE = new Set(['dragon_head', 'dragon_egg', 'beacon', 'shulker_box', 'shulker_shell',
+                'creeper_head', 'zombie_head', 'skeleton_skull', 'wither_skeleton_skull', 'piglin_head', 'player_head',
+                'anvil', 'enchanting_table', 'netherite_helmet', 'netherite_chestplate', 'netherite_leggings', 'netherite_boots',
+                'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots', 'elytra', 'nether_star',
+                'diamond_block', 'emerald_block', 'gold_block', 'netherite_block', 'totem_of_undying']);
+            if (REFUSE.has(want) || /^(diamond|netherite|shulker|wither|dragon|beacon|anvil)/.test(want))
+                return 'nah, that one stays in the chest — cheap hats only.';
             let it = bot.inventory.slots.find(s => s && (s.name === item || norm(s.name) === want))
                 || bot.inventory.items().find(i => norm(i.name) === want);
             if (!it && bot.game.gameMode === 'creative') {

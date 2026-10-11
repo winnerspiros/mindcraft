@@ -305,8 +305,9 @@ export class Agent {
                     if (canOp()) {
                     if (this.prompter.profile.skin)
                         this.bot.chat(`/skin set URL ${this.prompter.profile.skin.model} ${this.prompter.profile.skin.path}`);
-                    else
-                        this.bot.chat(`/skin clear`);
+                    // else: NEVER /skin clear — her SkinsRestorer skin is stored
+                    // server-side and persists; clearing on every spawn is what
+                    // kept turning her into a red robot.
                     }
                 } catch (e) {
                     console.log(`${this.name} skin chat failed: ${String(e).slice(0, 80)}`);

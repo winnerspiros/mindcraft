@@ -757,6 +757,7 @@ const modes_list = [
                 else if (count <= WARN + 2) {
                     await speak(`Grrr~ ${name}, that's ENOUGH! UwU will bite back! (ง •̀_•́)ง`);
                     if (FIGHT) {
+                        try { await agent._equipWhatSheHas(); } catch (_) {} // hat off, helmet on — armor first, then swing
                         await skills.attackEntity(agent.bot, player, false); // a few hits, not a kill
                         await new Promise(r => setTimeout(r, 800));
                         agent.bot.pvp?.stop?.();
@@ -770,6 +771,7 @@ const modes_list = [
                     // words-only when fight_back=false.
                     await speak(`That's TOO far, ${name}!!! UwU warned you~! 💢💥`);
                     if (FIGHT) {
+                        try { await agent._equipWhatSheHas(); } catch (_) {} // hat off, helmet on — armor first, then swing
                         await skills.attackEntity(agent.bot, player, false);
                         await new Promise(r => setTimeout(r, 800));
                         agent.bot.pvp?.stop?.();

@@ -195,6 +195,22 @@ function getUwuBit() {
     return _uwuBit;
 }
 
+// Shared persona-neutral facts (look, hats, armor-first, TPS rule, power costs).
+// Injected via $SHARED_FACTS, which BOTH persona scripts reference — personas
+// are voice + character only, never the place for settled facts.
+const SHARED_FACTS_PATH = path.join(__dirname, '../agent/library/shared_facts.md');
+let _sharedFacts = null;
+function getSharedFacts() {
+    if (_sharedFacts != null) return _sharedFacts;
+    try {
+        _sharedFacts = readFileSync(SHARED_FACTS_PATH, 'utf8');
+    } catch (e) {
+        console.warn('Failed to load shared facts:', e.message);
+        _sharedFacts = '';
+    }
+    return _sharedFacts;
+}
+
 // Archery & enchantments reference — static knowledge injected via $COMBAT_KNOWLEDGE.
 // Bows/arrows/crossbows (crafting + tipped arrows), how to aim/shoot, and every
 // enchantment in the game. Kept in its own markdown file for easy editing.
@@ -536,6 +552,9 @@ export class Prompter {
         }
         if (prompt.includes('$UWU_BIT')) {
             prompt = prompt.replaceAll('$UWU_BIT', getUwuBit());
+        }
+        if (prompt.includes('$SHARED_FACTS')) {
+            prompt = prompt.replaceAll('$SHARED_FACTS', getSharedFacts());
         }
         if (prompt.includes('$REAL_IDENTITY')) {
             // legacy (yandere script): full sheet retired, same lore gate
