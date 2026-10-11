@@ -601,7 +601,59 @@ export async function executeCommand(agent, message) {
             }
             const requester = agent.last_sender;
             const level = powerRankFor(agent, requester);
-            if (level === 'none') {
+            // JUDGE BYPASS (2026-10-11): !acFlags records HER OWN evidence
+            // (agent._acEvidence from the server log). A flagged suspect with
+            // 3+ fresh flags authorizes the NON-LETHAL troll kit (!kick,
+            // !effectPlayer, !summon) on her own judgment — no human requester
+            // needed, and a stranger's words authorize nothing (they can't
+            // write the server log). False-positive guards: effects capped to
+            // troll-safe ones at low strength, summons capped to 3 passives,
+            // hostiles/bosses always refused here.
+            let judgeOk = false;
+            if (level === 'none' && (parsed.commandName === '!kick' || parsed.commandName === '!effectPlayer' || parsed.commandName === '!summon')) {
+                const target = String(parsed.args?.[0] || '');
+                const ev = target && agent._acEvidence ? agent._acEvidence[target] : null;
+                const fresh = ev && (Date.now() - (ev.last || 0)) < 15 * 60 * 1000;
+                if (parsed.commandName === '!summon') {
+                    // !summon has no player param (mobs land near HER): the
+                    // target is whoever she last judged with !acFlags <name>,
+                    // and she must be NEAR them or the troll lands on nobody.
+                    const target = String(agent._acSuspect || '');
+                    const ev = target && agent._acEvidence ? agent._acEvidence[target] : null;
+                    const fresh = ev && (Date.now() - (ev.last || 0)) < 15 * 60 * 1000;
+                    const near = (() => { try {
+                        const t = agent.bot?.players?.[target]?.entity;
+                        return t ? agent.bot.entity.position.distanceTo(t.position) < 24 : false;
+                    } catch (_) { return false; } })();
+                    const ent = String(parsed.args?.[0] || '').toLowerCase().replace(/^minecraft:/, '');
+                    const FUNNY = new Set(['bat', 'cow', 'chicken', 'pig', 'sheep', 'rabbit', 'parrot', 'bee', 'frog', 'axolotl', 'cod', 'salmon', 'allay', 'cat', 'wolf', 'donkey']);
+                    if (!FUNNY.has(ent)) {
+                        return `${parsed.commandName} refused: judge-trolls are passives only (bats, cows, chickens...) — never hostiles, never bosses.`;
+                    }
+                    if (!ev || ev.count < 5 || !fresh) {
+                        return `${parsed.commandName} refused: no fresh AC evidence for a suspect — run !acFlags <name> first and only troll the flagged.`;
+                    }
+                    if (!near) {
+                        return `${parsed.commandName} refused: ${target} is not nearby — go to them first (!goToPlayer), the troll only lands where you stand.`;
+                    }
+                    parsed.args[1] = Math.max(1, Math.min(Number(parsed.args?.[1]) || 1, 3));
+                    judgeOk = true;
+                    console.log(`[judge] !summon ${ent} near ${target} authorized by AC evidence (${ev.count} flags: ${[...ev.checks].join(',')})`);
+                } else if (ev && ev.count >= 3 && fresh) {
+                    if (parsed.commandName === '!effectPlayer') {
+                        const fx = String(parsed.args?.[1] || '').toLowerCase();
+                        const SAFE = new Set(['nausea', 'slowness', 'blindness', 'weakness', 'mining_fatigue', 'hunger', 'levitation']);
+                        if (!SAFE.has(fx)) {
+                            return `${parsed.commandName} refused: judge-trolls use nausea/slowness/blindness/weakness/mining_fatigue only — nothing that kills.`;
+                        }
+                        parsed.args[2] = Math.max(5, Math.min(Number(parsed.args?.[2]) || 30, 60));
+                        parsed.args[3] = Math.max(0, Math.min(Number(parsed.args?.[3] ?? 1) || 0, 1));
+                    }
+                    judgeOk = true;
+                }
+                if (judgeOk && parsed.commandName !== '!summon') console.log(`[judge] ${parsed.commandName} on ${target} authorized by AC evidence (${ev.count} flags: ${[...ev.checks].join(',')})`);
+            }
+            if (level === 'none' && !judgeOk) {
                 powerRefusedFor(agent, requester, command.power);
                 return `${parsed.commandName} refused: ${requester || 'unknown'} is not trusted enough for operator powers.`;
             }

@@ -2228,21 +2228,44 @@ export const actionsList = [
     {
         // UwU judges anticheat flags (2026-10-11): weak signals like
         // fullbright never warn the player (flagSilent, log-only), so she
-        // reads the server log and decides: talk to them, watch them, or
-        // shrug it off. Same box, log is world-readable.
+        // reads the server log and decides. EVIDENCE MAP: every read records
+        // per-player flag counts into agent._acEvidence — judge-flagged power
+        // commands (!kick, !effectPlayer, !attackPlayer) check this map, so
+        // HER OWN evidence authorizes the troll, not whoever spoke last.
+        // Strangers can't fake it: they can't write the server log.
         name: '!acFlags',
-        description: 'Read the recent anticheat flags from the server log: who got flagged, for what (fly, baritone, fullbright, freecam, airplace...). Use this to judge whether someone is cheating — flags are evidence, not proof. Fullbright especially is only a hint.',
+        description: 'Read the recent anticheat flags from the server log: who got flagged, for what (fly, baritone, fullbright, freecam, airplace...). Optional player name to focus on one suspect. JUDGE LADDER (escalate, never nuke): 1) patterns look sus? !goToPlayer them, watch. 2) still sus? !whisper them — ask what client they use, tease them about the flags. 3) admitted it / blatant (fly across spawn)? troll them: !effectPlayer nausea/slowness/blindness, or !summon bats/cows/chickens around them (NEVER hostiles, NEVER bosses, clean up with !despawn). 4) worst case: !kick with a cute or troll reason — they can rejoin, NEVER ban. Fullbright alone is only a hint — talk first, never punish on it alone. False positives are real: lag looks like fly, night-vision looks like fullbright, a shaky hand looks like baritone. Talk before you troll, troll before you kick.',
         params: {
+            'player_name': { type: 'string', default: '', description: 'Suspect to focus on (optional).' },
             'count': { type: 'int', default: 10, description: 'How many recent flags to show (optional).' },
         },
-        perform: runAsAction(async (agent, count) => {
+        perform: runAsAction(async (agent, player_name, count) => {
             const n = Math.max(1, Math.min(30, Number(count) || 10));
             try {
                 const log = readFileSync('/home/ubuntu/leaf-test/logs/latest.log', 'utf8');
                 const lines = log.split('\n').filter(l => l.includes('[LightAnticheat]')
                     && !l.includes('Loaded. Checks') && !l.includes('Enabling')
                     && !l.includes('AuthMe detected') && !l.includes('Monitoring active'));
-                const recent = lines.slice(-n);
+                // Evidence map: name -> {count, checks:Set, last:ms}. The
+                // judge gate reads this, so a stranger telling her "he flies"
+                // authorizes nothing — only the log does.
+                agent._acEvidence = agent._acEvidence || {};
+                for (const l of lines.slice(-50)) {
+                    const m = /\[LightAnticheat\] (\S+) \([0-9a-f-]{36}\) (\S+) ::/.exec(l);
+                    if (m && m[1] !== 'UwU') {
+                        const e = agent._acEvidence[m[1]] = agent._acEvidence[m[1]] || { count: 0, checks: new Set(), last: 0 };
+                        e.count++; e.checks.add(m[2]); e.last = Date.now();
+                    }
+                }
+                let recent = lines.slice(-n);
+                if (player_name) {
+                    const hit = recent.filter(l => l.includes(player_name));
+                    if (!hit.length) { skills.log(agent.bot, `No flags for ${player_name} lately — clean (or sneaky).`); return; }
+                    recent = hit;
+                    // Last-judged suspect: !summon has no player param (mobs
+                    // land near HER), so the summon judge-bypass keys on this.
+                    agent._acSuspect = player_name;
+                }
                 if (!recent.length) { skills.log(agent.bot, 'No anticheat flags in the log right now — everyone clean.'); return; }
                 skills.log(agent.bot, `Recent anticheat flags (${recent.length}):\n`
                     + recent.map(l => l.replace(/^\[[^\]]+\] \[[^\]]+\]: \[LightAnticheat\] /, '').slice(0, 160)).join('\n'));
