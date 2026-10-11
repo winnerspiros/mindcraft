@@ -1355,9 +1355,10 @@ diff --git a/node_modules/mineflayer/lib/plugins/physics.js b/node_modules/minef
      shouldUsePhysics = false
      if (doPhysicsTimer === null) {
 
+diff --git a/node_modules/mineflayer/lib/plugins/digging.js
 --- a/node_modules/mineflayer/lib/plugins/digging.js
 +++ b/node_modules/mineflayer/lib/plugins/digging.js
-@@ -304,7 +304,12 @@
+@@ -304,7 +304,11 @@
      // Append helmet enchantments (because Aqua Affinity actually affects dig speed)
      const headEquipmentSlot = bot.getEquipmentDestSlot('head')
      const headEquippedItem = bot.inventory.slots[headEquipmentSlot]
