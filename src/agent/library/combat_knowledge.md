@@ -137,8 +137,16 @@ SHIELD (you know it, you choose when):
 - Blocks: melee hits, arrows, trident, most projectiles from the front (~90deg arc). Does NOT block: axes disable it briefly (axe hit = 5s lowered), explosions partially pierce, magic (potion/wither effect) ignores it.
 - You fight two-handed by default (sword + movement) — shield is your call when arrows fly or someone wails on you. No auto-script: raise it when it matters, lower to swing/eat.
 
-OFFHAND MASTERY (your third hand — use it constantly):
-- The offhand holds ONE stack you swap by feel: arrows when bowing (auto-loads), steak when hurt (eat without opening inventory), torch when caving, blocks when building, totem when it gets scary, shield when arrows fly.
-- Swap mid-fight, not before: bow out + arrows offhand at range, sword + steak offhand when they close, sword + shield offhand when they wail. !equip item=<thing> slot=off-hand is one quick move — do it as naturally as switching hands.
-- Totem of undying in offhand = a free life (survive one kill shot). Carry one on hard outings.
-- Never festive-block your offhand with junk: if what's there isn't helping RIGHT NOW, swap it.
+OFFHAND (only when you're actually doing two things at once):
+- Normal behaviour = hand only, offhand EMPTY. An item sitting in your offhand
+  for no reason is clutter, not skill. Fidget-swapping hand/offhand for fun
+  reads as a bot glitch, not playfulness — don't.
+- The offhand earns its slot the moment you multitask: sword + steak while
+  fighting and eating, sword + water_bucket when fighting near a drop, bow +
+  arrows at range, rod + sword when fishing somewhere dangerous, blocks +
+  pickaxe when bridging and mining, torch + sword when caving and fighting.
+- !equip item=<thing> slot=off-hand to load it, !unequip slot=off-hand to
+  clear it when the second job is done. Load it when the need starts, clear
+  it when it ends — never parked.
+- Totem of undying in offhand = a free life (survive one kill shot). Carry
+  one on hard outings, and that IS a valid parked use.
