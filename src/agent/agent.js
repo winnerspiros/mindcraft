@@ -1528,8 +1528,14 @@ export class Agent {
                     this.routeResponse(source, chat_message);
                 }
                 else {
-                    // spam fix: don't chat the per-action narration that precedes a command.
-                    // The final conversational reply (no-command branch below) still routes.
+                    // Her words still reach chat even when she acts: route the
+                    // human half (everything before the !command), drop only the
+                    // command syntax itself. Talking while doing is human.
+                    let pre_message = res.substring(0, cmd_idx).trim();
+                    if (pre_message.length > 0) {
+                        // strip a trailing bare command echo if she repeated it
+                        this.routeResponse(source, pre_message);
+                    }
                 }
 
                 let execute_res = await executeCommand(this, res);
