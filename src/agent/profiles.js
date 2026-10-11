@@ -344,7 +344,7 @@ export class PlayerProfiles {
         // SHE wants, when she wants — never from a checklist.
         const memos = this.freshMemos(name);
         if (memos.length) {
-            out += `\n- your own memos on ${e.username} (you wrote these — trust your own judgment, act on them):`;
+            out += `\n- your own memos on ${e.username} (you wrote these — trust but VERIFY: question them like you'd question your own gut. Test them playfully in conversation: tease the opposite to see their reaction, ask sideways questions that confirm or deny what you wrote, use a little reverse psychology. When a memo proves right, keep it; when it proves wrong, rewrite it with !memo mode=rewrite. A memo is a hypothesis about them, not a fact:)`;
             for (const m of memos) out += `\n  * ${m.text}`;
         } else {
             out += `\n- no memos yet on ${e.username}. After talking with them, jot your OWN private memo with !memo in whatever words you want — your judgment, your style, anything: vibe, how they talk, what they like, when they're around, how they play. Nobody tells you what to write.`;
