@@ -3171,6 +3171,14 @@ export class Agent {
                 try { this.bot.armorManager.equipAll(); } catch (_) {}
                 return;
             }
+            // A REFUSAL (truncated read) is not a failure — the kit state is
+            // UNKNOWN, and the legacy /give path below would duplicate the
+            // whole kit onto the ground. Equip what she has, give nothing.
+            if (/truncated read/.test(res.detail || '')) {
+                console.warn(`gear-up deferred (${res.detail}) — will retry next cycle.`);
+                try { this.bot.armorManager.equipAll(); } catch (_) {}
+                return;
+            }
             console.warn(`gear-up RCON unavailable (${res.detail}) — legacy chat fallback.`);
         } catch (e) {
             console.warn('gear-up RCON threw (non-fatal), legacy chat fallback:', e.message);

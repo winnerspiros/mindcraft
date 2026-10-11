@@ -404,6 +404,14 @@ export async function rconEnsureKit(name) {
     } catch (e) {
         return { ok: false, gave: false, detail: 'rcon read failed: ' + e.message };
     }
+    // NEVER kit from a truncated read. RCON caps long-NBT replies (we have
+    // seen 129-char inventory replies showing 1 slot); treating that as "she
+    // owns nothing" re-gives the whole kit, overflows her inventory, and the
+    // overflow `give` drops litter on the ground at spawn. Inventory must end
+    // with `]` (parseInventoryText completeness rule), equipment must show
+    // the offhand key it always carries.
+    if (!/\]/.test(String(inv)) || !/offhand\s*:/.test(String(eq)))
+        return { ok: false, gave: false, detail: 'truncated read, refusing to kit blind' };
     const have = new Set([...parseIds(inv), ...parseIds(eq)]);
     const actions = [];
     for (const [piece, slot] of Object.entries(ARMOR_SLOT))
