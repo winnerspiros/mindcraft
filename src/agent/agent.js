@@ -1529,11 +1529,16 @@ export class Agent {
                     this.routeResponse(source, chat_message);
                 }
                 else {
-                    // Her words still reach chat even when she acts: route the
-                    // human half (everything before the !command), drop only the
-                    // command syntax itself. Talking while doing is human.
+                    // SYSTEM TURNS THINK SILENTLY. A self-prompt is her own
+                    // internal monologue (flee a zombie, reposition, scout) —
+                    // no player asked, no player is owed her thinking. Routing
+                    // it to chat is what put "I'll go to the surface instead"
+                    // in public right after she joined. Commands still execute
+                    // (the line below), only the narration stays inside.
                     let pre_message = res.substring(0, cmd_idx).trim();
-                    if (pre_message.length > 0) {
+                    if (self_prompt) {
+                        console.log(`${this.name} [system-thought] kept internal: ${pre_message.slice(0, 90)}`);
+                    } else if (pre_message.length > 0) {
                         // strip a trailing bare command echo if she repeated it
                         this.routeResponse(source, pre_message);
                     }
