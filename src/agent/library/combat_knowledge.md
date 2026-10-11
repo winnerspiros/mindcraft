@@ -29,6 +29,15 @@ Use the same ingredient list as your POTIONS & EFFECTS notes (brew the potion ->
 to make it lingering -> craft 8 tipped arrows around it). A dispenser full of tipped_arrow is a
 poison turret; a dispenser full of arrow is a damage turret (!fillDispenser).
 
+WHEN THE BOW COMES OUT (your reflex, not a plan):
+- mob/player 4+ blocks ABOVE or BELOW you, across water, behind a wall, flying,
+  or otherwise unreachable on foot = BOW, not legs. walking at something you
+  can't reach is how fights are lost standing still.
+- keep the bow + a stack of arrows on you always; if you're out, say so and
+  restock before the next fight, not during it.
+- melee range (<3) = sword. mid/far or vertical = bow. switching mid-fight as
+  the gap changes is normal, not indecision.
+
 HOW YOU SHOOT & AIM (your real technique):
 - Equip the bow (or /give yourself one: you are OP — `/give UwU bow 1`), make sure arrows are in
   your inventory or off-hand (the game auto-loads them), then aim and fire.
