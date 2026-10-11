@@ -269,8 +269,12 @@ export class Agent {
             // stream stays clean): then skin only after spawn proves the
             // session is fully authenticated. Home only — on a server without
             // EasyAuth this would paste the password into public chat.
-            if (needsLogin() && this.prompter.profile.auth_password)
-                this.bot.chat(`/login ${this.prompter.profile.auth_password}`);
+            if (needsLogin() && (this.prompter.profile.auth_password || authFlow().password)) {
+                const pw = this.prompter.profile.auth_password || authFlow().password;
+                this.bot.chat(`/login ${pw}`);
+                // Retry after spawn: pre-play-stream chat can be eaten silently.
+                setTimeout(() => { try { this.bot.chat(`/login ${pw}`); } catch (_) {} }, 4000);
+            }
         });
 		const spawnTimeoutDuration = settings.spawn_timeout;
         const spawnTimeout = setTimeout(() => {
@@ -2498,9 +2502,16 @@ export class Agent {
                 if (r.action === 'fight' || r.action === 'avoid') {
                     this._threatTargetName = r.target ? (r.target.name || r.target.username || 'mob') : null;
                 }
-                // Do not re-aim at the same threat every tick: that would restart
-                // the goal forever and she would never finish dealing with it.
-                const key = r.target ? `${r.target.id}:${r.action}` : r.action;
+                // ESCALATING disengage key (2026-10-11): the old key was
+                // entity.id-based, so every respawned pillager was a "fresh"
+                // target and the 15s cooldown never applied — one unreachable
+                // pillager held her for 40 minutes across many ids. Key on mob
+                // TYPE instead, and double the cooldown per consecutive failure
+                // (15s, 30s, 1m, 2m... up to 10m) so an unwinnable fight type
+                // backs off instead of re-arming every scan.
+                const mobType = r.target ? (r.target.name || r.target.username || 'mob') : 'none';
+                const key = `${mobType}:${r.action}`;
+                this._threatFails = this._threatFails || {};
                 if (this._lastThreatKey === key && Date.now() - (this._lastThreatAt || 0) < 8000) return;
                 this._lastThreatKey = key;
                 this._lastThreatAt = Date.now();
@@ -2533,6 +2544,17 @@ export class Agent {
                     // never from this reflex - the capability existed unused at
                     // exactly the moment it was worth having.
                     if (this._hasBowFor(r.target)) {
+                        // Bow branch needs the same guards as melee (2026-10-11):
+                        // without them the 1s scan re-fired a volley every tick
+                        // against a mob the arrows could never reach (measured:
+                        // 32 fired=true volleys vs one pillager, server Health
+                        // stayed 20.0). Respect the disengage, never overlap
+                        // volleys, and stop re-shooting a spent target.
+                        if (this._threatBowSpentKey === key) return;
+                        const bowDisengagedUntil = (this._threatDisengage || {})[key];
+                        if (bowDisengagedUntil && Date.now() < bowDisengagedUntil) return;
+                        if (this._bowInFlight) return;
+                        this._bowInFlight = true;
                         const gap = this.bot.entity.position.distanceTo(r.target.position).toFixed(1);
                         console.log(`[threat] scan: SHOOTING ${r.target.name || 'mob'} at ${gap} blocks`);
                         this.self_prompter.start(r.goal);
@@ -2550,11 +2572,23 @@ export class Agent {
                                 // the target back to melee on the NEXT scan tick
                                 // instead of re-shooting forever.
                                 if (!fired) this._threatBowSpentKey = key;
+                                // Volley resolved either way: free the slot and
+                                // also cool this mob type, so a volley that
+                                // spent arrows but changed nothing (server
+                                // Health unmoved) backs off like melee does.
+                                else {
+                                    this._threatFails = this._threatFails || {};
+                                    const fails = (this._threatFails[key] || 0) + 1;
+                                    this._threatFails[key] = fails;
+                                    const backoff = Math.min(15000 * Math.pow(2, fails - 1), 600000);
+                                    (this._threatDisengage = this._threatDisengage || {})[key] = Date.now() + backoff;
+                                }
                             })
                             .catch((e) => {
                                 console.warn('[threat] scan shot failed:', e?.message);
                                 this._threatBowSpentKey = key;
-                            });
+                            })
+                            .finally(() => { this._bowInFlight = false; });
                         return;
                     }
                     // Bow drew but landed nothing: take the sword next tick
@@ -2582,11 +2616,20 @@ export class Agent {
                         .then((won) => {
                             console.log(`[threat] scan fight result: done=${won}`);
                             // Failed (gave up / broke off, not a kill): cool the
-                            // SAME target down so the scan stops re-arming it.
+                            // SAME mob TYPE down with an ESCALATING backoff so
+                            // the scan stops re-arming it. Consecutive failures
+                            // double the ban (15s, 30s, 1m, 2m... up to 10m);
+                            // a kill resets it.
+                            this._threatFails = this._threatFails || {};
                             if (!won) {
-                                (this._threatDisengage = this._threatDisengage || {})[key] = Date.now() + 15000;
+                                const fails = (this._threatFails[key] || 0) + 1;
+                                this._threatFails[key] = fails;
+                                const backoff = Math.min(15000 * Math.pow(2, fails - 1), 600000);
+                                (this._threatDisengage = this._threatDisengage || {})[key] = Date.now() + backoff;
+                                console.log(`[threat] ${mobType} failed ${fails}x — disengaged for ${Math.round(backoff / 1000)}s`);
                             } else {
                                 (this._threatDisengage = this._threatDisengage || {})[key] = null;
+                                this._threatFails[key] = 0;
                             }
                         })
                         .catch((e) => console.warn('[threat] scan fight failed:', e?.message))
@@ -3026,6 +3069,8 @@ export class Agent {
         try {
             const sp = this.self_prompter;
             if (!sp || !sp.prompt || sp.advancing) return;
+            // No players online at all -> skip LLM-heavy curriculum/critic
+            if (!sp._anyPlayersOnline()) return;
             const now = Date.now();
             if (!this._lastCriticTick) this._lastCriticTick = 0;
             // STUCK-FUSE (2026-09-27): 10min let one bad goal hold all day.

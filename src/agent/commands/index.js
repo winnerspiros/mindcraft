@@ -447,7 +447,16 @@ export function parseCommandMessage(message, preCap = null) {
     for (let i = 0; i < args.length; i++) {
         const param = params[i];
         //Remove any extra characters
-        let arg = args[i].trim();
+        let arg = args[i] == null ? args[i] : String(args[i]).trim();
+        // Omitted optional param filled with its default (often null):
+        // there is nothing to coerce — hand the default straight through.
+        // Without this, Number.parseInt(null) = NaN rejects EVERY call that
+        // omits an optional int (measured: !planBuild with no count ->
+        // "Param 'count' must be of type int" forever).
+        if (arg == null || (arg === '' && 'default' in param)) {
+            args[i] = 'default' in param ? param.default : arg;
+            continue;
+        }
         if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
             arg = arg.substring(1, arg.length-1);
         }

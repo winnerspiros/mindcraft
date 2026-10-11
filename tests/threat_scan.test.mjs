@@ -213,7 +213,7 @@ check('the bow path returns, so melee never also fires on the same target',
   // "fired but landed nothing" comment block now sits between them. The
   // invariant - a `return;` between the shoot dispatch and the melee guard -
   // is unchanged; only the prose grew.
-  /SHOOTING[\s\S]{0,700}?shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,1000}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')))
+  /SHOOTING[\s\S]{0,700}?shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,2500}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')))
 // The bow must be UNREACHABLE for an avoid decision. The right invariant is
 // not textual order - it is that the bow sits inside the `action === 'fight'`
 // branch, so an avoid decision can never reach it regardless of line order.
@@ -323,7 +323,7 @@ check('the bow path returns, so it never also runs melee on the same target',
   // `return;`. The invariant is that nothing between the dispatch and the
   // melee `if (this._fightInFlight)` runs instead — i.e. a `return;` follows
   // the dispatch, and the melee guard comes after it.
-  /shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,1000}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')) &&
+  /shootBow\(this\.bot, r\.target, 2, true\)[\s\S]{0,2500}?return;/.test(agentSrc.replace(/\n\s*/g, ' ')) &&
   agentSrc.indexOf('shootBow(this.bot, r.target, 2, true)') <
     agentSrc.indexOf('if (this._fightInFlight) return;'))
 
@@ -334,7 +334,7 @@ check('the bow path returns, so it never also runs melee on the same target',
 // 25 min). A failed same-target fight must cool the target down so the scan
 // can do something else instead of swinging at a ghost forever.
 check('a failed fight cools the same target down (disengage cap)',
-  /if \(!won\) {\s*\n\s*\(this\._threatDisengage = this\._threatDisengage \|\| \{\}\)\[key\] = Date\.now\(\) \+ 15000;/
+  /if \(!won\) \{[\s\S]{0,400}?const backoff = Math\.min\(15000 \* Math\.pow\(2, fails - 1\), 600000\);[\s\S]{0,400}?\[key\] = Date\.now\(\) \+ backoff;/
     .test(agentSrc))
 check('the disengage guard lets an already-cooled target through',
   /const disengagedUntil = \(this\._threatDisengage \|\| \{\}\)\[key\];[\s\S]{0,300}?Date\.now\(\) < disengagedUntil/

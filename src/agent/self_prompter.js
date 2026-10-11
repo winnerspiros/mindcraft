@@ -278,6 +278,19 @@ export class SelfPrompter {
         return false;
     }
 
+    // Check if ANY other players are online (from tablist), not just visible.
+    // Used to gate LLM-heavy curriculum/critic when the server is empty.
+    _anyPlayersOnline() {
+        const bot = this.agent.bot;
+        if (!bot || !bot.players) return false;
+        try {
+            for (const name of Object.keys(bot.players)) {
+                if (name !== this.agent.name) return true;
+            }
+        } catch (e) {}
+        return false;
+    }
+
     start(prompt) {
         console.log('Self-prompting started.');
         if (!prompt) {
@@ -373,6 +386,8 @@ export class SelfPrompter {
         if (!this._lastNavPos) this._lastNavPos = null;
         const maybeCritic = async (forced = false) => {
             if (settings.curriculum_enabled === false || settings.critic_enabled === false) return;
+            // No players online at all -> skip LLM-heavy curriculum/critic
+            if (!this._anyPlayersOnline()) return;
             if (this.advancing) return;
             const now = Date.now();
             // streak-forced: repeated navigation failure with no progress means
@@ -389,6 +404,12 @@ export class SelfPrompter {
             }
         };
         while (!this.interrupt) {
+            // No players online at all -> skip LLM turn, just idle
+            if (!this._anyPlayersOnline()) {
+                console.log('[cadence] server empty, idling without LLM');
+                await new Promise(r => setTimeout(r, 30000)); // 30s idle when empty
+                continue;
+            }
             // Two gears: someone visible -> social cadence; alone -> slow
             // pottering. Solo turns still MUST use a command (below), so alone
             // she digs/builds/explores instead of yapping.
@@ -445,19 +466,22 @@ export class SelfPrompter {
             // Wall-clock critic (see above): per-turn counter kept as a
             // backstop, but rotation no longer depends on it.
             if (settings.curriculum_enabled !== false && settings.critic_enabled !== false) {
-                this.goal_cycles++;
-                if (this.goal_cycles >= (settings.goal_check_cycles || 5)) {
-                    this.goal_cycles = 0;
-                    this._lastCriticRun = Date.now(); // per-turn path ran it — reset the wall clock too
-                    try {
-                        const r = await this.advanceGoal();
-                        if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
-                        else if (r && r.done && !r.next) console.log('[curriculum] goal finished, but no next goal proposed.');
-                    } catch (e) {
-                        console.warn('periodic goal advance failed (non-fatal):', e.message);
+                // No players online at all -> skip LLM-heavy curriculum/critic
+                if (this._anyPlayersOnline()) {
+                    this.goal_cycles++;
+                    if (this.goal_cycles >= (settings.goal_check_cycles || 5)) {
+                        this.goal_cycles = 0;
+                        this._lastCriticRun = Date.now(); // per-turn path ran it — reset the wall clock too
+                        try {
+                            const r = await this.advanceGoal();
+                            if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
+                            else if (r && r.done && !r.next) console.log('[curriculum] goal finished, but no next goal proposed.');
+                        } catch (e) {
+                            console.warn('periodic goal advance failed (non-fatal):', e.message);
+                        }
+                    } else {
+                        await maybeCritic();
                     }
-                } else {
-                    await maybeCritic();
                 }
             }
             // STUCK-FUSE streak check: enough failed legs in a row forces

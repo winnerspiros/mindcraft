@@ -90,7 +90,7 @@ const HOME_DEFAULTS = {
     },
     combat: { fight_back: true, retaliate: true, warn_hits: 2, no_console_punish: true },
     modes: {},
-    rcon: { enabled: true, host: '127.0.0.1', port: 25575, pwFile: '/home/ubuntu/kenoi-fabric/rcon.password' },
+    rcon: { enabled: true, host: '127.0.0.1', port: 25575, pwFile: '/home/ubuntu/leaf-test/rcon.password' },
     // No seed default on purpose. It used to be hardcoded here, which
     // published the owner's world seed to anyone who cloned the repo -- and a
     // seed identifies the world and lets it be regenerated. null = unknown,

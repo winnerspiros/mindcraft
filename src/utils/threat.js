@@ -426,6 +426,22 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
 
         if (!worst) return { action: 'ignore', reason: 'no hostiles nearby', urgency: 0 };
 
+        // Vertical separation guard (2026-10-11): a mob 5+ blocks above/below
+        // her is behind rock/water she cannot path through — chasing it means
+        // digging/diving into caves and drowning (measured: she dove to y52
+        // after a skeleton below her and died). Do not start a fight she
+        // cannot walk to; keep distance on her own level instead.
+        const dy = Math.abs((worst.entity?.position?.y ?? self.y) - self.y);
+        if (dy > 4.5) {
+            return {
+                action: 'avoid',
+                target: worst.entity,
+                goal: 'stay clear of that thing below/above — I cannot reach it from here',
+                reason: `${worst.name} is ${dy.toFixed(0)} blocks above/below, unreachable on foot`,
+                urgency: worst.urgency,
+            };
+        }
+
         // A creeper inside melee range with the fuse lit: get off its approach line
         // NOW. Killing it is a coin flip at that distance; distance is not.
         if (worst.behaviour.explodes && worst.distance < MELEE_RANGE + 1.5) {
