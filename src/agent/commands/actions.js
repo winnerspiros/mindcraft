@@ -1984,6 +1984,22 @@ export const actionsList = [
         })
     },
     {
+        name: '!namecolor',
+        description: 'Change YOUR OWN name color (chat + tab + nametag): pink, red, aqua, gold, green, purple, white, etc. Your color is pink by default — use this when you feel like a change or someone asks.',
+        params: {
+            'color': { type: 'string', description: 'Color name: pink, red, dark_red, aqua, dark_aqua, gold, yellow, green, dark_green, blue, dark_blue, purple, dark_purple, gray, dark_gray, white, black.' }
+        },
+        perform: runAsAction(async (agent, color) => {
+            const map = { pink: '&d', red: '&c', dark_red: '&4', aqua: '&b', dark_aqua: '&3', gold: '&6', yellow: '&e', green: '&a', dark_green: '&2', blue: '&9', dark_blue: '&1', purple: '&5', dark_purple: '&5', gray: '&7', dark_gray: '&8', white: '&f', black: '&0' };
+            const code = map[String(color || '').toLowerCase().replace(/[^a-z_]/g, '')];
+            if (!code) return 'pick a color: pink, red, aqua, gold, green, purple, blue, yellow, white, gray, black.';
+            try {
+                agent.bot.chat(`/nick ${agent.name} ${code}${agent.name}`);
+                return `name color -> ${color}.`;
+            } catch (e) { return 'couldnt change color: ' + e.message; }
+        })
+    },
+    {
         name: '!goToBed',
         description: 'Go to the nearest bed and sleep.',
         perform: runAsAction(async (agent) => {
