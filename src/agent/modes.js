@@ -1107,7 +1107,7 @@ const modes_list = [
 // it, and looks again much later.
 const GLANCE_BUDGET_MAX = 6;
 const GLANCE_BUDGET_WINDOW_MS = 120000;
-const GLANCE_BUDGET_COOLDOWN_MS = 20000;
+const GLANCE_BUDGET_COOLDOWN_MS = 60000;
 
             if (this.next_look_back && Date.now() >= this.next_look_back) {
                 this.next_look_back = 0;

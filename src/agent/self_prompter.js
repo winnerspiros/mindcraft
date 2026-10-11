@@ -407,7 +407,7 @@ export class SelfPrompter {
             // No players online at all -> skip LLM turn, just idle
             if (!this._anyPlayersOnline()) {
                 console.log('[cadence] server empty, idling without LLM');
-                await new Promise(r => setTimeout(r, 30000)); // 30s idle when empty
+                await new Promise(r => setTimeout(r, 25000 + Math.random() * 10000)); // ~30s idle when empty, jittered (no fixed cadence)
                 continue;
             }
             // Two gears: someone visible -> social cadence; alone -> slow
