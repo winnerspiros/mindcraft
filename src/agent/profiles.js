@@ -339,15 +339,15 @@ export class PlayerProfiles {
         // Her own handwritten memos — living impressions in her own words.
         // These are HERS: she wrote them, she revises them, they fade.
         // Follow them the way you'd follow your own gut about someone.
+        // They come FIRST, before any structured facts, because her own
+        // judgment outranks the form. No forced questions: she asks what
+        // SHE wants, when she wants — never from a checklist.
         const memos = this.freshMemos(name);
         if (memos.length) {
-            out += `\n- your own memos on ${e.username} (you wrote these — trust your own judgment):`;
+            out += `\n- your own memos on ${e.username} (you wrote these — trust your own judgment, act on them):`;
             for (const m of memos) out += `\n  * ${m.text}`;
-        }
-        const q = this.suggestQuestion(name);
-        if (q) {
-            out += `\n- You still don't know their ${q.slot}. If it feels natural this turn, gently ask: "${q.question}" (don't force it, and don't ask if you asked recently).`;
-            this.markAsked(name, q.slot);
+        } else {
+            out += `\n- no memos yet on ${e.username}. After talking with them, jot your OWN private memo with !memo in whatever words you want — your judgment, your style, anything: vibe, how they talk, what they like, when they're around, how they play. Nobody tells you what to write.`;
         }
         return out;
     }
