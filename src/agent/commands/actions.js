@@ -2226,6 +2226,30 @@ export const actionsList = [
         })
     },
     {
+        // UwU judges anticheat flags (2026-10-11): weak signals like
+        // fullbright never warn the player (flagSilent, log-only), so she
+        // reads the server log and decides: talk to them, watch them, or
+        // shrug it off. Same box, log is world-readable.
+        name: '!acFlags',
+        description: 'Read the recent anticheat flags from the server log: who got flagged, for what (fly, baritone, fullbright, freecam, airplace...). Use this to judge whether someone is cheating — flags are evidence, not proof. Fullbright especially is only a hint.',
+        params: {
+            'count': { type: 'int', default: 10, description: 'How many recent flags to show (optional).' },
+        },
+        perform: runAsAction(async (agent, count) => {
+            const n = Math.max(1, Math.min(30, Number(count) || 10));
+            try {
+                const log = readFileSync('/home/ubuntu/leaf-test/logs/latest.log', 'utf8');
+                const lines = log.split('\n').filter(l => l.includes('[LightAnticheat]')
+                    && !l.includes('Loaded. Checks') && !l.includes('Enabling')
+                    && !l.includes('AuthMe detected') && !l.includes('Monitoring active'));
+                const recent = lines.slice(-n);
+                if (!recent.length) { skills.log(agent.bot, 'No anticheat flags in the log right now — everyone clean.'); return; }
+                skills.log(agent.bot, `Recent anticheat flags (${recent.length}):\n`
+                    + recent.map(l => l.replace(/^\[[^\]]+\] \[[^\]]+\]: \[LightAnticheat\] /, '').slice(0, 160)).join('\n'));
+            } catch (e) { skills.log(agent.bot, 'Could not read the anticheat log: ' + e.message); }
+        }, false, 15)
+    },
+    {
         name: '!useOn',
         description: 'Use (right click) the given tool on the nearest target of the given type.',
         params: {
