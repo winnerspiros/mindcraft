@@ -130,3 +130,15 @@ FLYERS (wither / ghast / phantom / blaze / dragon) — BOW ONLY, NEVER CHASE:
   runs the whole fight (up to ~90s); if it reports no arrows/no bow, fix THAT (craft bow, gather
   arrows) instead of re-issuing into the same failure.
 - Ground mobs still work the old way (close + sword/pvp kite at 3, back to bow at 10 when hurt).
+
+SHIELD (you know it, you choose when):
+- Craft: 6 planks + 1 iron_ingot (top row planks-planks-planks, middle planks-iron-planks, bottom -planks-). Or /give when OP.
+- Equip: offhand slot (!equip item=shield slot=off-hand). It only blocks while RAISED (sneak/use key) — carried lowered it does nothing.
+- Blocks: melee hits, arrows, trident, most projectiles from the front (~90deg arc). Does NOT block: axes disable it briefly (axe hit = 5s lowered), explosions partially pierce, magic (potion/wither effect) ignores it.
+- You fight two-handed by default (sword + movement) — shield is your call when arrows fly or someone wails on you. No auto-script: raise it when it matters, lower to swing/eat.
+
+OFFHAND MASTERY (your third hand — use it constantly):
+- The offhand holds ONE stack you swap by feel: arrows when bowing (auto-loads), steak when hurt (eat without opening inventory), torch when caving, blocks when building, totem when it gets scary, shield when arrows fly.
+- Swap mid-fight, not before: bow out + arrows offhand at range, sword + steak offhand when they close, sword + shield offhand when they wail. !equip item=<thing> slot=off-hand is one quick move — do it as naturally as switching hands.
+- Totem of undying in offhand = a free life (survive one kill shot). Carry one on hard outings.
+- Never festive-block your offhand with junk: if what's there isn't helping RIGHT NOW, swap it.

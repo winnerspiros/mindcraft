@@ -413,7 +413,8 @@ export async function rconEnsureKit(name) {
     // sword is ever genuinely missing, GIVE it — that lands in the inventory,
     // which is where she carries it anyway.
     if (!have.has('diamond_sword')) actions.push(`minecraft:give ${safe} minecraft:diamond_sword${VANISH} 1`);
-    if (!have.has('shield')) actions.push(`minecraft:item replace entity ${safe} weapon.offhand with minecraft:shield${VANISH} 1`);
+    // no shield in her kit: she fights two-handed (sword + movement), shield
+    // knowledge lives in combat_knowledge.md for when she chooses one herself.
     for (const [item, n] of KIT_GIVE)
         if (!have.has(item)) actions.push(item === 'cooked_beef' || item === 'arrow' || item === 'firework_rocket' ? `minecraft:give ${safe} minecraft:${item} ${n}` : `minecraft:give ${safe} minecraft:${item}${VANISH} ${n}`);
     if (actions.length === 0) return { ok: true, gave: false, detail: 'already kitted per RCON, silent' };

@@ -3178,7 +3178,7 @@ export class Agent {
         const have = (n) => { try { return this.bot.inventory.items().some(i => i.name === n); } catch (_) { return false; } };
         const gear = [
             'diamond_helmet', 'diamond_chestplate', 'diamond_leggings', 'diamond_boots',
-            'diamond_sword', 'shield', 'cooked_beef',
+            'diamond_sword', 'cooked_beef',
             'diamond_pickaxe', 'diamond_axe', 'diamond_shovel', 'diamond_hoe',
             'bow', 'chest', 'water_bucket',
         ];
@@ -3220,8 +3220,6 @@ export class Agent {
             try { this.bot.armorManager.equipAll(); } catch (_) {}
             const sword = this.bot.inventory.items().find(i => i.name.includes('sword'));
             if (sword) await this.bot.equip(sword, 'hand');
-            const shield = this.bot.inventory.items().find(i => i.name === 'shield');
-            if (shield) await this.bot.equip(shield, 'off-hand');
             console.log(`${this.name} geared up (legacy chat): armor equipped, sword in hand.`);
         } catch (e) {
             console.warn('gear-up failed (non-fatal):', e.message);
@@ -3345,8 +3343,7 @@ export class Agent {
         const items = () => { try { return this.bot.inventory.items(); } catch (_) { return []; } };
         const sword = items().find(i => /sword$/.test(i.name));
         if (sword) await this.bot.equip(sword, 'hand');
-        const shield = items().find(i => i.name === 'shield');
-        if (shield) await this.bot.equip(shield, 'off-hand');
+        // no shield: she fights two-handed, shield is her choice (see combat knowledge)
     }
 
     // Guest-server join flow: AuthMe-style /register-/login prompts + one

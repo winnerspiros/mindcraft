@@ -548,9 +548,15 @@ export const actionsList = [
     },
     {
         name: '!equip',
-        description: 'Equip the given item.',
-        params: {'item_name': { type: 'ItemName', description: 'The name of the item to equip.' }},
-        perform: runAsAction(async (agent, item_name) => {
+        description: 'Equip the given item. Slot auto-picks by item type, or pass slot=off-hand to hold it in your offhand (arrows while bowing, steak when hurt, torch caving, totem for danger, shield vs arrows).',
+        params: {'item_name': { type: 'ItemName', description: 'The name of the item to equip.' }, 'slot': { type: 'string', description: 'Optional: hand, off-hand, head, torso, legs, feet. Omit for auto.' }},
+        perform: runAsAction(async (agent, item_name, slot) => {
+            if (slot) {
+                const it = agent.bot.inventory.items().find(i => i.name === String(item_name).toLowerCase().replace(/[\s-]+/g, '_'));
+                if (!it) return `i dont have any ${item_name}.`;
+                try { await agent.bot.equip(it, String(slot).toLowerCase().replace(/_/g, '-')); return `equipped ${item_name} to ${slot}.`; }
+                catch (e) { return 'couldnt equip: ' + e.message; }
+            }
             await skills.equip(agent.bot, item_name);
         })
     },
@@ -2030,6 +2036,16 @@ export const actionsList = [
             }
             if (!it) return 'i dont have any ' + want + ' — get one first (!collectBlocks) then !wearHead again.';
             try {
+                // curse of vanishing on the hat too: if she dies wearing it,
+                // it disappears instead of littering the ground. Enchant needs
+                // it in hand first, then it goes on the head.
+                try {
+                    await bot.equip(it, 'hand');
+                    const { rconCommand } = await import('../../utils/rcon.js');
+                    await rconCommand(`minecraft:enchant ${bot.username} vanishing_curse 1`);
+                    await new Promise(r => setTimeout(r, 300));
+                    it = bot.inventory.items().find(i => norm(i.name) === want) || it;
+                } catch (_) {}
                 await bot.equip(it, 'head');
                 return 'wearing ' + want + ' on my head now.';
             } catch (e) { return 'couldnt put it on: ' + e.message; }
