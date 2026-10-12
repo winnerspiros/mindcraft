@@ -96,51 +96,44 @@ async function run() {
   }
   log('server dirt:', await srvCount('dirt'), 'cobble:', await srvCount('cobblestone'), 'torch:', await srvCount('torch'));
 
-  // --- find open land: tp high, slow-fall, read landing client-side ---
+  // --- build a flat pad: tp high, slow-fall, read landing, then RCON-fill
+  // a 12-long dirt runway at feet-1 with air above (2026-10-12: searching
+  // natural flat ground failed 4/4 in hilly spawn; a harness-built pad is
+  // deterministic — skills still walk/dig/place for real on it).
   let plot = null;
   try {
     await rconCmd('effect give ' + BOT + ' minecraft:slow_falling 60 1 true').catch(() => {});
-    for (let attempt = 0; attempt < 4 && !plot; attempt++) {
-      const ax = Math.floor(bot.entity.position.x) + attempt * 6;
-      const az = Math.floor(bot.entity.position.z) + attempt * 3;
-      await rconCmd('tp ' + BOT + ' ' + (ax + 0.5) + ' 120 ' + (az + 0.5));
-      let lastY = 9999, stable = 0;
-      for (let i = 0; i < 50; i++) {
-        await sleep(500);
-        const y = bot.entity.position.y;
-        if (Math.abs(y - lastY) < 0.15) { if (++stable >= 3 && bot.entity.onGround) break; }
-        else stable = 0;
-        lastY = y;
-      }
-      const fp = bot.entity.position.floored();
-      const below = bot.blockAt(new Vec3(fp.x, fp.y - 1, fp.z));
-      const at = bot.blockAt(new Vec3(fp.x, fp.y, fp.z));
-      const b2 = bot.blockAt(new Vec3(fp.x, fp.y + 1, fp.z));
-      // Footing must be real ground, not a tree: leaves/log footing puts
-      // her in a canopy where digDown has nothing to dig. Reject leaves and
-      // logs so the plot is dirt/stone/grass.
-      const flimsy = /leaves|log|wood|planks|vine|grass|flower|snow|bush|cactus|sugar_cane/.test(below?.name || '');
-      const solid = below && below.name !== 'air' && below.name !== 'water' && below.name !== 'lava' && below.boundingBox !== 'empty' && !flimsy;
-      const headroom = (!at || at.name === 'air') && (!b2 || b2.name === 'air');
-      // FLAT 5-runway toward +x (2026-10-12: walk target plot.x+4 sat 3 Y off
-      // on sloped ground — XZ arrived, 3D read 3.9, miss displaced downstream).
-      let flat = true;
-      try {
-        for (let k = 1; k <= 4; k++) {
-          const g = bot.blockAt(new Vec3(fp.x + k, fp.y - 1, fp.z));
-          const a1 = bot.blockAt(new Vec3(fp.x + k, fp.y, fp.z));
-          const a2 = bot.blockAt(new Vec3(fp.x + k, fp.y + 1, fp.z));
-          const gs = g && g.name !== 'air' && g.name !== 'water' && g.name !== 'lava' && g.boundingBox !== 'empty'
-            && !/leaves|log|wood|planks|vine|grass|flower|snow|bush|cactus|sugar_cane/.test(g.name || '');
-          const hr = (!a1 || a1.name === 'air') && (!a2 || a2.name === 'air');
-          if (!gs || !hr) { flat = false; break; }
-        }
-      } catch (_) { flat = false; }
-      if (!flat) { log('drop ' + attempt + ': rejecting slope (no 5-runway)'); continue; }
-      log('drop ' + attempt + ': landed', fp.x, fp.y, fp.z, 'on', below && below.name, 'at', at && at.name);
-      if (solid && headroom && fp.y < 80) plot = { x: fp.x, y: fp.y, z: fp.z };
-      else if (solid && headroom) log('drop ' + attempt + ': rejecting high perch y=' + fp.y);
+    const ax = Math.floor(bot.entity.position.x);
+    const az = Math.floor(bot.entity.position.z);
+    await rconCmd('tp ' + BOT + ' ' + (ax + 0.5) + ' 120 ' + (az + 0.5));
+    let lastY = 9999, stable = 0;
+    for (let i = 0; i < 50; i++) {
+      await sleep(500);
+      const y = bot.entity.position.y;
+      if (Math.abs(y - lastY) < 0.15) { if (++stable >= 3 && bot.entity.onGround) break; }
+      else stable = 0;
+      lastY = y;
     }
+    const fp = bot.entity.position.floored();
+    const below = bot.blockAt(new Vec3(fp.x, fp.y - 1, fp.z));
+    // refuse water/lava/tree landings, nudge and retry (max 4)
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const b = bot.blockAt(new Vec3(fp.x, fp.y - 1, fp.z));
+      const fl = /water|lava|leaves|log|wood/.test(b?.name || '');
+      if (!fl) break;
+      await rconCmd('tp ' + BOT + ' ' + (fp.x + 8.5) + ' 120 ' + (fp.z + 8.5));
+      await sleep(6000);
+      const fp2 = bot.entity.position.floored();
+      fp.x = fp2.x; fp.y = fp2.y; fp.z = fp2.z;
+    }
+    // pad: dirt runway x-2..x+9 at y-1, air y..y+2 above it
+    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 1} ${fp.z - 2} ${fp.x + 9} ${fp.y - 1} ${fp.z + 2} minecraft:dirt`);
+    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y} ${fp.z - 2} ${fp.x + 9} ${fp.y + 2} ${fp.z + 2} minecraft:air`);
+    await rconCmd(`tp ${BOT} ${fp.x + 0.5} ${fp.y} ${fp.z + 0.5}`);
+    await sleep(3000);
+    const settled = bot.entity.position.floored();
+    plot = { x: settled.x, y: settled.y, z: settled.z };
+    log('pad at', JSON.stringify(plot));
   } catch (e) { log('plot finder threw', e.message); }
   if (!plot) { rec('find-plot', false, 'no open land found'); finish(); return; }
   log('plot', JSON.stringify(plot));
