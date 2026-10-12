@@ -1387,7 +1387,7 @@ diff --git a/node_modules/mineflayer/lib/plugins/generic_place.js b/node_modules
    /**
     *
     * @param {import('prismarine-block').Block} referenceBlock
-@@ -95,3 +95,3 @@
+@@ -101,3 +101,3 @@
          insideBlock: false,
 -        sequence: 0, // 1.19.0+
 +        sequence: bot._blockPlaceSeq, // 26.3 ack watermark (seen-change count; first placement still 0)
