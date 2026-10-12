@@ -5039,6 +5039,11 @@ export function toolClassFor(name) {
 async function equipRightTool(bot, block) {
     const name = block.name || '';
     const cls = toolClassFor(name);
+    // SERVER-HAND FIRST (2026-10-12: client bot.equip window clicks hang ~37s
+    // per dig on the 26.3 Slot decode — measured live between dig-resolved and
+    // next dig-start. RCON verify+replace is <1s, so it leads; the client path
+    // below is a no-RCON fallback only).
+    let bestName = null;
     try {
         const seen = bot.inventory.items() || [];
         let best = null, bestT = Infinity;
@@ -5052,42 +5057,52 @@ async function equipRightTool(bot, block) {
             if (!Number.isFinite(t)) t = 9999;
             if (t < bestT) { bestT = t; best = it; }
         }
-        if (best) {
-            try { await bot.equip(best, 'hand'); } catch (_) {}
-            try {
-                const h = bot.heldItem;
-                if (!h || h.name !== best.name) {
-                    const wantId = best.type;
-                    let slotIdx = -1;
-                    try {
-                        for (let si = 0; si < bot.inventory.slots.length; si++) {
-                            const sl = bot.inventory.slots[si];
-                            if (sl && sl.type === wantId) { slotIdx = si; break; }
-                        }
-                    } catch (_) {}
-                    if (slotIdx >= 36 && slotIdx <= 44) { try { bot.setQuickBarSlot(slotIdx - 36); } catch (_) {} }
-                }
-            } catch (_) {}
-            // HAND-TRUTH (2026-09-27): client heldItem lies (blind slots). Ask
-            // the SERVER what is actually in hand; wrong class => force via
-            // RCON replace (silent, proven) and re-verify. One log line on
-            // mismatch so corrections are visible, not mysterious.
-            try {
-                const { rconCommand } = await import('../../utils/rcon.js');
-                let hand = '';
-                try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
-                const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
-                const wantCls = cls || 'pickaxe';
-                if (!handHas.includes(wantCls)) {
-                    log(bot, `Holding ${handHas || 'nothing'} for ${name} — swapping to ${best.name}.`);
-                    try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${best.name} 1`); } catch (_) {}
-                    await new Promise(r => setTimeout(r, 800));
-                }
-            } catch (_) {}
+        if (best) bestName = best.name;
+    } catch (_) {}
+    // No-RCON fallback needs a client-visible pick even when the class scan
+    // found nothing (blind slots): any tool beats a 37s equip hang.
+    if (!bestName) {
+        try {
+            const any = (bot.inventory.items() || []).find(i => /pickaxe|shovel|axe|hoe|sword|shears/.test(i.name));
+            if (any) bestName = any.name;
+        } catch (_) {}
+    }
+    try {
+        const { rconCommand } = await import('../../utils/rcon.js');
+        let hand = '';
+        try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+        const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+        const wantCls = cls || 'pickaxe';
+        if (handHas.includes(wantCls)) return true; // already holding right class
+        if (bestName) {
+            log(bot, `Holding ${handHas || 'nothing'} for ${name} — swapping to ${bestName}.`);
+            try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${bestName} 1`); } catch (_) {}
+            await new Promise(r => setTimeout(r, 800));
             return true;
         }
     } catch (_) {}
-    try { await bot.tool.equipForBlock(block, { requireHarvest: true }).catch(() => {}); } catch (_) {}
+    // No RCON (or nothing to swap to): client equip, time-boxed — never the
+    // 37s window-click hang. setQuickBarSlot is instant; clickWindow gets 3s.
+    try {
+        const seen = bot.inventory.items() || [];
+        const best = bestName && seen.find(i => i.name === bestName);
+        if (best) {
+            try { bot.setQuickBarSlot(best.slot - 36); } catch (_) {}
+            try {
+                await Promise.race([
+                    bot.equip(best, 'hand'),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('equip-timeout')), 3000)),
+                ]);
+            } catch (_) { try { bot.stopDigging(); } catch (_) {} }
+            return true;
+        }
+    } catch (_) {}
+    try {
+        await Promise.race([
+            bot.tool.equipForBlock(block, { requireHarvest: true }).catch(() => {}),
+            new Promise(r => setTimeout(r, 3000)),
+        ]);
+    } catch (_) {}
     return false;
 }
 
@@ -11241,7 +11256,11 @@ async function staircaseStep(bot) {
         }
         try { bot.pathfinder.removeListener('goal_reached', onGoal); } catch (_) {}
         try { bot.pathfinder.setGoal(null); } catch (_) {}
-        return Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+        const _gain = Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+        try {
+            const _sup = bot.blockAt(new Vec3(gx, gy - 1, gz));
+        } catch (_) {}
+        return _gain;
     } catch (_) { return 0; }
 }
 
