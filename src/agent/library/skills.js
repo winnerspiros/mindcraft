@@ -11392,14 +11392,16 @@ export async function digUp(bot, distance = 6) {
                 log(bot, `Climbed ${climbed} blocks.`);
                 return true;
             }
+            // Head-air with height already gained: the exit lip is adjacent —
+            // jump out FIRST (2026-10-12: carving first dug sideways steps
+            // that stranded her one below the lip; exit-before-carve escapes
+            // the 3-hole deterministically). Carve only if the jump fails.
+            const jgain = await jumpOut(bot);
+            if (jgain > 0) { climbed += jgain; continue; }
             // 1-wide shaft: no step exists, sneak-jump gains 0 by physics.
             // Carve the staircase step directly.
             const gained = await staircaseStep(bot);
             if (gained > 0) { climbed += gained; continue; }
-            // Near-surface: the hole is 1 deep and everything around is air,
-            // so there is no step left to carve — just jump out.
-            const jgain = await jumpOut(bot);
-            if (jgain > 0) { climbed += jgain; continue; }
             // Last check: maybe she is out but on a lip one below start.
             if (isOpenGround(bot)) {
                 try { climbed = Math.max(climbed, Math.floor(bot.entity.position.y) - yStart); } catch (_) {}
