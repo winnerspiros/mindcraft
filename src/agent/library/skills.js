@@ -4839,6 +4839,7 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         bot._eatingHand = prevHand;
         if (prevClaim) bot._eatingStamp = Date.now();
     }
+}
 
     // The volley itself. Split out so the hand claim above can wrap it in a
     // single try/finally instead of every early return having to remember.
@@ -4873,11 +4874,27 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
             const lead = Math.min(0.7, dist / 55);
             aim = aim.offset(entity.velocity.x * lead, entity.velocity.y * lead, entity.velocity.z * lead);
         }
-        // Check the bow is still in hand immediately before drawing, and BEFORE
-        // the aim - a steal during lookAt still reached the draw when the check
-        // sat after it. equipHighestAttack() runs inside attackEntity() and
-        // picks the SWORD, so a concurrent melee can swap the slot between this
-        // function's own equip and its draw.
+        // Check the SERVER hand is the bow immediately before drawing, and
+        // BEFORE the aim - a steal during lookAt still reached the draw when
+        // the check sat after it. equipHighestAttack() runs inside
+        // attackEntity() and picks the SWORD, so a concurrent melee can swap
+        // the slot between this function's own equip and its draw.
+        //
+        // 26.3 CLIENT-BLIND (2026-10-12 sweep: bot.heldItem flapped
+        // dirt/oak_log/iron_shovel mid-volley on a live connection while the
+        // server hand still held the bow — the Slot decode lies). The server
+        // hand is the authority; re-force it if it is not the bow.
+        try {
+            const { rconCommand } = await import('../../utils/rcon.js');
+            let _sh = '';
+            try { _sh = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+            const _shHas = (_sh.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+            if (_sh && _shHas !== 'bow') {
+                try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`); } catch (_) {}
+                try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
+            }
+        } catch (_) {}
+        if (bot.heldItem?.name !== 'bow') {
         //
         // Measured 2026-10-03: the scan logged "shot result: fired=true"
         // repeatedly while she was holding diamond_sword. Zombie HP stayed 20.0,
@@ -6019,8 +6036,9 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                         const { rconCommand, rconInventory } = await import('../../utils/rcon.js');
                         const inv = await rconInventory(bot.username);
                         const names = (inv || []).map(e => e.name);
-                        const pick = names.find(n => /pickaxe/.test(n) && /diamond|iron|stone|netherite/.test(n))
-                            || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe/.test(n)) : null);
+                        const pick = names.find(n => /pickaxe|shovel|axe|hoe|sword|shears/.test(n) && /diamond|netherite|iron|stone|gold|wood|copper|flint/.test(n))
+                            || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe|sword/.test(n)) : null)
+                            || names.find(n => /pickaxe|shovel|axe|hoe|sword|shears/.test(n));
                         if (pick) {
                             await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
                             await new Promise(r => setTimeout(r, 800));
