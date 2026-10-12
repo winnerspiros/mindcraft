@@ -46,7 +46,7 @@ bot.once('login', () => {
   setInterval(() => { try { bot.chat(`/login ${PW}`); } catch (_) {} }, 45000);
 });
 const results = [];
-const rec = (name, ok, detail) => { results.push({ name, ok, detail }); log((ok ? 'PASS' : 'FAIL'), name, '-', detail); };
+const rec = (name, ok, detail) => { results.push({ name, ok, detail }); log((ok ? 'PASS' : 'FAIL'), name, '-', detail); if (!ok) { try { log('LOGBOT', name, '|||', String(bot.output || '').slice(-600).replace(/\n/g, ' | ')); } catch (_) {} } try { bot.output = ''; } catch (_) {} };
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 let started = false;
 const w = setInterval(() => {
