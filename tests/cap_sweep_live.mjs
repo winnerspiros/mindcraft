@@ -130,7 +130,7 @@ async function run() {
     // a trunk in the fill zone once blocked pillar with oak_log). The pad
     // base goes one deeper (y-2 stone) so a lakeside plot does not flood
     // from below/sides mid-run (2026-10-12: water seep killed a whole run).
-    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 2} ${fp.z - 2} ${fp.x + 9} ${fp.y - 2} ${fp.z + 2} minecraft:stone`);
+    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 3} ${fp.z - 2} ${fp.x + 9} ${fp.y - 2} ${fp.z + 2} minecraft:stone`);
     await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 1} ${fp.z - 2} ${fp.x + 9} ${fp.y - 1} ${fp.z + 2} minecraft:dirt`);
     await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y} ${fp.z - 2} ${fp.x + 9} ${fp.y + 5} ${fp.z + 2} minecraft:air`);
     await rconCmd(`tp ${BOT} ${fp.x + 0.5} ${fp.y} ${fp.z + 0.5}`);

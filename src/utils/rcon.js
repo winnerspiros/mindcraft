@@ -331,7 +331,7 @@ export async function rconInventory(name, bust=false) {
             let r;
             try { r = await rconCommand(`data get entity ${safe} Inventory[{Slot:${s}b}]`); }
             catch (_) { return null; }
-            const mm = String(r).match(/\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"([^"]+)"\s*,?\s*count:\s*(\d+)/);
+            const mm = String(r).match(/\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"(?:minecraft:)?([^"]+)"\s*,?\s*count:\s*(\d+)/);
             if (mm) per.push({ slot: parseInt(mm[1], 10), name: mm[2].replace(/^minecraft:/, ''), count: parseInt(mm[3], 10) });
             else if (/No entity was found|Found no elements matching/i.test(String(r))) { /* empty slot */ }
             else return null; // ambiguous: not empty, not parsed

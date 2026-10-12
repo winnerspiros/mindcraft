@@ -4842,7 +4842,8 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     bot._eatingHand = bow;
     bot._eatingStamp = Date.now();
     try {
-        return await runVolley();
+        const _rv = await runVolley(bot, entity, bow, shots, fullCharge, useServerCount, serverArrows);
+        return _rv;
     } finally {
         // Restore rather than clear: a chew already in flight outranks us, and
         // clobbering its claim would leave it wedged with no way back.
@@ -4854,7 +4855,7 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
 
     // The volley itself. Split out so the hand claim above can wrap it in a
     // single try/finally instead of every early return having to remember.
-    async function runVolley() {
+    async function runVolley(bot, entity, bow, shots, fullCharge, useServerCount, serverArrows) {
     await bot.equip(bow, 'hand');
 
     let fired = 0;
@@ -4962,7 +4963,7 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     log(bot, `Fired ${fired} arrow${fired === 1 ? '' : 's'}.`);
     return fired > 0;
     }   // runVolley
-}
+}   // shootBow
 
 export async function throwTrident(bot, target, count=1) {
     /**
