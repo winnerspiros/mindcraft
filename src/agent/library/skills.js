@@ -5121,7 +5121,9 @@ async function equipRightTool(bot, block) {
         const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
         const wantCls = cls || 'pickaxe';
         if (handHas.includes(wantCls)) return true; // already holding right class
-        if (!bestName) {
+        if (!bestName || !bestName.includes(wantCls)) {
+            // Server pick wins over a wrong-class client fallback too
+            // (26.3: blind client decodes iron_axe but not the pickaxe).
             try {
                 const inv = await rconInventory(bot.username, true);
                 const names = (inv || []).map(e => e.name);

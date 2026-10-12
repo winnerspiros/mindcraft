@@ -329,8 +329,15 @@ export async function rconInventory(name, bust=false) {
         const per = [];
         for (let s = 0; s < 36; s++) {
             let r;
+            // One failed slot read must not nuke the whole inventory (2026-10-12:
+            // a single RCON hiccup returned null -> "Don't have right tools"
+            // with a full kit). Retry once, then skip the slot.
             try { r = await rconCommand(`data get entity ${safe} Inventory[{Slot:${s}b}]`); }
-            catch (_) { return null; }
+            catch (_) {
+                try { await new Promise(rr => setTimeout(rr, 200)); } catch (_) {}
+                try { r = await rconCommand(`data get entity ${safe} Inventory[{Slot:${s}b}]`); }
+                catch (_) { continue; }
+            }
             const mm = String(r).match(/\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"(?:minecraft:)?([^"]+)"\s*,?\s*count:\s*(\d+)/);
             if (mm) per.push({ slot: parseInt(mm[1], 10), name: mm[2].replace(/^minecraft:/, ''), count: parseInt(mm[3], 10) });
             else if (/No entity was found|Found no elements matching/i.test(String(r))) { /* empty slot */ }
