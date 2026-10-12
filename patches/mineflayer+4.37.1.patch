@@ -1371,3 +1371,24 @@ diff --git a/node_modules/mineflayer/lib/plugins/digging.js
        const helmetEnchantments = headEquippedItem.enchants
        enchantments = enchantments.concat(helmetEnchantments)
      }
+
+diff --git a/node_modules/mineflayer/lib/plugins/generic_place.js b/node_modules/mineflayer/lib/plugins/generic_place.js
+--- a/node_modules/mineflayer/lib/plugins/generic_place.js
++++ b/node_modules/mineflayer/lib/plugins/generic_place.js
+@@ -4,5 +4,11 @@
+ function inject (bot) {
++  // 26.3 ACK-WATERMARK (2026-10-12 sweep: rapid placements ghosted 2-3/4 —
++  // every _genericPlace sent sequence=0, rewinding the server's
++  // ackBlockChangesUpTo watermark after the first placement. Vanilla sends
++  // its seen-server-change count; mirror it by counting blockUpdate).
++  bot._blockPlaceSeq = bot._blockPlaceSeq || 0
++  bot.on('blockUpdate', () => { bot._blockPlaceSeq++ })
+   const Item = require('prismarine-item')(bot.registry)
+   /**
+    *
+    * @param {import('prismarine-block').Block} referenceBlock
+@@ -95,3 +95,3 @@
+         insideBlock: false,
+-        sequence: 0, // 1.19.0+
++        sequence: bot._blockPlaceSeq, // 26.3 ack watermark (seen-change count; first placement still 0)
+         worldBorderHit: false // 1.21.3
