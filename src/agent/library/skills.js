@@ -5110,13 +5110,29 @@ async function equipRightTool(bot, block) {
             if (any) bestName = any.name;
         } catch (_) {}
     }
+    // RCON-first pick (2026-10-12: the client scan above goes blind on 26.3
+    // — seen=[] — and its any-tool fallback then prefers whatever the client
+    // happens to decode (axe for stone). The server inventory is the truth:
+    // pick the right class from it FIRST, client scan only as fallback).
     try {
-        const { rconCommand } = await import('../../utils/rcon.js');
+        const { rconCommand, rconInventory } = await import('../../utils/rcon.js');
         let hand = '';
         try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
         const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
         const wantCls = cls || 'pickaxe';
         if (handHas.includes(wantCls)) return true; // already holding right class
+        if (!bestName) {
+            try {
+                const inv = await rconInventory(bot.username, true);
+                const names = (inv || []).map(e => e.name);
+                const srv = names.find(n => n.includes(wantCls) && /diamond|netherite|iron|stone|gold|wood|copper|flint/.test(n))
+                    || names.find(n => n.includes(wantCls))
+                    || (/log|wood|plank/i.test(name) ? names.find(n => /axe|sword/.test(n)) : null)
+                    || (/dirt|sand|gravel/i.test(name) ? names.find(n => /shovel/.test(n)) : null)
+                    || names.find(n => /pickaxe|shovel|axe|hoe|sword|shears/.test(n));
+                if (srv) bestName = srv;
+            } catch (_) {}
+        }
         if (bestName) {
             log(bot, `Holding ${handHas || 'nothing'} for ${name} — swapping to ${bestName}.`);
             try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${bestName} 1`); } catch (_) {}
@@ -6062,6 +6078,25 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                             itemId = bot.registry.itemsByName[pick]?.id ?? itemId;
                         }
                     } catch (_) {}
+                    if (!block.canHarvest(itemId)) {
+                        // SERVER-HAND VERDICT (2026-10-12: client itemId is a
+                        // 26.3 Slot-decode lie — the RCON swap above put an
+                        // iron axe in the server hand for stone and the client
+                        // still reported torch. Ask the server what is held;
+                        // a harvesting server hand digs regardless of the
+                        // client's story).
+                        try {
+                            const { rconCommand: _rc3 } = await import('../../utils/rcon.js');
+                            let _sh3 = '';
+                            try { _sh3 = String(await _rc3(`data get entity ${bot.username} SelectedItem`)); } catch (_) {}
+                            const _id3 = (_sh3.match(/id:\s*"(?:minecraft:)?([^"]+)"/) || [])[1] || '';
+                            const _hid3 = (_id3 && bot.registry.itemsByName[_id3]?.id) ?? null;
+                            if (_hid3 !== null && block.canHarvest(_hid3)) {
+                                log(bot, `Server hand holds ${_id3} for ${block.name} (client said ${bot.heldItem?.name || 'nothing'}) — digging on server truth.`);
+                                itemId = _hid3;
+                            }
+                        } catch (_) {}
+                    }
                     if (!block.canHarvest(itemId)) {
                         log(bot, `Don't have right tools to break ${block.name}.`);
                         return false;
