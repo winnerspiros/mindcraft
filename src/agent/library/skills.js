@@ -6789,14 +6789,20 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
     const pos_above = pos.plus(Vec3(0,1,0));
     const dont_move_for = ['torch', 'redstone_torch', 'redstone', 'lever', 'button', 'rail', 'detector_rail', 
         'powered_rail', 'activator_rail', 'tripwire_hook', 'tripwire', 'water_bucket', 'string'];
-    if (!dont_move_for.includes(item_name) && (pos.distanceTo(targetBlock.position) < 1.1 || pos_above.distanceTo(targetBlock.position) < 1.1)) {
+    // Own-feet placements (pillar layers) must NEVER navigate: the target
+    // IS her footing, so the too-close branch would GoalInvert her off the
+    // pad and the too-far branch would walk her back. Verified live 2026-10-12:
+    // pillar layer 1 pathfound away, she fell 8 blocks, pillar died at 1 layer.
+    const _ownFeet = target_dest.x === pos.floored().x && target_dest.z === pos.floored().z
+        && target_dest.y <= pos.floored().y + 1;
+    if (!_ownFeet && !dont_move_for.includes(item_name) && (pos.distanceTo(targetBlock.position) < 1.1 || pos_above.distanceTo(targetBlock.position) < 1.1)) {
         // too close
         let goal = new pf.goals.GoalNear(targetBlock.position.x, targetBlock.position.y, targetBlock.position.z, 2);
         let inverted_goal = new pf.goals.GoalInvert(goal);
         bot.pathfinder.setMovements(new pf.Movements(bot));
         await goToGoal(bot, inverted_goal);
     }
-    if (bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
+    if (!_ownFeet && bot.entity.position.distanceTo(targetBlock.position) > 4.5) {
         // too far — walk to a STANDABLE spot near the target, not just near it.
         // (schem review: GoalNear can strand her across a 1-gap or on the wrong
         // side of a wall, staring at an unreachable face. canStandAt checks
