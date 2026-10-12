@@ -4851,7 +4851,6 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         bot._eatingHand = prevHand;
         if (prevClaim) bot._eatingStamp = Date.now();
     }
-}
 
     // The volley itself. Split out so the hand claim above can wrap it in a
     // single try/finally instead of every early return having to remember.
@@ -4906,26 +4905,32 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
                 try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
             }
         } catch (_) {}
-        if (bot.heldItem?.name !== 'bow') {
+        // CLIENT check kept for the honest-refusal log only — the server
+        // hand above is the authority. Do NOT re-equip here: on 26.3 the
+        // blind client equip hangs and can drop the server-held bow.
         //
         // Measured 2026-10-03: the scan logged "shot result: fired=true"
         // repeatedly while she was holding diamond_sword. Zombie HP stayed 20.0,
         // the arrow count never moved and no arrow entity ever spawned - she was
         // "shooting" with a sword. Drawing without the bow consumes nothing and
-        // fires nothing, so the only defence is to check and to not lie about it.
-        if (bot.heldItem?.name !== 'bow') {
-            log(bot, `Lost the bow before drawing (holding ${bot.heldItem?.name || 'nothing'}) - re-equipping.`);
-            try { await bot.equip(bow, 'hand'); } catch (_) { break; }
-        }
+        // firing nothing, so the only defence is to check and to not lie about it.
+        // 26.3: NO client re-equip here (blind Slot decode: bot.equip hangs
+        // and can drop the server-held bow). The server hand was already
+        // forced to bow above; a lying client must not veto the draw.
         await bot.lookAt(aim, true);
         // Re-check after the aim too: the aim is a round trip to the server and
         // a concurrent equipHighestAttack() can land the sword at any point in
-        // it. A single check before the aim is not enough - it was passing in
-        // testing while the slot changed underneath it.
-        if (bot.heldItem?.name !== 'bow') {
-            log(bot, `Lost the bow while aiming (holding ${bot.heldItem?.name || 'nothing'}) - re-equipping.`);
-            try { await bot.equip(bow, 'hand'); } catch (_) { break; }
-        }
+        // it. Server hand re-verified (client lies); re-force on mismatch.
+        try {
+            const { rconCommand: _rc2 } = await import('../../utils/rcon.js');
+            let _sh2 = '';
+            try { _sh2 = String(await _rc2(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+            const _shHas2 = (_sh2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+            if (_sh2 && _shHas2 !== 'bow') {
+                try { await _rc2(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`); } catch (_) {}
+                try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
+            }
+        } catch (_) {}
         await new Promise(r => setTimeout(r, 100));   // let the view settle on target
         await bot.activateItem();                     // start drawing the bow
         await new Promise(r => setTimeout(r, fullCharge ? 1000 : 320));
