@@ -225,14 +225,13 @@ export async function rconPlayerGear(name) {
         if (om) v.offhand = parseStack(om[1]);
     } catch (_) {}
     // Inventory — [{Slot: Nb, id: "minecraft:x", count: N}, ...]
+    // 26.3 abbreviates big inventories server-side ("{Slot: 1b,..."), so a
+    // regex over the whole reply sees only slot 0. Reuse rconInventory, which
+    // falls back to per-slot reads on a truncated reply.
     try {
-        const inv = String(await rconCommand(`data get entity ${safe} Inventory`, 5000));
-        v.raw.inventory = inv;
-        const re = /\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"([^"]+)"\s*,?\s*count:\s*(\d+)\s*,?/g;
-        let m;
-        while ((m = re.exec(inv)) !== null) {
-            v.carrying.push({ slot: parseInt(m[1], 10), id: m[2].replace(/^minecraft:/, ''), count: parseInt(m[3], 10) });
-        }
+        const full = await rconInventory(safe);
+        if (full) for (const e of full) v.carrying.push({ slot: e.slot, id: e.name, count: e.count });
+        else v.raw.inventory = '(unreadable)';
     } catch (_) {}
     _gearCache[safe] = { t: now, v };
     return v;
@@ -257,10 +256,13 @@ export async function rconPlayerRotation(name) {
 
 // Server-truth inventory (2026-09-27): client items() is blind on 26.3 (Slot
 // decode bug reads 0 [] while RCON holds a real kit), so placement/dig verbs
-// that gate on carried blocks must consult the server. Cached a few seconds
-// per name — placement checks run mid-leg, not per tick.
+// that gate on carried blocks must consult the server. Cached 15s per name:
+// the per-slot fallback on a truncated reply costs ~6s (36 RCON reads), so a
+// 4s cache re-ran it on nearly every breakBlockAt call and a 3-block digUp
+// took minutes. 15s staleness is fine for tool-presence checks; callers that
+// need fresh counts after a pickup pass bust=true.
 const _invCache = {};
-const INV_CACHE_MS = 4000;
+const INV_CACHE_MS = 15000;
 export function rconInventoryBust(name) {
     try {
         const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
@@ -312,7 +314,26 @@ export async function rconInventory(name, bust=false) {
     let out;
     try { out = await rconCommand(`data get entity ${safe} Inventory`); }
     catch (e) { return null; }
-    const { inv, complete } = parseInventoryText(out);
+    let { inv, complete } = parseInventoryText(out);
+    // 26.3 abbreviates big inventories server-side ("{Slot: 1b,..."): the reply
+    // ends without "]" and parseInventoryText rightly calls it incomplete. Fall
+    // back to per-slot reads — Inventory[{Slot:Nb}] returns the single stack
+    // or "No entity was found" for an empty slot. 36 reads is slow (~6s) but
+    // honest; a truncated whole-read is fast and wrong.
+    if (!complete) {
+        const per = [];
+        for (let s = 0; s < 36; s++) {
+            let r;
+            try { r = await rconCommand(`data get entity ${safe} Inventory[{Slot:${s}b}]`); }
+            catch (_) { return null; }
+            const mm = String(r).match(/\{\s*Slot:\s*(\d+)b?\s*,?\s*id:\s*"([^"]+)"\s*,?\s*count:\s*(\d+)/);
+            if (mm) per.push({ slot: parseInt(mm[1], 10), name: mm[2].replace(/^minecraft:/, ''), count: parseInt(mm[3], 10) });
+            else if (/No entity was found|Found no elements matching/i.test(String(r))) { /* empty slot */ }
+            else return null; // ambiguous: not empty, not parsed
+        }
+        inv = per;
+        complete = true;
+    }
     // Do NOT cache a partial read. A short reply that looked like a complete
     // inventory is what made her claim she had no dirt while holding 320 of it;
     // caching it also made the lie stick for the whole cache window.
@@ -397,9 +418,13 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 export async function rconEnsureKit(name) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     if (!safe) return { ok: false, gave: false, detail: 'bad name' };
-    let inv, eq;
+    let eq;
     try {
-        inv = await rconCommand(`data get entity ${safe} Inventory`);
+        // 26.3 abbreviates big inventories server-side: rconInventory falls
+        // back to per-slot reads on a truncated reply.
+        const full = await rconInventory(safe, true);
+        if (!full) return { ok: false, gave: false, detail: 'inventory unreadable, refusing to kit blind' };
+        inv = full.map(e => e.name).join(' ');
         eq = await rconCommand(`data get entity ${safe} equipment`);
     } catch (e) {
         return { ok: false, gave: false, detail: 'rcon read failed: ' + e.message };

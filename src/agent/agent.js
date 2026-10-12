@@ -3701,7 +3701,7 @@ export class Agent {
             console.log(`[suffocation] real damage + solid head x3 — RCON tp to open air (${x}, ${safeY}, ${z})`);
             try {
                 const { rconCommand } = await import('../utils/rcon.js');
-                await rconCommand(`tp ${bot.username} ${x} ${safeY} ${z}`);
+                await rconCommand(`minecraft:tp ${bot.username} ${x} ${safeY} ${z}`);
                 try { bot.entity.position.set(x + 0.5, safeY, z + 0.5); } catch (_) {}
             } catch (e) {
                 console.warn('suffocation RCON tp failed, resistance only:', e.message);

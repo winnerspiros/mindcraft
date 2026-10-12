@@ -5015,7 +5015,7 @@ async function equipRightTool(bot, block) {
                 const wantCls = cls || 'pickaxe';
                 if (!handHas.includes(wantCls)) {
                     log(bot, `Holding ${handHas || 'nothing'} for ${name} — swapping to ${best.name}.`);
-                    try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${best.name} 1`); } catch (_) {}
+                    try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${best.name} 1`); } catch (_) {}
                     await new Promise(r => setTimeout(r, 800));
                 }
             } catch (_) {}
@@ -5494,7 +5494,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                                 const _pk = _names.find(n => n.includes(_wc) && /diamond|iron|stone|netherite/.test(n))
                                     || _names.find(n => n.includes(_wc));
                                 if (_pk) {
-                                    await _rg(`item replace entity ${bot.username} weapon.mainhand with minecraft:${_pk} 1`);
+                                    await _rg(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${_pk} 1`);
                                     await new Promise(r => setTimeout(r, 800));
                                 }
                             } catch (_) {}
@@ -5717,10 +5717,23 @@ export async function pickupNearbyItems(bot) {
     // BEFORE, walk/loiter the drop point, snapshot AFTER — a rising pack
     // count is the pickup verdict, never the entity list.
     let _before = null;
+    // 2026-10-11 probe: rconItemCount busts the cache, and each full read
+    // costs ~6s through the per-slot fallback — 10 materials x before+after
+    // = 20 full scans (~2min) per pickup. Watch only the block that was
+    // actually dug plus dirt-family; the count is a verdict, not an audit.
+    const _watch = (() => {
+        try {
+            // _lastDigPos is set AFTER the break, so the cell already reads
+            // air — capture the name from the block that was dug, passed via
+            // _lastDugName, else fall back to dirt-family.
+            const dug = bot._lastDugName || null;
+            return [...new Set([dug, 'dirt', 'cobblestone', 'stone'].filter(Boolean))];
+        } catch (_) { return ['dirt']; }
+    })();
     try {
         const { rconItemCount } = await import('../../utils/rcon.js');
         _before = {};
-        for (const n of ['dirt', 'grass_block', 'stone', 'cobblestone', 'oak_log', 'sand', 'gravel', 'coal', 'iron_ore', 'diamond']) {
+        for (const n of _watch) {
             try { _before[n] = await rconItemCount(bot.username, n); } catch (_) {}
         }
     } catch (_) {}
@@ -5735,17 +5748,30 @@ export async function pickupNearbyItems(bot) {
     // magnet — then compare RCON pack counts. Never trust the entity list.
     let _vacuumAt = null;
     try { _vacuumAt = bot._lastDigPos ? { ...bot._lastDigPos } : null; } catch (_) {}
+    // 2026-10-11 probe: bot.pathfinder.goto() NEVER SETTLES when already
+    // inside the goal range (GoalNear-1 to own feet: planner builds a
+    // 0-length path, goal_reached never fires, watchdog burns 10s). The
+    // vacuum target is usually her own feet — check arrival FIRST and skip
+    // the goto entirely, just loiter for the magnet.
+    const _close = (x, y, z, r) => {
+        try { return bot.entity.position.distanceTo(new Vec3(x, y, z)) <= r; }
+        catch (_) { return false; }
+    };
     if (nearestItem) {
-        try {
-            await goToGoal(bot, new pf.goals.GoalNear(nearestItem.position.x, nearestItem.position.y, nearestItem.position.z, 1));
-        } catch (_) {}
+        if (!_close(nearestItem.position.x, nearestItem.position.y, nearestItem.position.z, 1.5)) {
+            try {
+                await goToGoal(bot, new pf.goals.GoalNear(nearestItem.position.x, nearestItem.position.y, nearestItem.position.z, 1));
+            } catch (_) {}
+        }
         try { await new Promise(resolve => setTimeout(resolve, 800)); } catch (_) {}
         const after = getNearestItem(bot);
         if (!after) pickedUp = 1;
     } else if (_vacuumAt) {
-        try {
-            await goToGoal(bot, new pf.goals.GoalNear(_vacuumAt.x, _vacuumAt.y, _vacuumAt.z, 1));
-        } catch (_) {}
+        if (!_close(_vacuumAt.x, _vacuumAt.y, _vacuumAt.z, 1.5)) {
+            try {
+                await goToGoal(bot, new pf.goals.GoalNear(_vacuumAt.x, _vacuumAt.y, _vacuumAt.z, 1));
+            } catch (_) {}
+        }
         try { await new Promise(resolve => setTimeout(resolve, 1200)); } catch (_) {}
     }
     // RCON verdict: any watched material rising in the server-held pack
@@ -5897,7 +5923,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                         const pick = names.find(n => /pickaxe/.test(n) && /diamond|iron|stone|netherite/.test(n))
                             || (/log|wood|plank/i.test(block.name) ? names.find(n => /axe/.test(n)) : null);
                         if (pick) {
-                            await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
+                            await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
                             await new Promise(r => setTimeout(r, 800));
                             itemId = bot.registry.itemsByName[pick]?.id ?? itemId;
                         }
@@ -5967,7 +5993,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                         const pick = names.find(n => n.includes(wantCls) && /diamond|iron|stone|netherite/.test(n))
                             || names.find(n => n.includes(wantCls));
                         if (pick) {
-                            await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
+                            await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${pick} 1`);
                             await new Promise(r => setTimeout(r, 800));
                             let hand2 = '';
                             try { hand2 = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
@@ -5987,8 +6013,18 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                                 return false;
                             }
                         } else {
-                            log(bot, `Hand-gate: no ${wantCls} anywhere — skipping ${_beforeName}.`);
-                            return false;
+                            // SOFT-BLOCK (2026-10-11 probe: holding iron_pickaxe
+                            // for dirt with no shovel anywhere refused the dig
+                            // outright. Dirt/sand/grass dig by hand in <1s —
+                            // refusing is worse than swinging wrong. Only
+                            // stone-like blocks genuinely need the pick.)
+                            const _soft = /dirt|sand|gravel|soul_sand|soul_soil|clay|grass_block|mud|snow|concrete_powder|log|wood|plank|leaves|plant|wool|cobweb|vine|tall_grass|grass|flower|crop|snow_layer|carpet|bush/i.test(_beforeName);
+                            if (_soft) {
+                                log(bot, `Hand-gate: no ${wantCls} anywhere for ${_beforeName} — digging by hand (soft block).`);
+                            } else {
+                                log(bot, `Hand-gate: no ${wantCls} anywhere — skipping ${_beforeName}.`);
+                                return false;
+                            }
                         }
                     } catch (_) {}
                 }
@@ -6035,7 +6071,7 @@ export async function breakBlockAt(bot, x, y, z, navTimeoutMs = 15000) {
                 }
             }
         } catch (_) {}
-        if (_broke) { try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; } catch (_) {} }
+        if (_broke) { try { bot._lastDigPos = { x: block.position.x, y: block.position.y, z: block.position.z }; bot._lastDugName = _beforeName; } catch (_) {} }
         await pickupNearbyItems(bot);
         if (_broke) log(bot, `Broke ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)}.`);
         else log(bot, `Dig finished but ${block.name} at x:${x.toFixed(1)}, y:${y.toFixed(1)}, z:${z.toFixed(1)} is still there (server truth) — moving on.`);
@@ -6124,7 +6160,7 @@ export async function pillarUp(bot, blockType, height = 4) {
         // client is blind: put the resolved stack where the hand can find it.
         // RCON hand-swap worked for digs; do the same pre-pillar.
         if ((counts[blockType] || 0) > 0) {
-            try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
+            try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
             await new Promise(r => setTimeout(r, 600));
         }
     } catch (_) {}
@@ -6215,7 +6251,7 @@ export async function pillarUp(bot, blockType, height = 4) {
                 const swap = pref.find(n => (counts[n] || 0) > 0);
                 if (swap && swap !== blockType) { log(bot, `Out of ${blockType} — continuing on ${swap}.`); blockType = swap; }
             }
-            try { await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
+            try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${blockType} 1`); } catch (_) {}
             await new Promise(r => setTimeout(r, 400));
         } catch (_) {}
         let ok = await placeBlock(bot, blockType, feet.x, feet.y, feet.z, 'bottom', true);
@@ -6510,7 +6546,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                 // item handle so the equip/place path below has something to hold.
                 try {
                     const { rconCommand } = await import('../../utils/rcon.js');
-                    await rconCommand(`item replace entity ${bot.username} weapon.mainhand with minecraft:${item_name} 1`);
+                    await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${item_name} 1`);
                     await new Promise(r => setTimeout(r, 600));
                     block_item = bot.inventory.findInventoryItem(item_name)
                         || { name: item_name, type: bot.registry.itemsByName[item_name]?.id, count: serverCount, slot: null };
@@ -6855,6 +6891,23 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                         log(bot, `Placed ${blockType} at ${target_dest} but found ${chk.name} — wrong block.`);
                         return false;
                     }
+                    // SERVER-TRUTH (2026-10-11 sweep: placeBlock returned true
+                    // 4/4 while world-truth was 0/4 — the client saw ghosts).
+                    // Ask the server whether the cell is air before claiming
+                    // success. RCON down -> trust the client check as before.
+                    try {
+                        const { rconCommand } = await import('../../utils/rcon.js');
+                        const SB = 'vbchk';
+                        await rconCommand(`scoreboard objectives add ${SB} dummy`).catch(() => {});
+                        await rconCommand(`scoreboard players set ${SB} ${SB} 0`).catch(() => {});
+                        await rconCommand(`execute unless block ${target_dest.x} ${target_dest.y} ${target_dest.z} minecraft:air run scoreboard players add ${SB} ${SB} 1`);
+                        const gv = String(await rconCommand(`scoreboard players get ${SB} ${SB}`));
+                        const gm = gv.match(/has (\d+)/);
+                        if (gm && parseInt(gm[1]) < 1) {
+                            log(bot, `Placed ${blockType} at ${target_dest} but the server says the cell is air — ghost placement, reporting failure.`);
+                            return false;
+                        }
+                    } catch (_) { /* RCON unavailable: client check stands */ }
                 }
             } catch {}
             // Clean the dirt scaffold bridged in above (if any) now that the
@@ -8179,7 +8232,7 @@ export async function teleportSelf(bot, x, y, z) {
     if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) { log(bot, '!teleportMe needs x y z — where to?'); return false; }
     if (y < -64 || y > 320) { log(bot, `Y=${y} is outside the world — refusing the tp.`); return false; }
     try {
-        await rconCommand(`tp ${bot.username} ${x} ${y} ${z}`);
+        await rconCommand(`minecraft:tp ${bot.username} ${x} ${y} ${z}`);
         try { bot.entity.position.set(x + 0.5, y, z + 0.5); } catch (_) {}
         log(bot, `Tp'd myself to ${x} ${y} ${z} — the fast road, used sparingly.`);
         return true;
@@ -8543,7 +8596,12 @@ export async function goToGoal(bot, goal, navTimeoutMs = 15000) {
                     if (step && step.status === 'success') {
                         final_movements = destructiveMovements;
                         bot.pathfinder.setMovements(final_movements);
-                        try { await bot.pathfinder.goto(stepGoal); } catch (_) {}
+                        // 2026-10-11 probe: raw goto here has NO watchdog — the
+                        // GoalNear-1 sidestep never settles (already within 1)
+                        // and the leg wedges until the action timeout. Race it.
+                        try { await Promise.race([bot.pathfinder.goto(stepGoal), new Promise(r => setTimeout(r, 8000))]); } catch (_) {}
+                        try { bot.pathfinder.setGoal(null); } catch (_) {}
+                        try { bot.pathfinder.stop(); } catch (_) {}
                         const retry3 = await bot.pathfinder.getPathTo(destructiveMovements, goal, Math.max(pathfind_timeout * 3, 4000));
                         if (retry3 && retry3.status === 'success') { log(bot, `Found path after sidestep.`); rescued = true; }
                     }
@@ -8824,7 +8882,10 @@ export async function goToPosition(bot, x, y, z, min_distance=2, mode='walk') {
         log(bot, `Missing coordinates, given x:${x} y:${y} z:${z}`);
         return false;
     }
-    if (bot.modes.isOn('cheat')) {
+    // Sweep harness runs skills on a bare mineflayer bot (no agent modes).
+    // bot.modes is agent-wired — guard it so library skills work standalone.
+    const _cheatOn = (() => { try { return bot.modes && typeof bot.modes.isOn === 'function' && bot.modes.isOn('cheat'); } catch (_) { return false; } })();
+    if (_cheatOn) {
         // 26.3: cheat-/tp emits a server teleport the 26.3 client stack can't
         // echo cleanly (stale-state positions -> "Invalid move" kick). Walk
         // instead — same destination, no teleport, no kick.
@@ -9736,7 +9797,12 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                     try {
                         const ng = new pf.goals.GoalNear(fx, fp.y, fz, 1);
                         bot.pathfinder.setMovements(moveProfile(bot, 'walk'));
-                        await bot.pathfinder.goto(ng);
+                        // 2026-10-11: same no-watchdog hole as the sidestep —
+                        // race the step so a never-settling goto can't wedge
+                        // the whole tunnel leg.
+                        try { await Promise.race([bot.pathfinder.goto(ng), new Promise(r => setTimeout(r, 8000))]); } catch (_) {}
+                        try { bot.pathfinder.setGoal(null); } catch (_) {}
+                        try { bot.pathfinder.stop(); } catch (_) {}
                     } catch (_) {}
                     if (arrived()) return true;
                     // nothing dug AND no closer: tunnel is not advancing (wall
@@ -10945,10 +11011,91 @@ export async function digDown(bot, distance = 10) {
 // staircase gives her a real block to walk ONTO, so the plain walk primitive
 // (which demonstrably works) does the lifting. Tries all four horizontal
 // directions, because the open one depends on the tunnel shape.
+// Jump-out: escape a 1-deep hole or lip when headroom is air and there is
+// no step to carve. Sneak OFF (sneak prevents mounting the lip), face the
+// lowest-looking neighbour, run+jump until Y changes. Returns blocks gained.
+async function jumpOut(bot) {
+    if (bot.interrupt_code) return 0;
+    const here = bot.blockAt(bot.entity.position);
+    if (!here) return 0;
+    const head = bot.blockAt(here.position.offset(0, 1, 0));
+    if (head && head.name !== 'air' && head.name !== 'cave_air') return 0;
+    // pick the horizontal neighbour with the lowest solid top (easiest lip)
+    let best = null, bestTop = Infinity;
+    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+        const n = bot.blockAt(here.position.offset(dx, 0, dz));
+        if (!n) continue;
+        if (n.name === 'lava' || n.name === 'bedrock') continue;
+        const top = (n.name === 'air' || n.name === 'cave_air')
+            ? n.position.y - 1 : n.position.y + 1;
+        if (top < bestTop) { bestTop = top; best = [dx, dz]; }
+    }
+    if (!best) return 0;
+    const [dx, dz] = best;
+    // Raw control states can't move her here (live probe: 3s of
+    // forward+jump left pos/vel frozen at 0) — pathfinder owns movement.
+    try {
+        const goal = new pf.goals.GoalBlock(here.position.x + dx, here.position.y + 1, here.position.z + dz);
+        try { bot.pathfinder.setMovements(moveProfile(bot, 'walk')); } catch (_) {}
+        try { bot.pathfinder.setGoal(goal, true); } catch (_) { bot.pathfinder.setGoal(goal); }
+        const yBefore = Math.floor(bot.entity.position.y);
+        let status = 'pending';
+        const onGoal = () => { status = 'goal_reached'; };
+        const onNoPath = () => { status = 'no_path'; };
+        try { bot.pathfinder.on('goal_reached', onGoal); } catch (_) {}
+        try { bot.pathfinder.on('path_update', (r) => { if (r && r.status === 'noPath') status = 'no_path'; }); } catch (_) {}
+        const t0 = Date.now();
+        while (Date.now() - t0 < 15000) {
+            if (bot.interrupt_code) break;
+            if (Math.floor(bot.entity.position.y) > yBefore) break;
+            if (status !== 'pending') break;
+            await new Promise(r => setTimeout(r, 200));
+        }
+        try { bot.pathfinder.removeListener('goal_reached', onGoal); } catch (_) {}
+        try { bot.pathfinder.removeListener('path_update', onNoPath); } catch (_) {}
+        try { bot.pathfinder.setGoal(null); } catch (_) {}
+        return Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+    } catch (_) { return 0; }
+}
+
+// Open-ground check: feet+head air, solid within 2 below, and at least 2
+// of 4 horizontal neighbours walkable at feet level. Means "out of the
+// hole", used by digUp to stop counting on the surface.
+function isOpenGround(bot) {
+    try {
+        const here = bot.blockAt(bot.entity.position);
+        if (!here) return false;
+        const head = bot.blockAt(here.position.offset(0, 1, 0));
+        if (head && head.name !== 'air' && head.name !== 'cave_air') return false;
+        let solidBelow = false;
+        for (let d = 1; d <= 2; d++) {
+            const b = bot.blockAt(here.position.offset(0, -d, 0));
+            if (b && b.name !== 'air' && b.name !== 'cave_air') { solidBelow = true; break; }
+        }
+        if (!solidBelow) return false;
+        let open = 0;
+        for (const [dx, dz] of [[0,1],[0,-1],[1,0],[-1,0]]) {
+            const n = bot.blockAt(here.position.offset(dx, 0, dz));
+            const nu = bot.blockAt(here.position.offset(dx, 1, dz));
+            const airN = !n || n.name === 'air' || n.name === 'cave_air';
+            const airU = !nu || nu.name === 'air' || nu.name === 'cave_air';
+            if (airN && airU) open++;
+        }
+        return open >= 2;
+    } catch (_) { return false; }
+}
+
 async function staircaseStep(bot) {
     if (bot.interrupt_code) return 0;
     let best = null;
-    for (const [dx, dz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {
+    // Scan order: face travel direction first so the carved step is the one
+    // she is already standing next to (fixed 2026-10-12: fixed [0,1] order
+    // carved the far side while she walked the near side).
+    const yawNow = (() => { try { return bot.entity.yaw; } catch (_) { return 0; } })();
+    const fdx = -Math.sin(yawNow), fdz = -Math.cos(yawNow);
+    const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]].sort((a, b) =>
+        (b[0]*fdx + b[1]*fdz) - (a[0]*fdx + a[1]*fdz));
+    for (const [dx, dz] of dirs) {
         const here = bot.blockAt(bot.entity.position);
         if (!here) return 0;
         const head = bot.blockAt(here.position.offset(0, 1, 0));
@@ -10993,34 +11140,34 @@ async function staircaseStep(bot) {
         if (!ok) return 0;
     }
     try { await pickupNearbyItems(bot); } catch (_) {}
-    // 3) walk onto it. Sneak off (would edge us off the step), forward held
+    // 3) walk onto it. Sneak ON (edge-guard: without sneak she walks off
+    //    the 1-wide step into the shaft she is climbing out of — measured
+    //    2026-10-11: forward-no-sneak LOST a block of height). Forward held
     //    until Y actually changes.
-    const yBefore = Math.floor(bot.entity.position.y);
-    const yaw = Math.atan2(-dx, -dz);
-    try { bot.setControlState('sneak', false); } catch (_) {}
-    try { bot.look(yaw, 0, true); } catch (_) {}
-    try { bot.setControlState('forward', true); } catch (_) {}
-    const t0 = Date.now();
-    while (Date.now() - t0 < 2500) {
-        if (bot.interrupt_code) break;
-        if (Math.floor(bot.entity.position.y) > yBefore) break;
-        await new Promise(r => setTimeout(r, 80));
-    }
-    try { bot.setControlState('forward', false); } catch (_) {}
-    const gain = Math.floor(bot.entity.position.y) - yBefore;
-    if (gain > 0) return gain;
-    // 4) last resort: jump while pushing toward the step — some shafts need
-    //    the hop, some need only the walk, try both before giving up.
-    try { bot.setControlState('forward', true); } catch (_) {}
-    try { bot.setControlState('jump', true); } catch (_) {}
-    const t1 = Date.now();
-    while (Date.now() - t1 < 1500) {
-        if (bot.interrupt_code) break;
-        if (Math.floor(bot.entity.position.y) > yBefore) break;
-        await new Promise(r => setTimeout(r, 80));
-    }
-    for (const s of ['jump', 'forward']) { try { bot.setControlState(s, false); } catch (_) {} }
-    return Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+    // 3) mount the 1-block step: pathfinder owns movement (raw control
+    //    states freeze her: live probe showed 3-4s of forward+jump with
+    //    pos/vel pinned at 0, twice). Goal = the cleared step cell.
+    try {
+        const gx = here2.position.x + dx, gy = here2.position.y + 1, gz = here2.position.z + dz;
+        const goal = new pf.goals.GoalBlock(gx, gy, gz);
+        try { bot.pathfinder.setMovements(moveProfile(bot, 'walk')); } catch (_) {}
+        try { bot.pathfinder.setGoal(goal, true); } catch (_) { bot.pathfinder.setGoal(goal); }
+        const yBefore = Math.floor(bot.entity.position.y);
+        let status = 'pending';
+        const onGoal = () => { status = 'goal_reached'; };
+        try { bot.pathfinder.on('goal_reached', onGoal); } catch (_) {}
+        try { bot.pathfinder.on('path_update', (r) => { if (r && r.status === 'noPath') status = 'no_path'; }); } catch (_) {}
+        const t0 = Date.now();
+        while (Date.now() - t0 < 15000) {
+            if (bot.interrupt_code) break;
+            if (Math.floor(bot.entity.position.y) > yBefore) break;
+            if (status !== 'pending') break;
+            await new Promise(r => setTimeout(r, 200));
+        }
+        try { bot.pathfinder.removeListener('goal_reached', onGoal); } catch (_) {}
+        try { bot.pathfinder.setGoal(null); } catch (_) {}
+        return Math.max(0, Math.floor(bot.entity.position.y) - yBefore);
+    } catch (_) { return 0; }
 }
 
 export async function digUp(bot, distance = 6) {
@@ -11095,6 +11242,12 @@ export async function digUp(bot, distance = 6) {
         }
         // Step into the cleared space.
         //
+        // 2026-10-11 probe: in a 1-WIDE shaft (her own digDown hole) the
+        // block above is air the moment it breaks, but there is no step to
+        // stand on — sneak+forward+jump gains 0 forever, then staircaseStep
+        // carves sideways. Skip straight to the staircase when the head cell
+        // was air all along (nothing to climb INTO, must carve a step).
+        const _headWasAir = !head || head.name === 'air' || head.name === 'cave_air';
         // MEASURED FAILURE: this used to be
         //     bot.setControlState('forward', true); sleep(350); ...(false)
         // which climbed 0 blocks, twice, every time. Logged:
@@ -11109,6 +11262,31 @@ export async function digUp(bot, distance = 6) {
         // changes rather than for a fixed sleep, because 350ms of forward on a
         // 1-block step is a coin flip.
         const yBefore = Math.floor(bot.entity.position.y);
+        if (_headWasAir) {
+            // At/near the surface the head cell is air because she is already
+            // OUT (standing on open ground next to the hole): count it.
+            // Verified live 2026-10-12: probe plot is a flat pad, head is air
+            // on iter 2 because the climb already succeeded.
+            if (climbed > 0 && isOpenGround(bot)) {
+                log(bot, `Climbed ${climbed} blocks.`);
+                return true;
+            }
+            // 1-wide shaft: no step exists, sneak-jump gains 0 by physics.
+            // Carve the staircase step directly.
+            const gained = await staircaseStep(bot);
+            if (gained > 0) { climbed += gained; continue; }
+            // Near-surface: the hole is 1 deep and everything around is air,
+            // so there is no step left to carve — just jump out.
+            const jgain = await jumpOut(bot);
+            if (jgain > 0) { climbed += jgain; continue; }
+            // Last check: maybe she is out but on a lip one below start.
+            if (isOpenGround(bot)) {
+                log(bot, `Climbed ${climbed} blocks (surfaced).`);
+                return true;
+            }
+            log(bot, `Climbed ${climbed} blocks, then made no further progress.`);
+            return climbed > 0;
+        }
         try { bot.setControlState('sneak', true); } catch (_) {}
         try { bot.setControlState('forward', true); } catch (_) {}
         try { bot.setControlState('jump', true); } catch (_) {}
@@ -11132,6 +11310,8 @@ export async function digUp(bot, distance = 6) {
             // walkable ground, so the movement primitive cannot fail on it.
             let gained = await staircaseStep(bot);
             if (gained > 0) { climbed += gained; continue; }
+            const jgain = await jumpOut(bot);
+            if (jgain > 0) { climbed += jgain; continue; }
             log(bot, `Climbed ${climbed} blocks, then made no further progress.`);
             return climbed > 0;
         }
