@@ -127,7 +127,10 @@ async function run() {
       fp.x = fp2.x; fp.y = fp2.y; fp.z = fp2.z;
     }
     // pad: dirt runway x-2..x+9 at y-1, air y..y+5 above it (tall clear:
-    // a trunk in the fill zone once blocked pillar with oak_log)
+    // a trunk in the fill zone once blocked pillar with oak_log). The pad
+    // base goes one deeper (y-2 stone) so a lakeside plot does not flood
+    // from below/sides mid-run (2026-10-12: water seep killed a whole run).
+    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 2} ${fp.z - 2} ${fp.x + 9} ${fp.y - 2} ${fp.z + 2} minecraft:stone`);
     await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 1} ${fp.z - 2} ${fp.x + 9} ${fp.y - 1} ${fp.z + 2} minecraft:dirt`);
     await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y} ${fp.z - 2} ${fp.x + 9} ${fp.y + 5} ${fp.z + 2} minecraft:air`);
     await rconCmd(`tp ${BOT} ${fp.x + 0.5} ${fp.y} ${fp.z + 0.5}`);
@@ -169,6 +172,11 @@ async function run() {
   // 2. DIG DOWN + UP roundtrip (the hole question)
   let yBefore = Math.floor(bot.entity.position.y);
   try {
+    // Re-anchor on the pad first: if the walk leg left her displaced (water,
+    // stuck), digging here tests the wrong ground and cascades. Harness tp.
+    await rconCmd(`tp ${BOT} ${plot.x + 0.5} ${plot.y} ${plot.z + 0.5}`).catch(() => {});
+    await sleep(2000);
+    yBefore = Math.floor(bot.entity.position.y);
     const r = await skills.digDown(bot, 3);
     await sleep(1500);
     const yAfter = Math.floor(bot.entity.position.y);
