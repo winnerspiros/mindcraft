@@ -2425,7 +2425,16 @@ export async function placeTorchSmart(bot, x, y, z) {
      **/
     const V = (await import('vec3')).default;
     x = Math.floor(x); y = Math.floor(y); z = Math.floor(z);
-    // floor: air cell + solid below
+    // floor: air cell + solid below. If the cell below is air, lay a dirt
+    // base DIRECTLY under the torch first (2026-10-12: placeBlock's generic
+    // scaffold bridged the closest-to-feet cell — diagonal to the torch, so
+    // no valid attach face existed and the server rejected twice).
+    try {
+        const belowT = bot.blockAt(new V(x, y - 1, z));
+        if (belowT && (belowT.name === 'air' || belowT.name === 'cave_air')) {
+            await placeBlock(bot, 'dirt', x, y - 1, z, 'bottom', true);
+        }
+    } catch (_) {}
     try {
         const ok = await placeBlock(bot, 'torch', x, y, z, 'bottom', true);
         if (ok) return 'floor';
