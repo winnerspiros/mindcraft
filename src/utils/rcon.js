@@ -267,6 +267,11 @@ export function rconInventoryBust(name) {
     try {
         const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
         if (safe && _invCache[safe]) delete _invCache[safe];
+        // rconCountAll reads through rconPlayerGear, which has its OWN 5s
+        // cache. Bust it too, or back-to-back reads (arrow before/after a
+        // shot) both hit cache and the count can never move. Fixed 2026-10-12
+        // after the bow volley spawned an arrow entity while reporting 0 fired.
+        if (safe && _gearCache[safe]) delete _gearCache[safe];
     } catch (_) {}
 }
 /**

@@ -4546,6 +4546,12 @@ async function awaitArrowDrop(rconCountAll, username, before, clientNow) {
     for (let i = 0; i < POLLS; i++) {
         if (i > 0) await new Promise(r => setTimeout(r, GAP));
         try {
+            // Bust the gear cache every poll: without it all 6 reads hit the
+            // 5s cache and the arrow count can never drop.
+            try {
+                const { rconInventoryBust } = await import('../../utils/rcon.js');
+                rconInventoryBust(username);
+            } catch (_) {}
             const s = await rconCountAll(username, 'arrow');
             if (s) latest = s.total;
         } catch (_) { break; }   // RCON died mid-poll: fall through to what we have
@@ -4792,7 +4798,8 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
     let serverArrows = null;
     let useServerCount = false;
     try {
-        const { rconCountAll } = await import('../../utils/rcon.js');
+        const { rconCountAll, rconInventoryBust } = await import('../../utils/rcon.js');
+        try { rconInventoryBust(bot.username); } catch (_) {}
         serverArrows = await rconCountAll(bot.username, 'arrow');
         if (serverArrows && serverArrows.total === 0) {
             log(bot, 'Server says I have no arrows — the client count was stale.');
