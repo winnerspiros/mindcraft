@@ -7209,6 +7209,41 @@ export async function equip(bot, itemName) {
             } catch (_) {}
         }
     }
+    // SERVER-HAND VERIFY (2026-10-12 sweep: equip(sword) reported success
+    // holding cobblestone — landed() always returns true and the client
+    // window clicks silently fail on 26.3. Ask the server; force via RCON
+    // replace when wrong; report honestly).
+    const _isHand = !/leggings|boots|helmet|chestplate|elytra|shield/.test(itemName);
+    if (_isHand) {
+        try {
+            const { rconCommand } = await import('../../utils/rcon.js');
+            let hand = '';
+            try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+            const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+            if (handHas && handHas !== want && norm(handHas) !== want) {
+                // wrong item in hand — force it if she carries the want
+                let carries = false;
+                try {
+                    const { rconInventory } = await import('../../utils/rcon.js');
+                    const inv = await rconInventory(bot.username);
+                    carries = (inv || []).some(e => e.name === want || norm(e.name) === want);
+                } catch (_) {}
+                if (carries) {
+                    try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${want} 1`); } catch (_) {}
+                    await new Promise(r => setTimeout(r, 800));
+                    let hand2 = '';
+                    try { hand2 = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+                    const has2 = (hand2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                    if (has2 === want || norm(has2) === want) {
+                        log(bot, `Equipped ${itemName} (server-forced).`);
+                        return true;
+                    }
+                }
+                log(bot, `Tried to equip ${itemName} but holding ${handHas} — reporting failure.`);
+                return false;
+            }
+        } catch (_) { /* RCON down: trust the client path as before */ }
+    }
     log(bot, `Equipped ${itemName}.`);
     return true;
 }
