@@ -122,6 +122,21 @@ async function run() {
       const flimsy = /leaves|log|wood|planks|vine|grass|flower|snow|bush|cactus|sugar_cane/.test(below?.name || '');
       const solid = below && below.name !== 'air' && below.name !== 'water' && below.name !== 'lava' && below.boundingBox !== 'empty' && !flimsy;
       const headroom = (!at || at.name === 'air') && (!b2 || b2.name === 'air');
+      // FLAT 5-runway toward +x (2026-10-12: walk target plot.x+4 sat 3 Y off
+      // on sloped ground — XZ arrived, 3D read 3.9, miss displaced downstream).
+      let flat = true;
+      try {
+        for (let k = 1; k <= 4; k++) {
+          const g = bot.blockAt(new Vec3(fp.x + k, fp.y - 1, fp.z));
+          const a1 = bot.blockAt(new Vec3(fp.x + k, fp.y, fp.z));
+          const a2 = bot.blockAt(new Vec3(fp.x + k, fp.y + 1, fp.z));
+          const gs = g && g.name !== 'air' && g.name !== 'water' && g.name !== 'lava' && g.boundingBox !== 'empty'
+            && !/leaves|log|wood|planks|vine|grass|flower|snow|bush|cactus|sugar_cane/.test(g.name || '');
+          const hr = (!a1 || a1.name === 'air') && (!a2 || a2.name === 'air');
+          if (!gs || !hr) { flat = false; break; }
+        }
+      } catch (_) { flat = false; }
+      if (!flat) { log('drop ' + attempt + ': rejecting slope (no 5-runway)'); continue; }
       log('drop ' + attempt + ': landed', fp.x, fp.y, fp.z, 'on', below && below.name, 'at', at && at.name);
       if (solid && headroom && fp.y < 80) plot = { x: fp.x, y: fp.y, z: fp.z };
       else if (solid && headroom) log('drop ' + attempt + ': rejecting high perch y=' + fp.y);
