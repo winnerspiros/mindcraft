@@ -22,7 +22,7 @@ function plugin(mod, ...keys) {
   for (const k of [...keys, 'default', 'plugin']) if (typeof mod?.[k] === 'function') return mod[k];
   throw new Error('no plugin fn');
 }
-const BOT = 'CapSweep';
+const BOT = 'CapSweep' + (Date.now() % 100000);
 const PW = 'sweepx7q';
 const skills = await import('../src/agent/library/skills.js');
 const rconmod = await import('../src/utils/rcon.js');
