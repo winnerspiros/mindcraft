@@ -139,7 +139,7 @@ async function run() {
     // walk-goto 90s timeout displaced every later leg).
     await step('walk-goto', async () => {
       let ok = false;
-      try { ok = await skills.goToPosition(bot, t.x, t.y, t.z, 2, 'walk'); } catch (_) {}
+      try { ok = await skills.goToPosition(bot, t.x, t.y, t.z, 1, 'walk'); } catch (_) {}
       if (!ok && !bot.interrupt_code) {
         try {
           await bot.lookAt(new Vec3(t.x + 0.5, bot.entity.position.y, t.z + 0.5), true);
