@@ -5810,11 +5810,17 @@ export async function pickupNearbyItems(bot) {
             return [...new Set([dug, 'dirt', 'cobblestone', 'stone'].filter(Boolean))];
         } catch (_) { return ['dirt']; }
     })();
+    // ONE busted read, counted locally (2026-10-12: per-material
+    // rconItemCount busts the cache every call, so 4 materials = 4 full
+    // 36-slot scans ≈ 25s+ before EVERY vacuum. A single read serves all.)
     try {
-        const { rconItemCount } = await import('../../utils/rcon.js');
+        const { rconInventory } = await import('../../utils/rcon.js');
+        const inv = await rconInventory(bot.username);
         _before = {};
         for (const n of _watch) {
-            try { _before[n] = await rconItemCount(bot.username, n); } catch (_) {}
+            let c = 0;
+            try { for (const e of (inv || [])) if (e.name === n) c += e.count; } catch (_) {}
+            _before[n] = c;
         }
     } catch (_) {}
     const getNearestItem = bot => bot.nearestEntity(entity => entity.name === 'item' && bot.entity.position.distanceTo(entity.position) < distance);
@@ -5856,12 +5862,16 @@ export async function pickupNearbyItems(bot) {
     }
     // RCON verdict: any watched material rising in the server-held pack
     // means the vacuum worked, even with zero entity handles seen.
+    // AFTER read is the only busted one: the before-read above used cache
+    // (free), this one pays a single full scan for the verdict.
     try {
         if (_before) {
-            const { rconItemCount } = await import('../../utils/rcon.js');
+            const { rconInventory } = await import('../../utils/rcon.js');
+            let inv = null;
+            try { inv = await rconInventory(bot.username, true); } catch (_) {}
             for (const n of Object.keys(_before)) {
                 let _now = 0;
-                try { _now = await rconItemCount(bot.username, n); } catch (_) {}
+                try { for (const e of (inv || [])) if (e.name === n) _now += e.count; } catch (_) {}
                 if (_now > (_before[n] || 0)) { pickedUp = _now - (_before[n] || 0); break; }
             }
         }
