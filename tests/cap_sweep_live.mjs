@@ -133,10 +133,26 @@ async function run() {
   // can hang forever on a loaded-but-unreachable goal — measured live)
   try {
     const t = new Vec3(plot.x + 4, plot.y, plot.z);
-    try { bot.pathfinder.setMovements(new (require('mineflayer-pathfinder').Movements)(bot)); } catch (_) {}
-    // step() records walk-goto itself (PASS on resolve, FAIL on 90s timeout).
-    // GoalNear(1): GoalBlock fails when the exact cell is occupied/unreachable.
-    await step('walk-goto', () => bot.pathfinder.goto(new (require('mineflayer-pathfinder').goals.GoalNear)(t.x, t.y, t.z, 1)));
+    // REAL skill path (not raw goto): goToPosition owns movements, arrivals,
+    // and stuck recovery. Direct-steer fallback if it reports failure, so a
+    // walk stall can never cascade into 10 downstream FAILs (2026-10-12 run:
+    // walk-goto 90s timeout displaced every later leg).
+    await step('walk-goto', async () => {
+      let ok = false;
+      try { ok = await skills.goToPosition(bot, t.x, t.y, t.z, 2, 'walk'); } catch (_) {}
+      if (!ok && !bot.interrupt_code) {
+        try {
+          await bot.lookAt(new Vec3(t.x + 0.5, bot.entity.position.y, t.z + 0.5), true);
+          bot.setControlState('forward', true);
+          const t0 = Date.now();
+          while (Date.now() - t0 < 10000) {
+            if (bot.entity.position.distanceTo(new Vec3(t.x + 0.5, t.y, t.z + 0.5)) < 3) break;
+            await sleep(250);
+          }
+          bot.setControlState('forward', false);
+        } catch (_) { try { bot.setControlState('forward', false); } catch (_) {} }
+      }
+    });
     const d = bot.entity.position.distanceTo(new Vec3(t.x + 0.5, t.y, t.z + 0.5));
     rec('walk', d < 3, `dist ${d.toFixed(1)}`);
   } catch (e) { rec('walk', false, e.message.slice(0, 120)); }
