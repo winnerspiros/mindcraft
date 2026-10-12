@@ -11283,6 +11283,7 @@ export async function digUp(bot, distance = 6) {
      **/
     const capped = Math.min(Math.max(distance, 1), 6);
     let climbed = 0;
+    const yStart = (() => { try { return Math.floor(bot.entity.position.y); } catch (_) { return 0; } })();
     const budget = Date.now() + 60000; // inside sweep 90s step-cap
     for (let i = 1; i <= capped; i++) {
         if (Date.now() > budget) {
@@ -11377,6 +11378,7 @@ export async function digUp(bot, distance = 6) {
             // Verified live 2026-10-12: probe plot is a flat pad, head is air
             // on iter 2 because the climb already succeeded.
             if (climbed > 0 && isOpenGround(bot)) {
+                try { climbed = Math.max(climbed, Math.floor(bot.entity.position.y) - yStart); } catch (_) {}
                 log(bot, `Climbed ${climbed} blocks.`);
                 return true;
             }
@@ -11390,6 +11392,7 @@ export async function digUp(bot, distance = 6) {
             if (jgain > 0) { climbed += jgain; continue; }
             // Last check: maybe she is out but on a lip one below start.
             if (isOpenGround(bot)) {
+                try { climbed = Math.max(climbed, Math.floor(bot.entity.position.y) - yStart); } catch (_) {}
                 log(bot, `Climbed ${climbed} blocks (surfaced).`);
                 return true;
             }
