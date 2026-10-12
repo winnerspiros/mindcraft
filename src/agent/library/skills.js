@@ -11254,7 +11254,7 @@ export async function digUp(bot, distance = 6) {
      **/
     const capped = Math.min(Math.max(distance, 1), 6);
     let climbed = 0;
-    const budget = Date.now() + 80000;
+    const budget = Date.now() + 60000; // inside sweep 90s step-cap
     for (let i = 1; i <= capped; i++) {
         if (Date.now() > budget) {
             log(bot, `Climb budget spent after ${climbed} blocks.`);
