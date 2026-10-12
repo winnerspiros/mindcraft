@@ -61,7 +61,7 @@ setTimeout(() => { if (!started) { log('FAIL boot - never got position'); proces
 async function srvCount(item) { try { return await rconmod.rconItemCount(BOT, item); } catch (e) { return 'ERR:' + e.message; } }
 // No skill call may hang the sweep: 90s cap per step, records FAIL on timeout.
 async function step(name, fn) {
-  try { return await Promise.race([fn(), sleep(90000).then(() => { throw new Error('STEP-TIMEOUT 90s'); })]); }
+  try { const r = await Promise.race([fn(), sleep(90000).then(() => { throw new Error('STEP-TIMEOUT 90s'); })]); rec(name, true, 'ok'); return r; }
   catch (e) { rec(name, false, (e.message || '').slice(0, 120)); return null; }
 }
 
@@ -116,7 +116,11 @@ async function run() {
       const below = bot.blockAt(new Vec3(fp.x, fp.y - 1, fp.z));
       const at = bot.blockAt(new Vec3(fp.x, fp.y, fp.z));
       const b2 = bot.blockAt(new Vec3(fp.x, fp.y + 1, fp.z));
-      const solid = below && below.name !== 'air' && below.name !== 'water' && below.name !== 'lava' && below.boundingBox !== 'empty';
+      // Footing must be real ground, not a tree: leaves/log footing puts
+      // her in a canopy where digDown has nothing to dig. Reject leaves and
+      // logs so the plot is dirt/stone/grass.
+      const flimsy = /leaves|log|wood|planks|vine|grass|flower|snow|bush|cactus|sugar_cane/.test(below?.name || '');
+      const solid = below && below.name !== 'air' && below.name !== 'water' && below.name !== 'lava' && below.boundingBox !== 'empty' && !flimsy;
       const headroom = (!at || at.name === 'air') && (!b2 || b2.name === 'air');
       log('drop ' + attempt + ': landed', fp.x, fp.y, fp.z, 'on', below && below.name, 'at', at && at.name);
       if (solid && headroom && fp.y < 80) plot = { x: fp.x, y: fp.y, z: fp.z };
