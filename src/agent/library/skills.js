@@ -1532,6 +1532,17 @@ export async function singleChest(bot) {
     } else {
         const p = bot.entity.position.floored(); tx = p.x + 1; ty = p.y; tz = p.z;
     }
+    // Clear a non-air occupant first (2026-10-12 sweep: the torch leg's
+    // wall_torch stood on the chest cell and singleChest gave up). Torches
+    // and other soft blocks are dug away, not treated as fatal.
+    try {
+        const V = (await import('vec3')).default;
+        const cur = bot.blockAt(new V(tx, ty, tz));
+        if (cur && cur.name !== 'air' && cur.name !== 'water' && cur.name !== 'cave_air' && cur.name !== 'chest' && cur.name !== 'trapped_chest') {
+            log(bot, `${cur.name} in the way at (${tx}, ${ty}, ${tz}) — clearing it for the chest.`);
+            await breakBlockAt(bot, tx, ty, tz);
+        }
+    } catch (_) {}
     try { bot.setControlState('sneak', true); } catch (_) {} // crouch = NO merge
     let ok = false;
     try { ok = await placeBlock(bot, 'chest', tx, ty, tz); }
