@@ -3691,14 +3691,14 @@ export async function attackEntity(bot, entity, kill=true) {
                             bestGap = bot.entity.position.distanceTo(entity.position);
                         } else {
                             log(bot, `breaking off ${entity.name}, not closing the gap (${nowGap.toFixed(1)} blocks).`);
-                            bot.pvp.stop();
+                            (bot.pvp && bot.pvp.stop());
                             return false;
                         }
                     }
                 } else { bestGap = nowGap; stallSince = null; }
                 await new Promise(resolve => setTimeout(resolve, 1000))
                 if (bot.interrupt_code) {
-                    bot.pvp.stop();
+                    (bot.pvp && bot.pvp.stop());
                     return false;
                 }
                 // close again each round: the mob backs off and she faces travel
@@ -4014,7 +4014,7 @@ async function fightFlyer(bot, enemy) {
         volleys++;
         fired += 2;
     }
-    try { bot.pvp.stop(); } catch (_) {}
+    try { (bot.pvp && bot.pvp.stop()); } catch (_) {}
     if (fired > 0) {
         log(bot, `Fired ${fired} arrows at the ${target.name} (bow-only — it flies, chasing is suicide).`);
         return true;
@@ -4202,18 +4202,18 @@ export async function defendSelf(bot, range=9) {
                 try { r2 = await rconLocateHostile(bot, BLIND_FIGHT_TYPES, range); } catch (_) {}
                 if (!r2) await new Promise(r3 => setTimeout(r3, 400));
             }
-            if (!r2) { bot.pvp.stop(); break; }   // threat genuinely gone
+            if (!r2) { (bot.pvp && bot.pvp.stop()); break; }   // threat genuinely gone
             enemy = { name: r2.name, position: r2.pos, velocity: new Vec3(0, 0, 0),
                       height: r2.name === 'creeper' ? 1.7 : 1.95, id: `rcon:${r2.name}` };
         } else if (!enemy) {
             _rconTruth = false;   // eyes recovered to "nothing hostile"
         }
         if (bot.interrupt_code) {
-            bot.pvp.stop();
+            (bot.pvp && bot.pvp.stop());
             return false;
         }
     }
-    bot.pvp.stop();
+    (bot.pvp && bot.pvp.stop());
     if (attacked)
         log(bot, `Successfully defended self.`);
     else
@@ -4291,7 +4291,7 @@ export async function defendBlind(bot, range = 16) {
         } catch (_) {}
         await new Promise(r2 => setTimeout(r2, 250));
     }
-    try { bot.pvp.stop(); } catch (_) {}
+    try { (bot.pvp && bot.pvp.stop()); } catch (_) {}
     log(bot, swung ? `Blind fight done — threat should be down.` : `Blind fight: never found the attacker.`);
     return swung;
 }
@@ -4397,7 +4397,7 @@ export async function guardPlayer(bot, username, radius = 6, range = 9) {
             try { if (machineTick) bot.removeListener('physicTick', machineTick); } catch (_) {}
             try { if (machine) machine.rootStateMachine.active = false; } catch (_) {}
         } catch (_) {}
-        try { bot.pvp.stop(); } catch (_) {}
+        try { (bot.pvp && bot.pvp.stop()); } catch (_) {}
     };
     log(bot, `Guarding ${username} — follow close, fight anything hostile near them. Say !stop to stand down.`);
     bot.modes.pause('self_defense');
@@ -4452,7 +4452,7 @@ function attacked_tick_guard(bot) {
     // one-shot pvp pulse per guard tick — the while(enemy) loop lives in
     // defendSelf; here we pulse and re-scan next tick so movement states
     // keep breathing between hits.
-    setTimeout(() => { try { bot.pvp.stop(); } catch (_) {} }, 900);
+    setTimeout(() => { try { (bot.pvp && bot.pvp.stop()); } catch (_) {} }, 900);
 }
 
 export async function hawkeyeShot(bot, entity, weapon='bow') {
@@ -4681,7 +4681,7 @@ export async function eatNow(bot, item) {
     // clearControlStates() that was cancelling the chew by hand. The threat
     // scan re-evaluates next tick and the target is still there.
     try {
-        if (pvp_is_engaged(bot)) { bot._pvpPausedForEat = bot.pvp.target; bot.pvp.stop(); }
+        if (pvp_is_engaged(bot)) { bot._pvpPausedForEat = bot.pvp.target; (bot.pvp && bot.pvp.stop()); }
     } catch (_) {}
     // Stamp the claim so claimHand() can tell a live chew from a wedged one.
     bot._eatingStamp = Date.now();
