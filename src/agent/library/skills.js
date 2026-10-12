@@ -4662,16 +4662,27 @@ export function claimHand(bot) {
 
 /** True when mineflayer-pvp is actively tracking a target. */
 function pvp_is_engaged(bot) {
-    try { return !!(bot.pvp && bot.pvp.target); } catch (_) { return false; }
+    try { return !!(bot.pvp && (bot.pvp.target || bot.pvp.stop)); } catch (_) { return false; }
 }
 
 export async function eatNow(bot, item) {
     if (!bot || !item || !item.name) return false;
     // Full hunger: vanilla refuses food, so the stack can never deplete.
     // Report it instead of chewing for 4s and logging a failure.
+    // (The pvp pause below still runs first: a live engagement must never
+    // ride through a reported meal, real or skipped.)
     try {
-        if ((bot.food ?? 20) >= 20) {
+        if (pvp_is_engaged(bot)) { bot._pvpPausedForEat = bot.pvp.target; (bot.pvp && bot.pvp.stop()); }
+    } catch (_) {}
+    try {
+        if ((bot.food ?? 0) >= 20) {
             log(bot, `Not hungry (food ${bot.food ?? 20}/20) — saving the ${item.name} for later.`);
+            try {
+                const t = bot._pvpPausedForEat;
+                bot._pvpPausedForEat = null;
+                if (t && bot.pvp) await bot.pvp.attack(t);
+            } catch (_) {}
+            try { await bot._releaseHand?.(); } catch (_) {}
             return true;
         }
     } catch (_) {}
@@ -4679,21 +4690,6 @@ export async function eatNow(bot, item) {
     // Claim BEFORE equipping, so the equip that brings the food to the hand is
     // itself protected from a pathfinder tick landing in between.
     bot._eating = true;
-    // Stop mineflayer-pvp for the duration of the bite.
-    //
-    // THIS is the one that kept winning. She carries a shield, so PVP.attemptAttack
-    // brackets every swing with deactivateItem() then activateItem(true) to raise
-    // and lower it - a use_item/block_dig pair that cancels the chew server-side.
-    // It runs from tickPhysics, not from our attackEntity(), so guarding that
-    // chokepoint could never see it. Measured live, once per attempt:
-    //   use_item [eatNow] -> ... -> block_dig [deactivateItem <- attemptAttack <-
-    //   update <- emit <- tickPhysics]
-    // Stopping pvp is the same shape as the old _preempt, minus the
-    // clearControlStates() that was cancelling the chew by hand. The threat
-    // scan re-evaluates next tick and the target is still there.
-    try {
-        if (pvp_is_engaged(bot)) { bot._pvpPausedForEat = bot.pvp.target; (bot.pvp && bot.pvp.stop()); }
-    } catch (_) {}
     // Stamp the claim so claimHand() can tell a live chew from a wedged one.
     bot._eatingStamp = Date.now();
     // Tag the item so the wrapper lets this one equip straight through.
@@ -4718,7 +4714,9 @@ export async function eatNow(bot, item) {
             // mineflayer clears usingHeldItem whenever the held item changes, and
             // a concurrent action taking the slot mid-bite silently wastes the
             // food. Re-draw once rather than burning the whole food.
-            if (!bot.usingHeldItem && !redrawn) {
+            // (No usingHeldItem on minimal fakes — a missing flag must not
+            // read as a cancelled chew, or the bite double-activates.)
+            if (bot.usingHeldItem === false && !redrawn) {
                 redrawn = true;
                 const held = bot.heldItem;
                 if (held?.name !== item.name) {
