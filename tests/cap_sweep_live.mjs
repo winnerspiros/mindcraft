@@ -162,7 +162,9 @@ async function run() {
   try {
     const before = (await srvCount('dirt')) || 0;
     const r = await skills.collectBlock(bot, 'dirt', 5);
-    await sleep(1000);
+    // 3s magnet settle: 1s cut the vacuum loiter short when drops scattered
+    // (post-digUp hole geometry), reading the pack before stragglers landed.
+    await sleep(3000);
     const after = (await srvCount('dirt')) || 0;
     rec('collectBlocks', after >= before, `dirt ${before}->${after} ret=${r}`);
   } catch (e) { rec('collectBlocks', false, (e.message || '').slice(0, 120)); }
