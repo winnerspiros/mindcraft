@@ -7166,6 +7166,24 @@ export async function equip(bot, itemName) {
             item = bot.inventory.findInventoryItem(itemName) || findItem();
         }
         else {
+            // CLIENT-BLIND (2026-10-12 sweep: RCON-given sword invisible to
+            // the 26.3 Slot decode — findItem sees nothing while the server
+            // holds it). Ask the server; force into hand when carried.
+            let _carried = false;
+            try {
+                const { rconInventory } = await import('../../utils/rcon.js');
+                const _inv = await rconInventory(bot.username);
+                _carried = (_inv || []).some(e => e.name === want || norm(e.name) === want);
+            } catch (_) {}
+            if (_carried && !/leggings|boots|helmet|chestplate|elytra|shield/.test(itemName)) {
+                try {
+                    const { rconCommand } = await import('../../utils/rcon.js');
+                    await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${want} 1`);
+                    await new Promise(r => setTimeout(r, 800));
+                    log(bot, `Equipped ${itemName} (server-forced, client-blind).`);
+                    return true;
+                } catch (_) {}
+            }
             log(bot, `You do not have any ${itemName} to equip.`);
             return false;
         }
