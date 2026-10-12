@@ -126,9 +126,10 @@ async function run() {
       const fp2 = bot.entity.position.floored();
       fp.x = fp2.x; fp.y = fp2.y; fp.z = fp2.z;
     }
-    // pad: dirt runway x-2..x+9 at y-1, air y..y+2 above it
+    // pad: dirt runway x-2..x+9 at y-1, air y..y+5 above it (tall clear:
+    // a trunk in the fill zone once blocked pillar with oak_log)
     await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y - 1} ${fp.z - 2} ${fp.x + 9} ${fp.y - 1} ${fp.z + 2} minecraft:dirt`);
-    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y} ${fp.z - 2} ${fp.x + 9} ${fp.y + 2} ${fp.z + 2} minecraft:air`);
+    await rconCmd(`minecraft:fill ${fp.x - 2} ${fp.y} ${fp.z - 2} ${fp.x + 9} ${fp.y + 5} ${fp.z + 2} minecraft:air`);
     await rconCmd(`tp ${BOT} ${fp.x + 0.5} ${fp.y} ${fp.z + 0.5}`);
     await sleep(3000);
     const settled = bot.entity.position.floored();
@@ -195,6 +196,11 @@ async function run() {
 
   // 4. PLACE: 2x2 cobble pad at feet+1 area, verify world truth
   try {
+    // Back to the pad: collect's vacuum can walk her metres off-plot (2026-10-12:
+    // hillside cells read occupied-skip 4/4 with 0/4 cobble truth). Harness tp,
+    // not a skill — skills still place for real.
+    await rconCmd(`tp ${BOT} ${plot.x + 0.5} ${plot.y} ${plot.z + 0.5}`).catch(() => {});
+    await sleep(2500);
     const fp = bot.entity.position.floored();
     let ok = 0;
     for (const [dx, dz] of [[1, 0], [2, 0], [1, 1], [2, 1]]) {
