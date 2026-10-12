@@ -6999,20 +6999,25 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                     }
                     // SERVER-TRUTH (2026-10-11 sweep: placeBlock returned true
                     // 4/4 while world-truth was 0/4 — the client saw ghosts).
-                    // Direct `execute if block ... run say YES`: a YES in the
-                    // reply is proof, anything else is not the block. The old
-                    // scoreboard-get parse treated unparseable replies as
-                    // success and let ghosts through (proven 2026-10-12:
-                    // ret=true with server=false on a 2x2 pad cell).
+                    // Scoreboard round trip (proven live 2026-10-12: get
+                    // replies "vbtest has 1 [vbtest]" solid vs "has 0" air).
+                    // NOTE: `execute ... run say YES` does NOT work — RCON
+                    // swallows say output (empty reply even on success), so a
+                    // YES-verdict trusts the client blindly. has>=1 passes;
+                    // has 0 fails; unparseable trusts the client (RCON hiccup
+                    // must not fail a real placement).
                     // RCON down -> trust the client check as before.
                     try {
                         const { rconCommand } = await import('../../utils/rcon.js');
-                        let ans = '';
-                        try {
-                            ans = String(await rconCommand(`execute if block ${target_dest.x} ${target_dest.y} ${target_dest.z} minecraft:${wantBase} run say YES`));
-                        } catch (_) { ans = ''; }
-                        if (ans && !/YES/.test(ans)) {
-                            log(bot, `Placed ${blockType} at ${target_dest} but the server does not see it there — ghost placement, reporting failure.`);
+                        const SB = 'vbchk';
+                        await rconCommand(`scoreboard objectives add ${SB} dummy`).catch(() => {});
+                        await rconCommand(`scoreboard players set ${SB} ${SB} 0`).catch(() => {});
+                        await rconCommand(`execute unless block ${target_dest.x} ${target_dest.y} ${target_dest.z} minecraft:air run scoreboard players add ${SB} ${SB} 1`).catch(() => {});
+                        let gv = '';
+                        try { gv = String(await rconCommand(`scoreboard players get ${SB} ${SB}`)); } catch (_) { gv = ''; }
+                        const gm = gv.match(/has\s+(-?\d+)/);
+                        if (gm && parseInt(gm[1], 10) < 1) {
+                            log(bot, `Placed ${blockType} at ${target_dest} but the server says the cell is air — ghost placement, reporting failure.`);
                             return false;
                         }
                     } catch (_) { /* RCON unavailable: client check stands */ }
