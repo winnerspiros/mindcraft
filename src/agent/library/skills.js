@@ -6942,6 +6942,16 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
             if (_reachNow > 4.3) {
                 log(bot, `Too far to place at ${target_dest} (${_reachNow.toFixed(1)} blocks away, limit ~4.5) — I cannot reach it from here.`);
             }
+            // HARD GATE (2026-10-12 sweep: placeBlock returned true 3/4 while
+            // server truth was 0/4 — beyond 4.5 vanilla silently rejects, the
+            // client predicts a ghost, and true is a lie. Refuse instead so
+            // the caller walks closer and retries.
+            if (_reachNow > 4.5) {
+                log(bot, `Placement at ${target_dest} refused: ${_reachNow.toFixed(1)} blocks away is past the 4.5 reach — walk closer first.`);
+                try { bot.setControlState('jump', false); } catch (_) {}
+                if (sneaking) { try { bot.setControlState('sneak', false); } catch {} }
+                return false;
+            }
             if (_dest.x === _feet.x && _dest.z === _feet.z && _dest.y <= _feet.y + 1) {
                 bot.setControlState('jump', true);
                 await new Promise(resolve => setTimeout(resolve, 300));
