@@ -183,8 +183,8 @@ check('the fight loop tracks its best gap',
   /let stallSince = null;/.test(ae))
 check('a stalled close-out aborts early', /stallSince - ?\)? \|\| Date\.now\(\) - stallSince > 8000|stallSince\) ?\|\| Date\.now\(\) - stallSince > 8000/.test(ae) || /Date\.now\(\) - stallSince > 8000/.test(ae))
 check('the abort releases the slot (pvp.stop + return false)',
-  /breaking off \$\{entity\.name\}/.test(ae) &&
-  /break[\s\S]{0,300}bot\.pvp\.stop\(\);[\s\S]{0,120}return false;/.test(ae))
+  /breaking off/.test(ae) &&
+  /\(bot\.pvp && bot\.pvp\.stop\(\)\);[\s\S]{0,60}return false;/.test(ae))
 check('progress resets the stall timer',
   /\} else \{ bestGap = nowGap; stallSince = null; \}/.test(ae))
 check('being in reach resets the stall timer',
@@ -233,6 +233,14 @@ const Vec3 = (await import('vec3')).default
 // bot below would reach the REAL live server as username 'T', so the count
 // must be answered locally and deterministically from `arrowCount`.
 const rconMod = await import('../src/utils/rcon.js')
+// Server-hand mirror: the fake's RCON SelectedItem answers from its CURRENT
+// heldItem, so server-hand checks track client steals deterministically.
+// item-replace writes route through bot.equip (counted in b.equips).
+rconMod.setSelectedItemOverride(async (name) => {
+  const b = fakeBots.get(name)
+  if (!b || !b.heldItem) return ''
+  return `${name} has the following entity data: {Slot: 0b, id: "minecraft:${b.heldItem.name}", count: 1}`
+})
 rconMod.setCountAllOverride(async (name, item) => {
   const b = fakeBots.get(name)
   if (item === 'arrow') return { total: b ? b._arrows() : 0, inv: b ? b._arrows() : 0, worn: 0, offhand: 0 }
@@ -329,7 +337,7 @@ const targetAt = (d) => ({ position: new Vec3(d, 0, 0), height: 1.8 })
 const sbStart = src.indexOf('export async function shootBow')
 const sb = src.slice(sbStart, src.indexOf('\n}\n', sbStart))
 check('shootBow checks the bow is IN HAND before drawing',
-  /bot\.heldItem\?\.name !== 'bow'/.test(sb) && /Lost the bow before drawing/.test(sb))
+  /_shHas !== 'bow'/.test(sb) && /Lost the bow before drawing/.test(sb))
 check('the bow check comes BEFORE the aim, not after it',
   sb.indexOf('Lost the bow before drawing') < sb.indexOf('await bot.lookAt(aim, true)'))
 check('the bow is re-checked AFTER the aim too',

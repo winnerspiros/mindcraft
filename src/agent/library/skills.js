@@ -4896,12 +4896,17 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         // server hand still held the bow — the Slot decode lies). The server
         // hand is the authority; re-force it if it is not the bow.
         try {
-            const { rconCommand } = await import('../../utils/rcon.js');
+            const { rconSelectedItem, rconCommand: _rcc } = await import('../../utils/rcon.js');
             let _sh = '';
-            try { _sh = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+            try { _sh = String(await rconSelectedItem(bot.username)); } catch (_) {}
             const _shHas = (_sh.match(/minecraft:([a-z_]+)/) || [])[1] || '';
             if (_sh && _shHas !== 'bow') {
-                try { await rconCommand(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`); } catch (_) {}
+                log(bot, `Lost the bow before drawing (server holding ${_shHas}) - re-equipping.`);
+                try {
+                    const _bowIt = (bot.inventory.items() || []).find(i => i.name === 'bow');
+                    if (_bowIt) await bot.equip(_bowIt, 'hand');
+                    else await _rcc(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`);
+                } catch (_) {}
                 try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
             }
         } catch (_) {}
@@ -4922,12 +4927,17 @@ export async function shootBow(bot, target, shots=1, fullCharge=true) {
         // a concurrent equipHighestAttack() can land the sword at any point in
         // it. Server hand re-verified (client lies); re-force on mismatch.
         try {
-            const { rconCommand: _rc2 } = await import('../../utils/rcon.js');
+            const { rconSelectedItem: _rc2, rconCommand: _rcc2 } = await import('../../utils/rcon.js');
             let _sh2 = '';
-            try { _sh2 = String(await _rc2(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
+            try { _sh2 = String(await _rc2(bot.username)); } catch (_) {}
             const _shHas2 = (_sh2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
             if (_sh2 && _shHas2 !== 'bow') {
-                try { await _rc2(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`); } catch (_) {}
+                log(bot, `Lost the bow while aiming (server holding ${_shHas2}) - re-equipping.`);
+                try {
+                    const _bowIt2 = (bot.inventory.items() || []).find(i => i.name === 'bow');
+                    if (_bowIt2) await bot.equip(_bowIt2, 'hand');
+                    else await _rcc2(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:bow 1`);
+                } catch (_) {}
                 try { await new Promise(r => setTimeout(r, 800)); } catch (_) {}
             }
         } catch (_) {}

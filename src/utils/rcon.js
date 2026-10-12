@@ -22,6 +22,10 @@ function encode(id, type, payload) {
     return buf; // trailing 2 bytes already zero
 }
 
+export async function rconSelectedItem(name) {
+    if (_selectedItemOverride) return _selectedItemOverride(name);
+    return rconCommand(`data get entity ${name} SelectedItem`);
+}
 export function rconCommand(cmd, timeoutMs = 5000) {
     return new Promise((resolve, reject) => {
         const rc = rconConfig();
@@ -382,6 +386,14 @@ export async function rconItemCount(name, item) {
 let _countAllOverride = null;
 export function setCountAllOverride(fn) {
     _countAllOverride = typeof fn === 'function' ? fn : null;
+}
+// TEST SEAM for SelectedItem reads (same pattern: unit tests with fake bots
+// must not reach the live server). Installed alongside setCountAllOverride;
+// cleared the same way. Return the full `data get` reply string, or ''/null
+// when the fake has no SelectedItem (caller treats empty as no authority).
+let _selectedItemOverride = null;
+export function setSelectedItemOverride(fn) {
+    _selectedItemOverride = typeof fn === 'function' ? fn : null;
 }
 export async function rconCountAll(name, item) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
