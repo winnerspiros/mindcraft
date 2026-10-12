@@ -2909,6 +2909,46 @@ function nearestReachableSpot(bot, notOn = null, skip = 0) {
     return new Vec3(bx, by, bz);
 }
 
+// Manual 2x2-grid craft for single-ingredient shapeless recipes (all
+// log->planks variants): put 1 log in craft slot 0, shift-click the result.
+// Returns true if the output count grew. Bypasses the client recipe book,
+// which is broken for planks on 26.3 (empty recipesFor with logs in hand).
+async function manualShapelessCraft(bot, itemName, num = 1) {
+    try {
+        const m = String(itemName).match(/^(\w+)_(planks)$/);
+        if (!m) return false;
+        const logName = `${m[1]}_log`;
+        const have = bot.inventory.count(bot.registry.itemsByName[logName]?.id);
+        if (!have) return false;
+        const outId = bot.registry.itemsByName[itemName]?.id;
+        const before = outId ? bot.inventory.count(outId) : 0;
+        const win = bot.inventory; // 2x2 grid = slots 1..4 on the player inv
+        const logItem = bot.inventory.items().find(i => i.name === logName);
+        if (!logItem) return false;
+        // move one log into craft slot 1
+        await bot.clickWindow(logItem.slot, 0, 0); // pick up stack
+        await bot.clickWindow(1, 1, 0); // place one
+        await bot.clickWindow(logItem.slot, 0, 0); // put rest back
+        await new Promise(r => setTimeout(r, 500));
+        const outSlot = 0;
+        const out = win.slots[outSlot];
+        if (!out || out.name !== itemName) {
+            // clear the grid back
+            try { await bot.clickWindow(1, 0, 0); await bot.clickWindow(logItem.slot, 1, 0); } catch (_) {}
+            return false;
+        }
+        await bot.clickWindow(outSlot, 1, 1); // shift-click result out
+        await new Promise(r => setTimeout(r, 500));
+        const after = outId ? bot.inventory.count(outId) : 0;
+        if (after > before) {
+            log(bot, `Crafted ${itemName} by hand (${before}->${after}).`);
+            return true;
+        }
+        return false;
+    } catch (_) { return false; }
+}
+
+
 export async function craftRecipe(bot, itemName, num=1, quiet=false) {
     /**
      * Attempt to craft the given item name from a recipe. May craft many items.
@@ -2925,16 +2965,26 @@ export async function craftRecipe(bot, itemName, num=1, quiet=false) {
         return false;
     }
 
-    // Multi-step crafting: make sure intermediate ingredients exist (e.g.
-    // oak_log -> oak_planks) before we check the recipe, so the bot can craft
-    // a chest from raw logs instead of getting stuck asking for planks.
-    await ensureCraftingPrereqs(bot, itemName, num);
-
     // get recipes that don't require a crafting table
     let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
     let craftingTable = null;
     const craftingTableRange = 16;
+    // MANUAL FALLBACK (2026-10-12 probe: 26.3 client recipe book has NO
+    // recipe for oak_planks — recipesFor returns [] though she holds 16 logs.
+    // The 26.3 recipe table maps planks-id 63 to a sulfur-brick recipe, so the
+    // book lookup can never match. Log->planks is a 1-slot shapeless craft:
+    // do the window clicks directly instead of trusting the book.
+    if ((!recipes || recipes.length === 0) && !craftingTable) {
+        const manual = await manualShapelessCraft(bot, itemName, num);
+        if (manual) return true;
+    }
     placeTable: if (!recipes || recipes.length === 0) {
+        // Multi-step crafting: make sure intermediate ingredients exist (e.g.
+        // planks for a chest) before we judge the table recipes, so the bot
+        // can craft a chest from raw logs instead of getting stuck asking
+        // for planks. Runs ONLY here — a directly craftable recipe (planks
+        // from logs) must never detour through prereqs or the shortfall.
+        await ensureCraftingPrereqs(bot, itemName, num);
         recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, true);
         if(!recipes || recipes.length === 0) break placeTable; //Don't bother going to the table if we don't have the required resources.
 
@@ -4591,6 +4641,14 @@ function pvp_is_engaged(bot) {
 
 export async function eatNow(bot, item) {
     if (!bot || !item || !item.name) return false;
+    // Full hunger: vanilla refuses food, so the stack can never deplete.
+    // Report it instead of chewing for 4s and logging a failure.
+    try {
+        if ((bot.food ?? 20) >= 20) {
+            log(bot, `Not hungry (food ${bot.food ?? 20}/20) — saving the ${item.name} for later.`);
+            return true;
+        }
+    } catch (_) {}
     const before = item.count || 0;
     // Claim BEFORE equipping, so the equip that brings the food to the hand is
     // itself protected from a pathfinder tick landing in between.
@@ -6902,8 +6960,12 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
                         await rconCommand(`scoreboard players set ${SB} ${SB} 0`).catch(() => {});
                         await rconCommand(`execute unless block ${target_dest.x} ${target_dest.y} ${target_dest.z} minecraft:air run scoreboard players add ${SB} ${SB} 1`);
                         const gv = String(await rconCommand(`scoreboard players get ${SB} ${SB}`));
-                        const gm = gv.match(/has (\d+)/);
-                        if (gm && parseInt(gm[1]) < 1) {
+                        // OK shapes (locale/format tolerant): "[...] has N [...]"
+                        // or a bare trailing number. Anything else (mangled
+                        // reply, unknown format) is UNKNOWN, not proof of air —
+                        // the client check above already saw the block.
+                        const gm = gv.match(/has\s+(-?\d+)/) || gv.match(/(-?\d+)\s*\]?\s*$/);
+                        if (gm && parseInt(gm[1], 10) < 1) {
                             log(bot, `Placed ${blockType} at ${target_dest} but the server says the cell is air — ghost placement, reporting failure.`);
                             return false;
                         }
