@@ -11045,7 +11045,7 @@ async function jumpOut(bot) {
         try { bot.pathfinder.on('goal_reached', onGoal); } catch (_) {}
         try { bot.pathfinder.on('path_update', (r) => { if (r && r.status === 'noPath') status = 'no_path'; }); } catch (_) {}
         const t0 = Date.now();
-        while (Date.now() - t0 < 15000) {
+        while (Date.now() - t0 < 6000) {
             if (bot.interrupt_code) break;
             if (Math.floor(bot.entity.position.y) > yBefore) break;
             if (status !== 'pending') break;
@@ -11158,7 +11158,7 @@ async function staircaseStep(bot) {
         try { bot.pathfinder.on('goal_reached', onGoal); } catch (_) {}
         try { bot.pathfinder.on('path_update', (r) => { if (r && r.status === 'noPath') status = 'no_path'; }); } catch (_) {}
         const t0 = Date.now();
-        while (Date.now() - t0 < 15000) {
+        while (Date.now() - t0 < 6000) {
             if (bot.interrupt_code) break;
             if (Math.floor(bot.entity.position.y) > yBefore) break;
             if (status !== 'pending') break;
@@ -11179,7 +11179,12 @@ export async function digUp(bot, distance = 6) {
      **/
     const capped = Math.min(Math.max(distance, 1), 6);
     let climbed = 0;
+    const budget = Date.now() + 80000;
     for (let i = 1; i <= capped; i++) {
+        if (Date.now() > budget) {
+            log(bot, `Climb budget spent after ${climbed} blocks.`);
+            return climbed > 0;
+        }
         if (bot.interrupt_code) {
             log(bot, `Climb interrupted after ${climbed} blocks.`);
             return climbed > 0;
