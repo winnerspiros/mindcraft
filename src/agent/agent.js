@@ -2607,7 +2607,30 @@ export class Agent {
                         if (this._serverRanged === true) {
                             let _d = Infinity;
                             try { _d = this.bot.entity.position.distanceTo(r.target.position); } catch (_) {}
-                            if (_d > MELEE_RANGE && !this._bowInFlight && this._threatBowSpentKey !== key) {
+                            // MELEE_RANGE < d <= 48: bow range. Inside sword
+                            // reach the melee path is faster and never wastes
+                            // an arrow; past 48 the arrow despawns anyway.
+                            //
+                            // LINE OF SIGHT (live: loosed at a pillager buried
+                            // at y51 through 6 blocks of rock, arrow count
+                            // frozen, fired=false). A blocked lane means the
+                            // arrow dies in stone — hold fire and let melee /
+                            // repositioning handle it instead of burning ammo.
+                            let _los = true;
+                            try {
+                                const _eye = this.bot.entity.position.offset(0, 1.62, 0);
+                                const _tgt = r.target.position.offset(0, 1, 0);
+                                const _dir = _tgt.minus(_eye);
+                                const _len = _dir.norm();
+                                if (_len > 0) {
+                                    const _step = _dir.scaled(1 / _len);
+                                    for (let _s = 1; _s < _len - 1; _s += 1) {
+                                        const _b = this.bot.blockAt(_eye.offset(_step.x * _s, _step.y * _s, _step.z * _s));
+                                        if (_b && _b.boundingBox === 'block' && !/glass|leaves|water/i.test(_b.name || '')) { _los = false; break; }
+                                    }
+                                }
+                            } catch (_) {}
+                            if (_d > MELEE_RANGE && _d <= 48 && _los && !this._bowInFlight && this._threatBowSpentKey !== key) {
                                 const bowDis = (this._threatDisengage || {})[key];
                                 if (!(bowDis && Date.now() < bowDis)) {
                                     this._bowInFlight = true;
