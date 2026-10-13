@@ -2589,6 +2589,16 @@ export class Agent {
                 // The self-prompt stays as narration only; the decision is acted
                 // on directly.
                 if (r.action === 'fight' && r.target) {
+                    // DROWNING OUTRANKS COMBAT (2026-10-13): she drowned to HP 7
+                    // while the scan kept starting fights — attackEntity
+                    // preempts self_preservation's swim/dig, then the fight
+                    // fails underwater, then the next scan re-arms. A corpse
+                    // wins no fights: when her head is under water, skip the
+                    // whole branch so the escape runs uninterrupted.
+                    try {
+                        const _hd = this.bot.blockAt(this.bot.entity.position.offset(0, 1, 0));
+                        if (_hd && (_hd.name === 'water' || _hd.name === 'bubble_column')) return;
+                    } catch (_) {}
                     // One fight at a time. The scan runs every 1s, so without
                     // this a second zombie starts a fresh attackEntity while the
                     // first is still swinging. The action manager then sees
