@@ -5172,11 +5172,16 @@ async function equipRightTool(bot, block) {
     // next dig-start. RCON verify+replace is <1s, so it leads; the client path
     // below is a no-RCON fallback only).
     let bestName = null;
+    // CLASS-SUBSTRING BUG (2026-10-13): wantCls='axe' matched
+    // 'diamond_pickaxe' via String.includes — she chopped wood with a
+    // pickaxe live. 'pickaxe' has no '_axe' in it, so match on the
+    // underscore-prefixed class instead.
+    const clsKey = cls ? '_' + cls : null;
     try {
         const seen = bot.inventory.items() || [];
         let best = null, bestT = Infinity;
         for (const it of seen) {
-            if (cls && !it.name.includes(cls)) continue;
+            if (clsKey && !it.name.includes(clsKey)) continue;
             let ok = true;
             try { ok = block.canHarvest(it.type); } catch (_) { ok = true; }
             if (!ok) continue;
@@ -5205,18 +5210,19 @@ async function equipRightTool(bot, block) {
         try { hand = String(await rconCommand(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
         const handHas = (hand.match(/minecraft:([a-z_]+)/) || [])[1] || '';
         const wantCls = cls || 'pickaxe';
-        if (handHas.includes(wantCls)) return true; // already holding right class
-        if (!bestName || !bestName.includes(wantCls)) {
+        const wantKey = '_' + wantCls;
+        if (handHas.includes(wantKey)) return true; // already holding right class
+        if (!bestName || !bestName.includes(wantKey)) {
             // Server pick wins over a wrong-class client fallback too
             // (26.3: blind client decodes iron_axe but not the pickaxe).
             try {
                 const inv = await rconInventory(bot.username, true);
                 const names = (inv || []).map(e => e.name);
-                const srv = names.find(n => n.includes(wantCls) && /diamond|netherite|iron|stone|gold|wood|copper|flint/.test(n))
-                    || names.find(n => n.includes(wantCls))
-                    || (/log|wood|plank/i.test(name) ? names.find(n => /axe|sword/.test(n)) : null)
+                const srv = names.find(n => n.includes(wantKey) && /diamond|netherite|iron|stone|gold|wood|copper|flint/.test(n))
+                    || names.find(n => n.includes(wantKey))
+                    || (/log|wood|plank/i.test(name) ? names.find(n => /_axe|_sword/.test(n)) : null)
                     || (/dirt|sand|gravel/i.test(name) ? names.find(n => /shovel/.test(n)) : null)
-                    || names.find(n => /pickaxe|shovel|axe|hoe|sword|shears/.test(n));
+                    || names.find(n => /pickaxe|shovel|_axe|hoe|sword|shears/.test(n));
                 if (srv) bestName = srv;
             } catch (_) {}
         }
@@ -5710,15 +5716,16 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                         let _h = '';
                         try { _h = String(await _rg(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
                         const _hh = (_h.match(/minecraft:([a-z_]+)/) || [])[1] || '';
+                        const _wk = '_' + _wc;
                         const _ct0 = (() => { try { return bot.heldItem ? bot.heldItem.name : 'NONE'; } catch (_) { return '?'; } })();
                         const _wt0 = (() => { try { return bot.digTime(block); } catch (_) { return '?'; } })();
-                        if (!_hh.includes(_wc)) {
+                        if (!_hh.includes(_wk)) {
                             log(bot, `Hand-gate: holding ${_hh || 'nothing'} for ${_bn} — forcing ${_wc}.`);
                             try {
                                 const _inv = await _ri(bot.username);
                                 const _names = (_inv || []).map(e => e.name);
-                                const _pk = _names.find(n => n.includes(_wc) && /diamond|iron|stone|netherite/.test(n))
-                                    || _names.find(n => n.includes(_wc));
+                                const _pk = _names.find(n => n.includes(_wk) && /diamond|iron|stone|netherite/.test(n))
+                                    || _names.find(n => n.includes(_wk));
                                 if (_pk) {
                                     await _rg(`minecraft:item replace entity ${bot.username} weapon.mainhand with minecraft:${_pk} 1`);
                                     await new Promise(r => setTimeout(r, 800));
@@ -5728,7 +5735,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
                             try { _h2 = String(await _rg(`data get entity ${bot.username} SelectedItem.id`)); } catch (_) {}
                             const _hh2 = (_h2.match(/minecraft:([a-z_]+)/) || [])[1] || '';
                             try { bot.output += `[tool-proof] srv=${_hh2 || 'nothing'} cli=${_ct0} waitTime=${_wt0} tgt=${block.position}\n`; } catch (_) {}
-                            if (!_hh2.includes(_wc)) {
+                            if (!_hh2.includes(_wk)) {
                                 log(bot, `Hand-gate: still holding ${_hh2 || 'nothing'} — skipping ${_bn} instead of swinging wrong.`);
                                 return false;
                             }
