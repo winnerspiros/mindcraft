@@ -448,7 +448,7 @@ export async function rconEnsureKit(name) {
         // back to per-slot reads on a truncated reply.
         const full = await rconInventory(safe, true);
         if (!full) return { ok: false, gave: false, detail: 'inventory unreadable, refusing to kit blind' };
-        inv = full.map(e => e.name).join(' ');
+        const inv = full.map(e => e.name).join(' ');
         eq = await rconCommand(`data get entity ${safe} equipment`);
     } catch (e) {
         return { ok: false, gave: false, detail: 'rcon read failed: ' + e.message };
