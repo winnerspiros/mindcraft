@@ -530,6 +530,21 @@ const modes_list = [
                                     } catch (_) {}
                                 }
                                 if (freed > 0) say(agent, `Dug ${freed} block${freed === 1 ? '' : 's'} to get out~`);
+                                // BOXED-IN ESCALATION (live: player-walled trap, no
+                                // pickaxe, only cobble in hand). Digging the walls
+                                // fails when they are unbreakable or the pocket
+                                // is roofed — so pillar UP and over: jump-place
+                                // beneath her until she clears the rim, then walk
+                                // out. pillarUp resolves material from server
+                                // truth, so it works with whatever she holds.
+                                try {
+                                    const before = bot.entity.position.clone();
+                                    const gained = await skills.pillarUp(bot, 'cobblestone', 6);
+                                    if ((gained || 0) > 0) {
+                                        const moved = bot.entity.position.distanceTo(before) > 1.2;
+                                        if (moved) say(agent, 'Pillared up and over~');
+                                    }
+                                } catch (_) { /* best-effort */ }
                             } catch (e) { /* rescue is best-effort, never fatal */ }
                         });
                     }
