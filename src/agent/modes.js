@@ -211,6 +211,33 @@ const modes_list = [
                                 say(agent, `Dug ${freed} block${freed === 1 ? '' : 's'} underwater to get out`);
                                 await skills.swimUp(bot, 4000);
                             }
+                            // NOTHING LATERAL WORKED — GO UP THROUGH THE CEILING.
+                            // Measured 2026-10-13: she sat entombed 25+ min with
+                            // feet inside solid stone. The wall-dig above found
+                            // nothing (client desync showed water), swim failed
+                            // every cycle, and the ceiling was never touched. A
+                            // 1-wide shaft out the top is always an exit: dig up
+                            // to 3 head blocks, then swim.
+                            if (freed === 0) {
+                                try {
+                                    const f2 = bot.entity.position.floored();
+                                    let dugUp = 0;
+                                    for (let dy = 1; dy <= 3; dy++) {
+                                        const bp = f2.offset(0, dy, 0);
+                                        const bb = bot.blockAt(bp);
+                                        if (!bb || bb.name === 'air') { dugUp++; break; }
+                                        if (bb.name === 'water' || bb.name === 'bubble_column') break;
+                                        try {
+                                            if (await skills.breakBlockAt(bot, bp.x, bp.y, bp.z, 8000)) dugUp++;
+                                            else break;
+                                        } catch (_) { break; }
+                                    }
+                                    if (dugUp > 0) {
+                                        say(agent, 'Dug up through the ceiling to get out');
+                                        await skills.swimUp(bot, 4000);
+                                    }
+                                } catch (_) {}
+                            }
                         } catch (_) {}
                         say(agent, 'stuck underwater, this is not great');
                     });
