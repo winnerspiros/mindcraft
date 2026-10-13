@@ -344,7 +344,7 @@ check('a killed target drops its disengage cooldown',
     .test(agentSrc))
 check('the disengage guard sits before the fight starts, not after',
   agentSrc.indexOf('disengagedUntil') > 0 &&
-  agentSrc.indexOf('disengagedUntil') < agentSrc.indexOf('this._fightInFlight = true;') &&
+  agentSrc.indexOf('disengagedUntil') < agentSrc.indexOf('attackEntity(this.bot, r.target, true)') &&
   agentSrc.indexOf('this._threatDisengage') < agentSrc.indexOf('attackEntity(this.bot, r.target, true)'))
 check('action_manager: a refused stop abandons the action, it does not kill the process',
   /Action refused stop for 10s - abandoning it \(no process kill\)/.test(agentSrcOf_actionManager))

@@ -2384,11 +2384,29 @@ export class Agent {
                 // hands are a real weapon - bot.pvp.attack needs no item - so
                 // this is a genuine option whenever it fires.
                 if (!_stale && r.action === 'fight' && _live?.position) {
+                    // SERIALISE (live: 9 hurt-fights in 1s, all done=false).
+                    // Every hit fires this handler, and each one launched its
+                    // own attackEntity onto the single action slot — the first
+                    // swing aborted the rest, none ever landed. The scan
+                    // already guards with _fightInFlight; honour the same flag
+                    // here so a hit during a fight joins it instead of
+                    // pile-driving it.
+                    if (this._fightInFlight) {
+                        console.log(`[threat] hurt: fight already in flight, joining it (#${(this._reactFights || 0) + 1})`);
+                    } else {
                     this._reactFights = (this._reactFights || 0) + 1;
                     console.log(`[threat] hurt: FIGHTING ${_live.name || 'attacker'} @ ${_live.position.toString()} (#${this._reactFights})`);
-                    skills.attackEntity(this.bot, source, true)
+                    this._fightInFlight = true;
+                    // LIVE entity, not the event's stale handle: attackEntity
+                    // paths to entity.position, and the 26.3 tracker keeps
+                    // stale positions for things out of render distance
+                    // (measured: fled a ghost 36 blocks from the real
+                    // shooter). _live was re-resolved from bot.entities above.
+                    skills.attackEntity(this.bot, _live || source, true)
                         .then((won) => console.log(`[threat] fight result: done=${won}`))
-                        .catch((e) => console.warn('[threat] fight failed:', e?.message));
+                        .catch((e) => console.warn('[threat] fight failed:', e?.message))
+                        .finally(() => { this._fightInFlight = false; });
+                    }
                 }
             }
 
@@ -2578,6 +2596,45 @@ export class Agent {
                     // It was reachable only from the explicit !shoot commands,
                     // never from this reflex - the capability existed unused at
                     // exactly the moment it was worth having.
+                    //
+                    // SERVER TRUTH FIRST (live: client Slot decode blind to
+                    // bow/arrows, _hasBowFor reads the client and answers
+                    // false, so the bow never fires even with bow + 64 arrows
+                    // on the server). The scan already refreshes _serverRanged
+                    // from RCON above — trust it here like assessThreats does.
+                    // Throttled by the same 8s per-target dedupe as melee.
+                    try {
+                        if (this._serverRanged === true) {
+                            let _d = Infinity;
+                            try { _d = this.bot.entity.position.distanceTo(r.target.position); } catch (_) {}
+                            if (_d > MELEE_RANGE && !this._bowInFlight && this._threatBowSpentKey !== key) {
+                                const bowDis = (this._threatDisengage || {})[key];
+                                if (!(bowDis && Date.now() < bowDis)) {
+                                    this._bowInFlight = true;
+                                    console.log(`[threat] scan: SHOOTING ${r.target.name || 'mob'} at ${_d.toFixed(1)} blocks (server truth)`);
+                                    this.self_prompter.start(r.goal);
+                                    skills.shootBow(this.bot, r.target, 2, true)
+                                        .then((fired) => {
+                                            console.log(`[threat] scan shot result: fired=${fired}`);
+                                            if (!fired) this._threatBowSpentKey = key;
+                                            else {
+                                                this._threatFails = this._threatFails || {};
+                                                const fails = (this._threatFails[key] || 0) + 1;
+                                                this._threatFails[key] = fails;
+                                                const backoff = Math.min(15000 * Math.pow(2, fails - 1), 600000);
+                                                (this._threatDisengage = this._threatDisengage || {})[key] = Date.now() + backoff;
+                                            }
+                                        })
+                                        .catch((e) => {
+                                            console.warn('[threat] scan shot failed:', e?.message);
+                                            this._threatBowSpentKey = key;
+                                        })
+                                        .finally(() => { this._bowInFlight = false; });
+                                    return;
+                                }
+                            }
+                        }
+                    } catch (_) {}
                     if (this._hasBowFor(r.target)) {
                         // Bow branch needs the same guards as melee (2026-10-11):
                         // without them the 1s scan re-fired a volley every tick
