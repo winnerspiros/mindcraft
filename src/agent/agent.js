@@ -2570,8 +2570,16 @@ export class Agent {
                 const mobType = r.target ? (r.target.name || r.target.username || 'mob') : 'none';
                 const key = `${mobType}:${r.action}`;
                 this._threatFails = this._threatFails || {};
-                if (this._lastThreatKey === key && Date.now() - (this._lastThreatAt || 0) < 8000) return;
+                // FLIP-FLOP GUARD (2026-10-13): fight/avoid alternate on the
+                // SAME pillager every scan (13.9 vs 6-above), and the key above
+                // includes the action — so each branch is "fresh" and preempts
+                // her dig every second. She slow-rotates forever, doing
+                // nothing. Cooldown per MOB, not per mob+action: once she has
+                // acted on a mob, the other branch waits 8s too.
+                if ((this._lastThreatMob === mobType && Date.now() - (this._lastThreatAt || 0) < 8000) ||
+                    (this._lastThreatKey === key && Date.now() - (this._lastThreatAt || 0) < 8000)) return;
                 this._lastThreatKey = key;
+                this._lastThreatMob = mobType;
                 this._lastThreatAt = Date.now();
                 console.log(`[threat] ${r.action}: ${r.reason}`);
                 // MOVE, do not narrate. This scan used to only call
