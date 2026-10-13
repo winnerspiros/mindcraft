@@ -429,10 +429,15 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
         // Vertical separation guard (2026-10-11): a mob 5+ blocks above/below
         // her is behind rock/water she cannot path through — chasing it means
         // digging/diving into caves and drowning (measured: she dove to y52
-        // after a skeleton below her and died). Do not start a fight she
+        // after a skeleton below her and died). Do not MELEE a fight she
         // cannot walk to; keep distance on her own level instead.
+        //
+        // RANGED EXEMPTION (live: shot dead by a pillager 5 above while
+        // holding bow + 37 arrows). A bow answers vertically — the guard
+        // must not veto the one weapon that ignores terrain. Range-armed +
+        // elevated target = shoot it, not flee it.
         const dy = Math.abs((worst.entity?.position?.y ?? self.y) - self.y);
-        if (dy > 4.5) {
+        if (dy > 4.5 && !(isRangedArmed(bot) && worst.distance > MELEE_RANGE)) {
             return {
                 action: 'avoid',
                 target: worst.entity,

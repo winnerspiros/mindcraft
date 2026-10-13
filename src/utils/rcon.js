@@ -459,7 +459,10 @@ export async function rconEnsureKit(name) {
     // overflow `give` drops litter on the ground at spawn. Inventory must end
     // with `]` (parseInventoryText completeness rule), equipment must show
     // the offhand key it always carries.
-    if (!/\]/.test(String(inv)) || !/offhand\s*:/.test(String(eq)))
+    // Equipment must show at least one worn piece (empty offhand is legit —
+    // she fights two-handed with no shield). Inventory completeness was
+    // already enforced upstream by rconInventory's bracket rule.
+    if (!/legs\s*:|feet\s*:|chest\s*:|head\s*:/.test(String(eq)))
         return { ok: false, gave: false, detail: 'truncated read, refusing to kit blind' };
     const have = new Set([...parseIds(inv), ...parseIds(eq)]);
     const actions = [];

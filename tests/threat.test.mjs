@@ -352,4 +352,19 @@ console.log(failed
     check(primed.action === 'avoid',
         'a priming creeper still outranks the bow',
         `explodes must beat fight at melee range, got ${primed.action}`);
+
+    // ELEVATED ARCHER (live death: shot by a pillager 5 above while holding
+    // bow + 37 arrows, scan said "unreachable on foot" and fled). A bow
+    // ignores terrain — range-armed + elevated target = shoot, not flee.
+    const high = assessThreats({ bot: botWith(kit), entities: [mob('pillager', 2, 69, 0)] });
+    check(high.action === 'fight',
+        'a bow answers an elevated shooter - the guard must not veto ranged',
+        `elevated pillager with bow in hand must be fight, got ${high.action} (${high.reason})`);
+
+    // Same geometry WITHOUT the bow still avoids: bare hands cannot answer
+    // 5 blocks up, and chasing means digging into caves and drowning.
+    const highBare = assessThreats({ bot: botWith([]), entities: [mob('pillager', 2, 69, 0)] });
+    check(highBare.action === 'avoid',
+        'unarmed against height still keeps distance',
+        `bare survivor vs elevated pillager must avoid, got ${highBare.action}`);
 }
