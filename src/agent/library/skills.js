@@ -6363,6 +6363,7 @@ export async function pillarUp(bot, blockType, height = 4) {
                 try { _wb = bot.blockAt(_eye.clone().offset(dx, dy, dz)); } catch (_) {}
                 if (!_wb || _wb.name === 'air' || _wb.name === 'water' || _wb.name === 'lava' || _wb.name === 'bedrock') continue;
                 try { await equipRightTool(bot, _wb).catch(() => {}); } catch (_) {}
+                try { await bot.lookAt(_wb.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                 try { await bot.dig(_wb, true).catch(() => {}); } catch (_) {}
                 try {
                     const _chk = bot.blockAt(_wb.position);
@@ -6552,6 +6553,7 @@ export async function tearDownTower(bot, base, height) {
                 const blk = bot.blockAt(new Vec3(b.x, y, b.z));
                 if (blk && blk.name !== 'air' && blk.name !== 'water' && blk.name !== 'lava') {
                     try { await equipRightTool(bot, blk).catch(() => {}); } catch (_) {}
+                    try { await bot.lookAt(blk.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                     try { await bot.dig(blk, true).catch(() => {}); } catch (_) {}
                     // VERIFIED removal: only count when it's actually gone.
                     try {
@@ -9424,6 +9426,7 @@ export async function goToPlayer(bot, username, distance=3) {
                                 for (const wb of faces.slice(0, 3)) {
                                     if (bot.interrupt_code) break;
                                     try { await equipRightTool(bot, wb).catch(() => {}); } catch (_) {}
+                                    try { await bot.lookAt(wb.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                                     // VERIFIED DIG (not fire-and-count): only count it if the
                                     // block is actually gone on re-read afterwards.
                                     try {
@@ -9433,6 +9436,7 @@ export async function goToPlayer(bot, username, distance=3) {
                                         const chk = bot.blockAt(wb.position);
                                         if (!chk || chk.name === 'air' || chk.name !== wb.name) got++;
                                         else {
+                                            try { await bot.lookAt(wb.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                                             try { await bot.dig(wb, true).catch(() => {}); } catch (_) {}
                                             try {
                                                 const chk2 = bot.blockAt(wb.position);
@@ -9932,6 +9936,7 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                         for (const wb of faces.slice(0, 3)) {
                             if (bot.interrupt_code) break;
                             try { await equipRightTool(bot, wb).catch(() => {}); } catch (_) {}
+                            try { await bot.lookAt(wb.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                             try { await bot.dig(wb, true).catch(() => {}); } catch (_) {}
                         }
                         try { await bot.waitForTicks(20); } catch (_) {}
@@ -10040,6 +10045,7 @@ export async function reachPosition(bot, x, y, z, min_distance = 2, label = 'the
                         if (b && b.name !== 'air' && b.name !== 'cave_air' && b.name !== 'water') {
                             if (b.name === 'bedrock' || b.name === 'obsidian' || b.name === 'lava') { blockedHard = true; break; }
                             try { await equipRightTool(bot, b).catch(() => {}); } catch (_) {}
+                            try { await bot.lookAt(b.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                             try { await bot.dig(b, true); dugThisStep = true; } catch (_) {}
                         }
                     }
@@ -12650,6 +12656,7 @@ export async function harvestCrops(bot, maxDistance=16) {
         );
         for (const block of mature) {
             try {
+                try { await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
                 await bot.dig(block, true);
                 harvested++;
             } catch (e) {
