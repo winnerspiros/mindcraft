@@ -201,7 +201,7 @@ check('mode: still preempts too', /actionLabel\.startsWith\('mode:'\)/.test(amSr
 // bailed on its first poll with done=false - one zombie at 3 blocks, full
 // diamond, and she never swung because of a flag from an old dig.
 const scanStart2 = agentSrc.indexOf('this._threatScan = setInterval')
-const scanBody = agentSrc.slice(scanStart2, scanStart2 + 1200)
+const scanBody = agentSrc.slice(scanStart2, scanStart2 + 2600)
 check('the scan consumes the sticky interrupt flag',
   /this\.bot\.interrupt_code = false;/.test(scanBody))
 check('the flag is cleared BEFORE the threat decision',
