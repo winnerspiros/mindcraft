@@ -676,6 +676,11 @@ const modes_list = [
             // (update() must stay <100ms — the locate runs async inside
             // execute, never inline here).
             if ((agent.psyche?.mood?.fear ?? 0) >= FEAR_FLEE_THRESHOLD) return;
+            // SWING-SAFE (2026-10-13, same as cowardice above): self_defense
+            // interrupts EVERYTHING, so every passing mob yanked her off a
+            // mid-swing dig — the start/stop/start "robotic" rhythm seen live.
+            // A swing in progress finishes first; the fight starts next tick.
+            try { if (agent.bot.targetDigBlock) return; } catch (_) {}
             // FLYERS FIRST (wither snipes from 30+ blocks — past the 14-block
             // ground scan): a wide sync eye-scan only, no RCON here (update
             // must stay <100ms; defendSelf does the RCON truth itself).
