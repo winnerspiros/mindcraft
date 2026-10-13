@@ -2490,9 +2490,32 @@ export class Agent {
                 // swung because of a flag raised by an unrelated dig minutes
                 // earlier. Consume it here — the scan owns the body right now.
                 this.bot.interrupt_code = false;
+                // SERVER-TRUTH ARM CHECK (live: client inventory blind to
+                // bow/arrows after gear-up, so the scan fled an elevated
+                // pillager she could have shot). Refresh RCON truth async,
+                // throttled — the decision reads the last known verdict.
+                try {
+                    if (Date.now() - (this._serverRangedAt || 0) > 10000 && !this._serverRangedBusy) {
+                        this._serverRangedBusy = true;
+                        (async () => {
+                            try {
+                                const { rconInventory } = await import('../utils/rcon.js');
+                                const inv = await rconInventory(this.bot?.username, false);
+                                const names = (inv || []).map(e => e.name);
+                                const hasBow = names.includes('bow');
+                                const arrows = (inv || []).filter(e => /^(arrow|spectral_arrow|tipped_arrow)$/.test(e.name))
+                                    .reduce((n, e) => n + (e.count || 0), 0);
+                                this._serverRanged = hasBow && arrows > 0;
+                            } catch (_) {}
+                            this._serverRangedAt = Date.now();
+                            this._serverRangedBusy = false;
+                        })();
+                    }
+                } catch (_) {}
                 const r = assessThreats({
                     bot: this.bot,
                     entities: Object.values(this.bot.entities || {}),
+                    serverRanged: this._serverRanged === true ? true : null,
                 });
                 if (r.action === 'ignore') {
                     // Nothing left to deal with: drop the fight state so the

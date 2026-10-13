@@ -385,7 +385,7 @@ export function reactToHurt({ bot, attacker, distance } = {}) {
  * @param {boolean} o.busy      she is mid-task; a threat still outranks it
  * @returns {{action:'fight'|'avoid'|'ignore', target?:object, goal?:string, reason:string, urgency:number}}
  */
-export function assessThreats({ bot, entities, busy = false } = {}) {
+export function assessThreats({ bot, entities, busy = false, serverRanged = null } = {}) {
     try {
         const self = bot?.entity?.position;
         if (!self) return { action: 'ignore', reason: 'no position', urgency: 0 };
@@ -394,7 +394,10 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
         // answers at 30 blocks and is useless in a grapple. armAt() says what
         // she can actually do about a threat at that distance.
         const armed = isArmed(bot);
-        const ranged = isRangedArmed(bot);
+        // serverRanged: the 26.3 client Slot decode goes blind to bow/arrows
+        // (live: gear-up logged 36 client items with no bow while RCON held
+        // bow + 37 arrows), so the scan passes RCON truth when it has it.
+        const ranged = isRangedArmed(bot) || serverRanged === true;
         const armAt = (d) => armed || (ranged && d > MELEE_RANGE);
         let worst = null;
 
@@ -437,7 +440,7 @@ export function assessThreats({ bot, entities, busy = false } = {}) {
         // must not veto the one weapon that ignores terrain. Range-armed +
         // elevated target = shoot it, not flee it.
         const dy = Math.abs((worst.entity?.position?.y ?? self.y) - self.y);
-        if (dy > 4.5 && !(isRangedArmed(bot) && worst.distance > MELEE_RANGE)) {
+        if (dy > 4.5 && !(ranged && worst.distance > MELEE_RANGE)) {
             return {
                 action: 'avoid',
                 target: worst.entity,

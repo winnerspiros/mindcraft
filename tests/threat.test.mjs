@@ -367,4 +367,12 @@ console.log(failed
     check(highBare.action === 'avoid',
         'unarmed against height still keeps distance',
         `bare survivor vs elevated pillager must avoid, got ${highBare.action}`);
+
+    // SERVER-TRUTH RANGED (live: client Slot decode blind to bow/arrows
+    // after gear-up, RCON held bow + 37). The scan passes serverRanged when
+    // RCON says armed — the guard must honour it like client truth.
+    const highSrv = assessThreats({ bot: botWith([]), entities: [mob('pillager', 2, 69, 0)], serverRanged: true });
+    check(highSrv.action === 'fight',
+        'server-known bow answers height even when the client is blind',
+        `serverRanged pillager must be fight, got ${highSrv.action} (${highSrv.reason})`);
 }
