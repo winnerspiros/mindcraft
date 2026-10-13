@@ -462,8 +462,22 @@ export async function rconEnsureKit(name) {
     // legit — she fights two-handed with no shield).
     if (!/legs\s*:|feet\s*:|chest\s*:|head\s*:/.test(String(eq)))
         return { ok: false, gave: false, detail: 'truncated read, refusing to kit blind' };
-    const have = new Set([...parseIds(inv), ...parseIds(eq)]);
+    const have = new Set([...(full || []).map(e => e.name), ...parseIds(eq)]);
     const actions = [];
+    // DEDUPE (live: 36/36 slots with 10 shovels + 8 pickaxes from repeated
+    // kits — every new give said "Not enough space" and the bow was lost).
+    // When the pack is full and a kit piece is missing, collapse duplicate
+    // diamond tools to one of each first, then re-give. Clears run inside
+    // the same action list so the give-back is atomic with the strip.
+    if ((full || []).length >= 35 && !have.has('bow')) {
+        for (const dup of ['diamond_shovel', 'diamond_pickaxe']) {
+            const n = (full || []).filter(e => e.name === dup).reduce((a, e) => a + (e.count || 0), 0);
+            if (n > 1) {
+                actions.push(`minecraft:clear ${safe} minecraft:${dup}`);
+                actions.push(`minecraft:give ${safe} minecraft:${dup}${VANISH} 1`);
+            }
+        }
+    }
     for (const [piece, slot] of Object.entries(ARMOR_SLOT))
         if (!have.has(piece)) actions.push(`minecraft:item replace entity ${safe} ${slot} with minecraft:${piece}${VANISH} 1`);
     // 26.3 equipment has NO mainhand slot (only offhand/head/chest/legs/feet), so
