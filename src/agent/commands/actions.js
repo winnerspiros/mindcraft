@@ -2301,9 +2301,26 @@ export const actionsList = [
     },
     {
         name: '!digDown',
-        description: 'Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.',
+        description: 'Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot. REQUIRES exit blocks: refuses unless she carries at least (distance + 4) placeable blocks to pillar back out — a hole she cannot climb out of is a trap, not mining.',
         params: {'distance': { type: 'int', description: 'Distance to dig down', domain: [1, Number.MAX_SAFE_INTEGER] }},
         perform: runAsAction(async (agent, distance) => {
+            // NO-EXIT REFUSAL (2026-10-13): she dug herself into holes three
+            // times, each needing a manual RCON lift. A descent without
+            // pillar material is not a plan. Refuse upfront.
+            try {
+                const { rconInventory } = await import('../../utils/rcon.js');
+                const inv = await rconInventory(agent.bot.username, true);
+                const counts = {};
+                for (const e of (inv || [])) counts[e.name] = (counts[e.name] || 0) + e.count;
+                const placeable = ['dirt','cobblestone','stone','deepslate','cobbled_deepslate','sand','gravel','netherrack','oak_planks','granite','diorite','andesite','tuff'];
+                let have = 0;
+                for (const n of placeable) have += counts[n] || 0;
+                const need = Math.min(Math.max(distance || 5, 1), 6) + 4;
+                if (have < need) {
+                    agent.bot.output = (agent.bot.output || '') + `\nRefusing digDown: only ${have} placeable blocks, need ${need} to climb back out. Gather blocks first.`;
+                    return false;
+                }
+            } catch (_) {}
             await skills.digDown(agent.bot, distance)
         })
     },
