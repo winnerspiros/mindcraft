@@ -3659,10 +3659,38 @@ export async function attackEntity(bot, entity, kill=true) {
                 try { bot.setControlState('forward', true); } catch (_) {}
                 try { bot.setControlState('sprint', true); } catch (_) {}
                 try { bot.setControlState('jump', true); } catch (_) {}
+                const _before = bot.entity.position.clone();
                 await goToPosition(bot, pos.x, pos.y, pos.z, 2);
                 try { bot.setControlState('jump', false); } catch (_) {}
                 try { bot.setControlState('sprint', false); } catch (_) {}
                 try { bot.setControlState('forward', false); } catch (_) {}
+                // DIG-THROUGH (owner: "even if buried she could find her way").
+                // The walk ended but she is still out of reach = rock between
+                // her and the mob. Break the wall toward it (up to 3 blocks
+                // along the line), then step in. Never dig straight down.
+                try {
+                    const _gap0 = bot.entity.position.distanceTo(entity.position);
+                    const _moved = bot.entity.position.distanceTo(_before);
+                    if (_gap0 > MELEE_REACH && _moved < 1.0) {
+                        const _from = bot.entity.position.clone();
+                        const _to = entity.position.clone();
+                        const _dx = _to.x - _from.x, _dy = _to.y - _from.y, _dz = _to.z - _from.z;
+                        const _len = Math.hypot(_dx, _dy, _dz) || 1;
+                        for (let _s = 1; _s <= 3; _s++) {
+                            if (bot.interrupt_code) break;
+                            const _bx = Math.floor(_from.x + _dx / _len * _s);
+                            const _by = Math.floor(_from.y + _dy / _len * _s);
+                            const _bz = Math.floor(_from.z + _dz / _len * _s);
+                            if (_by <= Math.floor(_from.y) - 2) break; // never dig her own floor out
+                            let _blk = null;
+                            try { _blk = bot.blockAt(Vec3(_bx, _by, _bz)); } catch (_) {}
+                            if (!_blk || _blk.name === 'air' || _blk.name === 'water' || _blk.name === 'bedrock' || _blk.name === 'obsidian') continue;
+                            try { await bot.lookAt(_blk.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
+                            try { await breakBlockAt(bot, _bx, _by, _bz, 8000); } catch (_) {}
+                            if (bot.entity.position.distanceTo(entity.position) <= MELEE_REACH + 1) break;
+                        }
+                    }
+                } catch (_) {}
             }
             await attackAimed(bot, entity, () => bot.pvp.attack(entity));
             // Bounded: an unbounded poll means a lost fight (mob unreachable,
@@ -3731,10 +3759,36 @@ export async function attackEntity(bot, entity, kill=true) {
                         try { bot.setControlState('forward', true); } catch (_) {}
                         try { bot.setControlState('sprint', true); } catch (_) {}
                         try { bot.setControlState('jump', true); } catch (_) {}
+                        const _rb = bot.entity.position.clone();
                         await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, 2);
                         try { bot.setControlState('jump', false); } catch (_) {}
                         try { bot.setControlState('sprint', false); } catch (_) {}
                         try { bot.setControlState('forward', false); } catch (_) {}
+                        // DIG-THROUGH per round too: the mob re-buried itself
+                        // (or she never broke in on entry). Same rule — walk
+                        // stalled, still out of reach, break the wall toward it.
+                        try {
+                            const _rg = bot.entity.position.distanceTo(entity.position);
+                            if (_rg > MELEE_REACH && bot.entity.position.distanceTo(_rb) < 1.0) {
+                                const _f2 = bot.entity.position.clone();
+                                const _t2 = entity.position.clone();
+                                const _dx2 = _t2.x - _f2.x, _dy2 = _t2.y - _f2.y, _dz2 = _t2.z - _f2.z;
+                                const _ln2 = Math.hypot(_dx2, _dy2, _dz2) || 1;
+                                for (let _s2 = 1; _s2 <= 2; _s2++) {
+                                    if (bot.interrupt_code) break;
+                                    const _bx2 = Math.floor(_f2.x + _dx2 / _ln2 * _s2);
+                                    const _by2 = Math.floor(_f2.y + _dy2 / _ln2 * _s2);
+                                    const _bz2 = Math.floor(_f2.z + _dz2 / _ln2 * _s2);
+                                    if (_by2 <= Math.floor(_f2.y) - 2) break;
+                                    let _bl2 = null;
+                                    try { _bl2 = bot.blockAt(Vec3(_bx2, _by2, _bz2)); } catch (_) {}
+                                    if (!_bl2 || _bl2.name === 'air' || _bl2.name === 'water' || _bl2.name === 'bedrock' || _bl2.name === 'obsidian') continue;
+                                    try { await bot.lookAt(_bl2.position.offset(0.5, 0.5, 0.5), true); } catch (_) {}
+                                    try { await breakBlockAt(bot, _bx2, _by2, _bz2, 8000); } catch (_) {}
+                                    if (bot.entity.position.distanceTo(entity.position) <= MELEE_REACH + 1) break;
+                                }
+                            }
+                        } catch (_) {}
                     }
                     await attackAimed(bot, entity, () => bot.pvp.attack(entity));
                 } catch (_) {

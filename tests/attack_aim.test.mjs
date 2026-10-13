@@ -93,7 +93,7 @@ const sites = [
   // The kill branch grew (it now closes distance and has a deadline), so give
   // it room. Anchored on the unique `else {` + goToPosition pair instead of a
   // bare pvp.stop(), which appears elsewhere too.
-  ['attackEntity kill branch', near('await goToPosition(bot, pos.x, pos.y, pos.z, 2);', 600)],
+  ['attackEntity kill branch', near('await goToPosition(bot, pos.x, pos.y, pos.z, 2);', 2600)],
   ['crit attack', nearAnywhere("bot.setControlState('jump', true)", 600)],
   // The melee map aims BEFORE its bookkeeping line (lookAt/swingArm sit above
   // it), so this one looks backward.
