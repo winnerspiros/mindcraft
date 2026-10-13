@@ -460,7 +460,12 @@ export async function rconEnsureKit(name) {
     // completeness was already enforced upstream by rconInventory's bracket
     // rule; equipment must show at least one worn piece (empty offhand is
     // legit — she fights two-handed with no shield).
-    if (!/legs\s*:|feet\s*:|chest\s*:|head\s*:/.test(String(eq)))
+    //
+    // EXCEPTION (2026-10-13): a SMALL complete inventory cannot be truncated —
+    // truncation drops entries, so <=8 slots verifiably means she owns little.
+    // Without this, a genuinely naked bot (died with vanishing gear, restart
+    // stripped her) fails the equipment gate forever and never re-kits.
+    if ((full || []).length > 8 && !/legs\s*:|feet\s*:|chest\s*:|head\s*:/.test(String(eq)))
         return { ok: false, gave: false, detail: 'truncated read, refusing to kit blind' };
     const have = new Set([...(full || []).map(e => e.name), ...parseIds(eq)]);
     const actions = [];
