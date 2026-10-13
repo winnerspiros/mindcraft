@@ -195,6 +195,9 @@ test('a chew stops mineflayer-pvp and resumes it after', async () => {
     const item = { name: 'cooked_beef', count: 1 };
     // Never consume: we only care about the pvp handshake, and a fake that
     // fails to consume must not be able to skip the pause.
+    // (No usingHeldItem on this fake: the re-draw guard only fires on an
+    // explicit false, so the bite activates exactly once.)
+    bot.usingHeldItem = true;
     const res = await eatNow(bot, item);
 
     assert.ok(events.includes('pvp.stop'),
