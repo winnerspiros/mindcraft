@@ -385,6 +385,10 @@ export function reactToHurt({ bot, attacker, distance } = {}) {
  * @param {boolean} o.busy      she is mid-task; a threat still outranks it
  * @returns {{action:'fight'|'avoid'|'ignore', target?:object, goal?:string, reason:string, urgency:number}}
  */
+// Ghost-entity distance memory (2026-10-13): entity id -> {d, n}. Module
+// state is correct here — assessThreats runs on one bot per process.
+const _ghostDist = new Map();
+
 export function assessThreats({ bot, entities, busy = false, serverRanged = null } = {}) {
     try {
         const self = bot?.entity?.position;
@@ -404,6 +408,25 @@ export function assessThreats({ bot, entities, busy = false, serverRanged = null
         for (const e of entities || []) {
             const name = mobName(e);
             if (!name) continue;
+            // GHOST FILTER (2026-10-13): 26.3 leaves dead/removed mobs in
+            // bot.entities with a frozen position. She fought a zombie at a
+            // fixed 12.8 blocks for 3+ minutes, burning 10 arrows — the probe
+            // showed NO zombie anywhere near her. A corpse cannot move, so a
+            // target whose distance never changes across scans is not real.
+            // Track last-seen distance per entity id; after 8 consecutive
+            // identical readings (~8s), treat it as a husk and skip it.
+            try {
+                const eid = e.id ?? e.uuid ?? name;
+                const dRaw = distanceBetween(e.position, self);
+                const prev = _ghostDist.get(eid);
+                if (prev && Math.abs(prev.d - dRaw) < 0.05) {
+                    prev.n++;
+                    if (prev.n >= 8) continue;
+                } else {
+                    _ghostDist.set(eid, { d: dRaw, n: 0 });
+                }
+                if (_ghostDist.size > 60) _ghostDist.clear();
+            } catch (_) {}
             const behaviour = HOSTILE_BEHAVIOUR[name];
             if (!behaviour) continue;
             const d = distanceBetween(e.position, self);
