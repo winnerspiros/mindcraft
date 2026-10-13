@@ -3655,7 +3655,14 @@ export async function attackEntity(bot, entity, kill=true) {
             // already in melee range, and a planner failure must not be allowed
             // to skip a fight she can win standing still.
             if (bot.entity.position.distanceTo(entity.position) > MELEE_REACH) {
+                try { await bot.lookAt(entity.position.offset(0, 1, 0), true); } catch (_) {}
+                try { bot.setControlState('forward', true); } catch (_) {}
+                try { bot.setControlState('sprint', true); } catch (_) {}
+                try { bot.setControlState('jump', true); } catch (_) {}
                 await goToPosition(bot, pos.x, pos.y, pos.z, 2);
+                try { bot.setControlState('jump', false); } catch (_) {}
+                try { bot.setControlState('sprint', false); } catch (_) {}
+                try { bot.setControlState('forward', false); } catch (_) {}
             }
             await attackAimed(bot, entity, () => bot.pvp.attack(entity));
             // Bounded: an unbounded poll means a lost fight (mob unreachable,
@@ -3715,10 +3722,26 @@ export async function attackEntity(bot, entity, kill=true) {
                 // close again each round: the mob backs off and she faces travel
                 try {
                     if (bot.entity.position.distanceTo(entity.position) > MELEE_REACH) {
+                        // DRIVE, not just plan: goToPosition can report a path
+                        // while walk-death eats every movement packet (live:
+                        // position byte-identical 40s mid-fight). Hold forward
+                        // + jump toward the mob while the leg runs so a dead
+                        // pathfinder still closes the gap by raw input.
+                        try { await bot.lookAt(entity.position.offset(0, 1, 0), true); } catch (_) {}
+                        try { bot.setControlState('forward', true); } catch (_) {}
+                        try { bot.setControlState('sprint', true); } catch (_) {}
+                        try { bot.setControlState('jump', true); } catch (_) {}
                         await goToPosition(bot, entity.position.x, entity.position.y, entity.position.z, 2);
+                        try { bot.setControlState('jump', false); } catch (_) {}
+                        try { bot.setControlState('sprint', false); } catch (_) {}
+                        try { bot.setControlState('forward', false); } catch (_) {}
                     }
                     await attackAimed(bot, entity, () => bot.pvp.attack(entity));
-                } catch (_) {}
+                } catch (_) {
+                    try { bot.setControlState('forward', false); } catch (_) {}
+                    try { bot.setControlState('sprint', false); } catch (_) {}
+                    try { bot.setControlState('jump', false); } catch (_) {}
+                }
             }
         log(bot, `Successfully killed ${entity.name}.`);
         await pickupNearbyItems(bot);

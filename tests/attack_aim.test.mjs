@@ -129,7 +129,7 @@ check('the kill poll is bounded by a deadline',
 // It used to pin the literal 2.5, which silently stopped matching when the
 // threshold became a named constant.
 check('the kill branch closes distance before swinging',
-  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n\s*await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae) &&
+  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n[\s\S]{0,600}?await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae) &&
   /distanceTo\(entity\.position\) > MELEE_REACH/.test(ae))
 
 // --- no unaided pvp.attack may remain on a hostile target ---
@@ -151,7 +151,7 @@ check('the 70deg / Panda derivation is documented in-file',
 // signature line - a narrow slice made the documentation check pass vacuously.
 check('MELEE_REACH is defined', /const MELEE_REACH = [\d.]+/.test(src))
 check('the opening path is gated on reach',
-  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n\s*await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae))
+  /if \(bot\.entity\.position\.distanceTo\(entity\.position\) > MELEE_REACH\) \{\s*\n[\s\S]{0,600}?await goToPosition\(bot, pos\.x, pos\.y, pos\.z, 2\);/.test(ae))
 // Count the gated path steps: the opening one AND the per-round re-close. A
 // single regex matches both, so deleting only the re-close still satisfied it -
 // this is why the per-round guard needs its own occurrence.
