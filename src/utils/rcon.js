@@ -442,26 +442,24 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 export async function rconEnsureKit(name) {
     const safe = String(name).replace(/[^A-Za-z0-9_]/g, '');
     if (!safe) return { ok: false, gave: false, detail: 'bad name' };
-    let eq;
+    let eq, full;
     try {
         // 26.3 abbreviates big inventories server-side: rconInventory falls
         // back to per-slot reads on a truncated reply.
-        const full = await rconInventory(safe, true);
+        full = await rconInventory(safe, true);
         if (!full) return { ok: false, gave: false, detail: 'inventory unreadable, refusing to kit blind' };
-        const inv = full.map(e => e.name).join(' ');
         eq = await rconCommand(`data get entity ${safe} equipment`);
     } catch (e) {
         return { ok: false, gave: false, detail: 'rcon read failed: ' + e.message };
     }
+    const inv = full.map(e => e.name).join(' ');
     // NEVER kit from a truncated read. RCON caps long-NBT replies (we have
     // seen 129-char inventory replies showing 1 slot); treating that as "she
     // owns nothing" re-gives the whole kit, overflows her inventory, and the
-    // overflow `give` drops litter on the ground at spawn. Inventory must end
-    // with `]` (parseInventoryText completeness rule), equipment must show
-    // the offhand key it always carries.
-    // Equipment must show at least one worn piece (empty offhand is legit —
-    // she fights two-handed with no shield). Inventory completeness was
-    // already enforced upstream by rconInventory's bracket rule.
+    // overflow `give` drops litter on the ground at spawn. Inventory
+    // completeness was already enforced upstream by rconInventory's bracket
+    // rule; equipment must show at least one worn piece (empty offhand is
+    // legit — she fights two-handed with no shield).
     if (!/legs\s*:|feet\s*:|chest\s*:|head\s*:/.test(String(eq)))
         return { ok: false, gave: false, detail: 'truncated read, refusing to kit blind' };
     const have = new Set([...parseIds(inv), ...parseIds(eq)]);
