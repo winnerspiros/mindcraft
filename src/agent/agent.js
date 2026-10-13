@@ -2651,6 +2651,20 @@ export class Agent {
                 if (r.action === 'avoid' && r.target) {
                     // A priming creeper outranks an in-flight melee: fleeing is
                     // the only move that survives it, so this one does preempt.
+                    // SAME-GOAL DEDUP (live 04:10-04:12): the scan fires every
+                    // 1s, and an unreachable pillager re-reports 'avoid' with
+                    // the identical goal each time. Re-start()ing the same
+                    // goal + re-launching avoidEnemies every second churned
+                    // the action manager (interrupt pile-up, stuck-fuse 34
+                    // failed legs) and she never actually moved. If the goal
+                    // loop is already working this exact goal, let it work.
+                    try {
+                        const _sp = this.self_prompter;
+                        if (_sp && typeof _sp.isActive === 'function' && _sp.isActive()
+                            && String(_sp.prompt || '') === String(r.goal || '')) {
+                            return;
+                        }
+                    } catch (_) {}
                     console.log(`[threat] scan: AVOIDING ${r.target.name || 'mob'}`);
                     this.self_prompter.start(r.goal);
                     skills.avoidEnemies(this.bot, 24, 'sprint')

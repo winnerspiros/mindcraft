@@ -829,7 +829,35 @@ export class Prompter {
 
             if (current_msg_time !== this.most_recent_msg_time) {
                 console.warn(`${this.agent.name} received new message while generating, discarding old response.`);
-                return '';
+                // RETRY-ONCE (live 04:10:18): the discarded turn returned ''
+                // -> "no response" -> the owner saw a zombie. The newer message
+                // has its own handler, but under churn (self-prompt + threat
+                // scan stamping between start and finish) BOTH generations can
+                // discard, leaving nobody to answer. One immediate retry with
+                // a fresh stamp gives the newest message its answer instead
+                // of silence. Bounded: exactly one retry, no loop.
+                if (!this._discardRetried) {
+                    this._discardRetried = true;
+                    try {
+                        await new Promise(r => setTimeout(r, 1500));
+                        current_msg_time = this.most_recent_msg_time;
+                        generation = await this.chat_model.sendRequest(messages, prompt);
+                        if (typeof generation !== 'string') throw new Error('Generated response is not a string');
+                        console.log("Generated response (retry after discard):", generation);
+                        await this._saveLog(prompt, messages, generation, 'conversation');
+                        if (current_msg_time !== this.most_recent_msg_time) {
+                            console.warn(`${this.agent.name} retry also stale, giving up.`);
+                            return '';
+                        }
+                    } catch (error) {
+                        console.error('Error during discard-retry generation:', error);
+                        return '';
+                    } finally {
+                        this._discardRetried = false;
+                    }
+                } else {
+                    return '';
+                }
             }
 
             // Strip chain-of-thought: only remove a "response"-style tag when it
