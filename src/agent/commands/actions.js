@@ -342,7 +342,7 @@ export const actionsList = [
             'x': {type: 'float', description: 'The x coordinate.', domain: [-Infinity, Infinity]},
             'y': {type: 'float', description: 'The y coordinate.', domain: [-64, 320]},
             'z': {type: 'float', description: 'The z coordinate.', domain: [-Infinity, Infinity]},
-            'closeness': {type: 'float', description: 'How close to get to the location.', domain: [0, Infinity]},
+            'closeness': {type: 'float', default: 3, description: 'How close to get to the location.', domain: [0, Infinity]},
             'pace': {type: 'string', default: 'walk', description: 'How to move: walk (careful, default), sprint (flat-out run — needs food + 6+ blocks), parkour (sprint + jumps for gaps/height — solid ground only).'}
         },
         perform: runAsAction(async (agent, x, y, z, closeness, pace) => {
@@ -369,7 +369,7 @@ export const actionsList = [
         description: 'Find and go to the nearest entity of a given type in a given range.',
         params: {
             'entity_type': { type: 'string', description: 'The type of entity to go to.' },
-            'range': { type: 'float', description: 'The range to search for the entity.', domain: [32, 512], default: 32 }
+            'range': { type: 'float', description: 'The range to search for the entity.', domain: [4, 512], default: 64 }
         },
         perform: runAsAction(async (agent, entity_type, range) => {
             await skills.goToNearestEntity(agent.bot, entity_type, 4, range);
