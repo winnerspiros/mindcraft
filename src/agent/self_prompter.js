@@ -444,7 +444,7 @@ export class SelfPrompter {
             // not pocketed drops. So: prose without a command is a wasted
             // turn, and a result claim without a verifying command is BS.
             const _nobs = ` Never reply with status prose alone — every turn moves the goal with a command. Never claim you HAVE/CHECKED something unless that same turn runs the command that proves it (!inventory, !stats); say what you DID (broke 2 ore, drops unconfirmed) not what you wish were true.`;
-            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''}${_cmds ? ' ' + _cmds : ''}${_nobs} Respond:`;
+            const msg = `You are self-prompting with the goal: '${this.prompt}'. Your next response MUST contain a command with this syntax: !commandName. Success looks like: ${_sc} (if already true, pick the NEXT step toward it).${_gap ? ' ' + _gap : ''}${_cmds ? ' ' + _cmds : ''}${_nobs} WORK IN BATCHES: one turn = one command, so make each command COUNT. Gathering? Ask for 8-16 at once (!collectBlocks oak_log 12), never 1. Moving? Go the whole way, not 3 blocks. One big job per turn beats ten tiny ones — a player chops a whole tree, not one log. Respond:`;
             
             let used_command = await this.agent.handleMessage('system', msg, -1);
             if (!used_command) {
