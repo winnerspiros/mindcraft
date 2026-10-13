@@ -680,8 +680,13 @@ export const actionsList = [
         params: {'type': { type: 'BlockOrItemName', description: 'The block type to place.' }},
         perform: runAsAction(async (agent, type) => {
             await skills.ensureBlocks(agent.bot, type, 1);
-            let pos = agent.bot.entity.position;
-            await skills.placeBlock(agent.bot, type, pos.x, pos.y, pos.z);
+            // Place IN FRONT, not at her feet: her own position is inside her
+            // body (unplaceable) and floors to a stale spot when she's mid-air.
+            // One block forward at foot level is the human "place here".
+            const pos = agent.bot.entity.position;
+            const yaw = agent.bot.entity.yaw ?? 0;
+            const fx = pos.x - Math.sin(yaw), fz = pos.z - Math.cos(yaw);
+            await skills.placeBlock(agent.bot, type, Math.floor(fx), Math.floor(pos.y), Math.floor(fz));
         })
     },
     {
