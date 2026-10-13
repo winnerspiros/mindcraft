@@ -1771,7 +1771,9 @@ export class Agent {
                     // state readout, and the chat budget's own share ceiling
                     // (0.55) exists precisely because that is not how players
                     // talk. notable_event above already works this way.
-                    any_human: this.anyHumanOnline(),
+                    any_human: this.anyHumanOnline() || (!!this.last_sender
+                        && to_player === this.last_sender
+                        && (Date.now() - (this._last_human_msg_at || 0)) < 120000),
                 });
                 if (!verdict.ok) {
                     console.log(`${this.name} [gate:${verdict.why}] suppressed: ${String(message).slice(0, 90)}`);
@@ -2022,8 +2024,10 @@ export class Agent {
             this.openChat(message, to_player);
         }
         else {
-            // otherwise, use open chat
-            this.openChat(message);
+            // otherwise, use open chat — but KEEP the recipient so the
+            // whisper->public fallback knows who she is answering (26.3
+            // /tell is op-only: whisperTo routes as public chat).
+            this.openChat(message, (to_player && to_player !== 'system' && to_player !== this.name) ? to_player : null);
             // note that to_player could be another bot, but if we get here the conversation has ended
         }
     }
@@ -2235,7 +2239,8 @@ export class Agent {
             // 26.3: /tell is op-only on vanilla — whispers never arrive.
             // Route as public chat so the reply is actually seen.
             console.log(this.name, 'whisper->public (26.3 /tell is op-only):', message.slice(0, 120));
-            if (!this.anyHumanOnline()) {
+            if (!this.anyHumanOnline() && !(whisperTo === this.last_sender
+                && (Date.now() - (this._last_human_msg_at || 0)) < 120000)) {
                 console.log(this.name, 'suppressed public chat (no humans online):', message.slice(0, 120));
                 return;
             }
