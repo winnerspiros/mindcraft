@@ -438,8 +438,8 @@ export class SelfPrompter {
                     const step = this.agent.planner.current();
                     console.log(`[cadence] plan step, skipping LLM (step: ${step?.cmd})`);
                     await this.agent.planner.runNext();
-                    // Give the action time to settle, then verify and advance.
-                    await new Promise(r => setTimeout(r, 8000));
+                    // runNext awaits the action to completion via executeCommand,
+                    // so verify immediately — no extra sleep needed.
                     try { this.agent.planner.noteSettled(); } catch (_) {}
                     // Plan done -> advance the goal like the critic would.
                     if (!this.agent.planner.hasPlan()) {
