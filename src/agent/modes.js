@@ -29,6 +29,14 @@ async function say(agent, message) {
 // thrashed each other whenever a hostile mob was near. Fear already folds in
 // the boldness trait (psyche.sampleEnvironment), so this stays mood-driven.
 const FEAR_FLEE_THRESHOLD = 0.5;
+// COMBAT COOLDOWN (2026-10-14): cowardice and self_defense both grab the hand
+// every tick while a hostile sits at mid-range, and each execute() stops the
+// goal loop. Neither backed off, so the planner starved indefinitely — she
+// looked frozen while "fighting" one distant creeper. After EITHER combat
+// mode runs, NEITHER re-fires for 15s, letting the goal loop breathe between
+// engagements. Set on completion in runMode below.
+let _lastCombatModeAt = 0;
+const COMBAT_MODE_COOLDOWN_MS = 15000;
 
 const modes_list = [
     {
@@ -634,6 +642,9 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
+            // COMBAT COOLDOWN: the other combat mode just ran — let the goal
+            // loop breathe instead of re-grabbing the hand immediately.
+            if (Date.now() - _lastCombatModeAt < COMBAT_MODE_COOLDOWN_MS) return;
             // Flee only when afraid; below the threshold self_defense handles it.
             if ((agent.psyche?.mood?.fear ?? 0) < FEAR_FLEE_THRESHOLD) return;
             // SWING-SAFE 2026-09-28: cowardice interrupts EVERYTHING (digs
@@ -662,6 +673,9 @@ const modes_list = [
         on: true,
         active: false,
         update: async function (agent) {
+            // COMBAT COOLDOWN: the other combat mode just ran — let the goal
+            // loop breathe instead of re-grabbing the hand immediately.
+            if (Date.now() - _lastCombatModeAt < COMBAT_MODE_COOLDOWN_MS) return;
             // Fight only when calm/brave; at/above the threshold cowardice flees.
             //
             // ENTITY-BLINDNESS FIX (2026-09-27: pillagers nearby = nothing, a
@@ -1990,6 +2004,10 @@ async function runMode(mode, agent, func, timeout=-1) {
     }, { timeout });
     mode.active = false;
     console.log(`Mode ${mode.name} finished executing, code_return: ${code_return.message}`);
+    // COMBAT COOLDOWN: stamp the shared timer so the OTHER combat mode (and
+    // this one) backs off and the goal loop gets turns between engagements.
+    if (mode.name === 'cowardice' || mode.name === 'self_defense')
+        _lastCombatModeAt = Date.now();
 
     let should_reprompt = 
         interrupted_action && // it interrupted a previous action
