@@ -47,10 +47,15 @@ const CHAINS = [
         build: (inv) => {
             const steps = [];
             if ((inv.torches || 0) >= 8) return steps;
+            // LOGS FIRST, always: every downstream step (planks, sticks, pick,
+            // coal via wooden pick) consumes them. The old order could emit
+            // `craftRecipe oak_planks` with zero logs when the planks check
+            // passed vacuously, and she ended up eyeing the nearest planks —
+            // which was the house wall.
+            if ((inv.logs || 0) < 3 && (inv.planks || 0) < 4)
+                steps.push({ cmd: '!collectBlocks oak_log 5', check: 'logs>=3' });
             if ((inv.coal || 0) < 1 && (inv.charcoal || 0) < 1) {
                 if (!inv.hasPick) {
-                    if ((inv.logs || 0) < 3)
-                        steps.push({ cmd: '!collectBlocks oak_log 3', check: 'logs' });
                     steps.push({ cmd: '!craftRecipe oak_planks 1', check: 'planks' });
                     steps.push({ cmd: '!craftRecipe wooden_pickaxe 1', check: 'pick' });
                 }

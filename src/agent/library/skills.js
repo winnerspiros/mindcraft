@@ -5348,6 +5348,19 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
      * @example
      * await skills.collectBlock(bot, "oak_log");
      **/
+    // CRAFTED-ONLY GUARD (2026-10-14): planks, sticks, crafted goods NEVER
+    // occur naturally — the nearest match is always someone's build (she ate
+    // her own house wall). Refuse outright with a message the brain can act
+    // on (craft it instead) instead of mining the wall.
+    const CRAFTED_ONLY = new Set(['oak_planks','spruce_planks','birch_planks',
+        'jungle_planks','acacia_planks','dark_oak_planks','mangrove_planks',
+        'cherry_planks','bamboo_planks','crimson_planks','warped_planks',
+        'stick','torch','crafting_table','furnace','chest','bed','door',
+        'oak_door','glass','glass_pane','bookshelf','ladder','fence','gate']);
+    if (CRAFTED_ONLY.has(String(blockType).toLowerCase())) {
+        log(bot, `Will not mine ${blockType} — that only exists in builds (mine logs/ore or craft it instead).`);
+        return false;
+    }
     if (num < 1) {
         log(bot, `Invalid number of blocks to collect: ${num}.`);
         return false;
