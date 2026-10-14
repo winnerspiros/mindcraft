@@ -46,6 +46,24 @@ const ACTIVITIES = [
         back: ['got it', 'back, with water', 'ok that was needed'],
     },
     {
+        id: 'shit', kind: 'short', weight: 1,
+        min: 4 * MIN, max: 12 * MIN,
+        says: ['brb taking a shit', 'gotta shit brb', 'bathroom, big one, brb'],
+        back: ['ok that was a mission', 'back, feel so much better', 'finally done lol'],
+    },
+    {
+        id: 'snack', kind: 'short', weight: 3,
+        min: 3 * MIN, max: 10 * MIN,
+        says: ['gonna grab food', 'brb making food', 'starving, one sec'],
+        back: ['ok got snacks', 'back, got food', 'eating while i play now'],
+    },
+    {
+        id: 'meal', kind: 'long', weight: 1,
+        min: 15 * MIN, max: 40 * MIN,
+        says: ['gotta eat dinner brb', 'food is ready, brb eating', 'mom made food, one sec'],
+        back: ['that was so good', 'ok im stuffed lol', 'back, ate too much'],
+    },
+    {
         id: 'phone', kind: 'short', weight: 4,
         silent: true,   // the one you do without saying anything
         min: 2 * MIN, max: 9 * MIN,

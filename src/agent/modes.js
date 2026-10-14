@@ -1770,7 +1770,7 @@ const GLANCE_BUDGET_COOLDOWN_MS = 60000;
                 // being angry works.
                 agent._tiltLevel = agent._tilt.tick();
 
-                // Back? Say so, and make it consistent with why she left.
+                // Back? Say so IN CHAT, and make it consistent with why she left.
                 const back = agent._life.checkReturn();
                 if (back) {
                     console.log(`${agent.name} [life] back from ${back.id}` +
@@ -1778,6 +1778,13 @@ const GLANCE_BUDGET_COOLDOWN_MS = 60000;
                     if (back.back) {
                         agent.history.add('system',
                             `You just came back from ${back.id}. You ${back.said ? `said "${back.said}" ` : 'left without saying anything, '}and now you are back. If the conversation continues, do not ignore that gap - you were away.`);
+                        // Say it OUT LOUD too — the history note alone never
+                        // reaches chat, so players saw her vanish and reappear
+                        // with no word. Only when someone is around to hear it.
+                        try {
+                            const anyoneNear = (agent._visibleHumanCount ? agent._visibleHumanCount() : 0) > 0;
+                            if (anyoneNear && !agent.shut_up) say(agent, back.back);
+                        } catch (_) {}
                     }
                 }
                 // Gone? Announce it if the absence is the kind people announce.
@@ -1789,15 +1796,32 @@ const GLANCE_BUDGET_COOLDOWN_MS = 60000;
                             agent.history.add('system',
                                 `You said "${a.said}" and stepped away from the computer (${a.id}). You are not at the keyboard now.`);
                             console.log(`${agent.name} [life] left: ${a.id} - "${a.said}" for ~${Math.round((a.until - now) / 60000)}min`);
+                            // Say it IN CHAT — otherwise the excuse exists only
+                            // in her head and she looks like she froze mid-game.
+                            try { if (!agent.shut_up) say(agent, a.said); } catch (_) {}
                         } else {
                             console.log(`${agent.name} [life] slipped away: ${a?.id} (silent)`);
                         }
                     }
                 }
-                // While away she has nothing to say. Checked on every tick.
+                // While away she has nothing to say AND nothing to do. Checked
+                // on every tick. The old version only silenced the conversation
+                // starter — the goal loop kept issuing commands mid-"absence",
+                // so she mined blocks while supposedly taking a shit.
                 if (agent._life.isAway) {
                     this.next_start = now + 20000 + Math.random() * 25000;
+                    // Real AFK: park the goal loop (keeps current prompt, just
+                    // stops ticking) so she doesn't mine blocks while supposedly
+                    // on the toilet. resumeAfterMode on return restarts it.
+                    try { agent.self_prompter.setPromptPaused(agent.self_prompter.prompt || ''); } catch (_) {}
                     return;
+                } else {
+                    // Just came back (or was never away) — make sure the goal
+                    // loop is running again.
+                    try {
+                        if (agent.self_prompter && !agent.self_prompter.isActive())
+                            agent.self_prompter.resumeAfterMode();
+                    } catch (_) {}
                 }
             }
 
