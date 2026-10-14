@@ -80,7 +80,7 @@ export class SelfPrompter {
         // doing all the work and the distribution was effectively uniform.
         // The floor moves down; the ceiling stays, because going silent for
         // many minutes alone is correct and she has nobody to keep company.
-        this.gear_solo_min = 60000;
+        this.gear_solo_min = 30000;
         // §token-save: solo-idle floor raised 30s→60s (2026-10-07). When alone with no
         // goal held, she was firing a full-context LLM call to decide "do nothing"
         // every ~40s. This halves those idle calls. Goal-holding work is unaffected
@@ -309,6 +309,13 @@ export class SelfPrompter {
         if (!sameGoal) {
             this.goal_cycles = 0;
             this.stuck_cycles = 0;
+            // NEW GOAL: ask the planner to decompose it into a skill chain.
+            // If it matches a known chain, steps run deterministically with no
+            // LLM per step. Otherwise the normal LLM-per-turn path applies.
+            try {
+                if (this.agent?.planner && !this.agent.planner.hasPlan())
+                    this.agent.planner.tryPlan(prompt);
+            } catch (_) {}
         }
         this.startLoop();
     }
@@ -422,6 +429,30 @@ export class SelfPrompter {
             const gear = solo ? this._actionGear() : this._engagementGear();
             this._last_gear = gear;
             console.log(`[cadence] ${solo ? 'solo' : 'social'} next turn in ${Math.round(gear / 1000)}s (engagement=${this._recent_human_chars} chars)`);
+            // PLANNER FIRST (2026-10-14): if the goal decomposed into a skill
+            // chain, run the next step directly — no LLM call, no hallucinated
+            // command, just the verified sequence. Falls through to the LLM
+            // path only when no plan exists.
+            try {
+                if (this.agent?.planner?.hasPlan() && this.agent.isIdle()) {
+                    const step = this.agent.planner.current();
+                    console.log(`[cadence] plan step, skipping LLM (step: ${step?.cmd})`);
+                    await this.agent.planner.runNext();
+                    // Give the action time to settle, then verify and advance.
+                    await new Promise(r => setTimeout(r, 8000));
+                    try { this.agent.planner.noteSettled(); } catch (_) {}
+                    // Plan done -> advance the goal like the critic would.
+                    if (!this.agent.planner.hasPlan()) {
+                        try {
+                            const r = await this.advanceGoal();
+                            if (r && r.done && r.next) console.log(`[curriculum] advanced to new goal: "${r.next}"`);
+                        } catch (_) {}
+                    }
+                    continue;
+                }
+            } catch (e) {
+                console.warn('[planner] plan step failed, falling back to LLM:', e.message);
+            }
             // Discovery's MissionPlanner, ported cheap: every self-prompt turn
             // restates the goal as ONE verifiable task + its success condition
             // (what "done" looks like in inventory/position terms), so the
@@ -710,6 +741,73 @@ export class SelfPrompter {
                     { cmd: '!buildStairs', needsArgs: true, goal: 'cut stairs into a slope, like \"north 10\"' },
                 ];
                 let fallbacks = [];
+                // CONTEXT-AWARE GOALS (2026-10-14): before falling back to the
+                // generic ACTIVITIES list, check her actual state and propose a
+                // goal with a PURPOSE - tool first, then material, then product.
+                // A normal player thinks: "i need an axe → get wood → craft it".
+                // Falls through to ACTIVITIES only when nothing is missing.
+                try {
+                    const bot = agent.bot;
+                    const items = (bot && bot.inventory && bot.inventory.items)
+                        ? bot.inventory.items() : [];
+                    const inv = {};
+                    for (const i of items) inv[i.name] = (inv[i.name] || 0) + i.count;
+                    const has = (n) => (inv[n] || 0) > 0;
+                    const logCount = Object.keys(inv).filter(k => k.endsWith('_log'))
+                        .reduce((a, k) => a + inv[k], 0);
+                    const plankCount = Object.keys(inv).filter(k => k.endsWith('_planks'))
+                        .reduce((a, k) => a + inv[k], 0);
+                    const hasPick = has('wooden_pickaxe') || has('stone_pickaxe')
+                        || has('iron_pickaxe') || has('diamond_pickaxe');
+                    const hasAxe = has('wooden_axe') || has('stone_axe')
+                        || has('iron_axe') || has('diamond_axe');
+                    const hasSword = has('wooden_sword') || has('stone_sword')
+                        || has('iron_sword') || has('diamond_sword');
+                    const foodCount = (inv['bread']||0) + (inv['cooked_beef']||0)
+                        + (inv['cooked_porkchop']||0) + (inv['cooked_chicken']||0)
+                        + (inv['apple']||0) + (inv['carrot']||0) + (inv['potato']||0);
+                    const health = bot?.health ?? 20;
+                    const food = bot?.food ?? 20;
+                    const purpose = [];
+                    if (!hasAxe && logCount < 3)
+                        purpose.push('chop 3 oak logs with !collectBlocks oak_log 3 so i can craft a wooden axe');
+                    else if (!hasAxe && logCount >= 3)
+                        purpose.push('craft a wooden axe with !craftRecipe wooden_axe 1 so chopping is faster');
+                    if (!hasPick && plankCount < 3 && logCount < 3)
+                        purpose.push('chop 3 oak logs with !collectBlocks oak_log 3 so i can craft planks for a pickaxe');
+                    else if (!hasPick && (plankCount >= 3 || logCount >= 3))
+                        purpose.push('craft a wooden pickaxe with !craftRecipe wooden_pickaxe 1 so i can mine stone');
+                    else if (hasPick && !has('cobblestone') && !has('stone_sword') && !has('stone_pickaxe'))
+                        purpose.push('mine 11 cobblestone with !collectBlocks cobblestone 11 so i can upgrade to stone tools');
+                    else if (hasPick && (inv['cobblestone']||0) >= 3 && !has('stone_pickaxe') && !has('stone_axe'))
+                        purpose.push('craft stone tools with !craftRecipe stone_pickaxe 1 so mining is faster');
+                    if (!hasSword && (plankCount >= 2 || logCount >= 1))
+                        purpose.push('craft a wooden sword with !craftRecipe wooden_sword 1 so i can defend myself');
+                    if ((inv['torch']||0) < 4 && ((inv['coal']||0) > 0 || (inv['charcoal']||0) > 0) && (inv['stick']||0) > 0)
+                        purpose.push('craft 8 torches with !craftRecipe torch 2 so i can light up dark places');
+                    else if ((inv['torch']||0) < 4 && logCount < 1)
+                        purpose.push('chop 2 oak logs with !collectBlocks oak_log 2 so i can make sticks and torches');
+                    if (food < 14 || foodCount < 2)
+                        purpose.push('get food with !getFood so i do not starve');
+                    if (health < 14 && foodCount > 0)
+                        purpose.push('eat something with !eat so i heal up');
+                    if (!has('crafting_table'))
+                        purpose.push('craft a crafting table with !craftRecipe crafting_table 1 so i can craft tools');
+                    if (!has('furnace') && (inv['cobblestone']||0) >= 8)
+                        purpose.push('craft a furnace with !craftRecipe furnace 1 so i can smelt and cook');
+                    // Filter out goals in the same family as the stuck one, then
+                    // prefer one not in recent history.
+                    const fresh = purpose.filter(g => _family(g) !== oldFam);
+                    const pick = (fresh.length ? fresh : purpose)
+                        .find(g => !hist.includes(g.split(' ')[1]))
+                        || (fresh.length ? fresh : purpose)[0];
+                    if (pick) {
+                        console.log(`[curriculum] purpose-driven goal: "${pick}"`);
+                        return pick;
+                    }
+                } catch (e) {
+                    console.warn('[curriculum] purpose check failed, using ACTIVITIES:', e.message);
+                }
                 try {
                     const mod = await import('./commands/index.js');
                     const ar = (typeof mod.allCommandArity === 'function') ? mod.allCommandArity() : {};

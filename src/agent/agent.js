@@ -14,6 +14,7 @@ import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
 import * as skills from './library/skills.js';
 import { SelfPrompter } from './self_prompter.js';
+import { Planner } from './planner.js';
 import convoManager from './conversation.js';
 import { handleTranslation, handleEnglishTranslation } from '../utils/translator.js';
 import { addBrowserViewer } from './vision/browser_viewer.js';
@@ -126,6 +127,7 @@ export class Agent {
         this.turn_taker = new TurnTaker(this, { enabled: settings.turn_taking_enabled !== false });
         this.learned_skills = settings.learned_skills_enabled !== false ? new LearnedSkillLibrary(this) : null;
         this.self_prompter = new SelfPrompter(this);
+        this.planner = new Planner(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
 
