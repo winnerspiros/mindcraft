@@ -73,6 +73,8 @@ test('every bare identifier runMode() reads is declared or global', () => {
         // module-level imports and helpers
         'mode', 'agent', 'func', 'timeout', 'convoManager', 'Vec3', 'skills',
         'world', 'mc', 'modes_list', 'execute', 'runMode',
+        // shared combat-cooldown timer (module-level let, set in runMode)
+        '_lastCombatModeAt', 'COMBAT_MODE_COOLDOWN_MS',
         // reserved words, never bare reads
         'function', 'return', 'if', 'else', 'for', 'while', 'do', 'switch', 'case',
         'break', 'continue', 'new', 'delete', 'typeof', 'void', 'in', 'of', 'instanceof',
